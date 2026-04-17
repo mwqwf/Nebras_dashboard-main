@@ -83,8 +83,16 @@ function buildUploadMirrorFields(current, metadata) {
     thumbnail: normalized.thumbnail ?? current?.thumbnail,
     content_type: normalized.content_type ?? current?.content_type,
     subsection: normalized.subsection ?? current?.subsection,
+    subsection_name:
+      normalized.subsection_name ??
+      normalized.subsection_title ??
+      current?.subsection_name,
     secondary_subsection:
       normalized.secondary_subsection ?? current?.secondary_subsection,
+    secondary_subsection_name:
+      normalized.secondary_subsection_name ??
+      normalized.secondary_subsection_title ??
+      current?.secondary_subsection_name,
     main_section: normalized.main_section ?? current?.main_section,
     main_section_id: normalized.main_section_id ?? current?.main_section_id,
     main_section_name:
@@ -116,8 +124,16 @@ function buildYoutubeMirrorFields({
     thumbnail: thumbnail ?? normalized.thumbnail ?? current?.thumbnail ?? null,
     content_type: "youtube",
     subsection: normalized.subsection ?? current?.subsection,
+    subsection_name:
+      normalized.subsection_name ??
+      normalized.subsection_title ??
+      current?.subsection_name,
     secondary_subsection:
       normalized.secondary_subsection ?? current?.secondary_subsection,
+    secondary_subsection_name:
+      normalized.secondary_subsection_name ??
+      normalized.secondary_subsection_title ??
+      current?.secondary_subsection_name,
     main_section: normalized.main_section ?? current?.main_section,
     main_section_id: normalized.main_section_id ?? current?.main_section_id,
     main_section_name:

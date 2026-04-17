@@ -55,7 +55,13 @@ function buildMobileCompatibleFields(metadata, downloadUrl) {
     thumbnail: normalized.thumbnail || undefined,
     content_type: normalized.content_type || undefined,
     subsection: normalized.subsection,
+    subsection_name:
+      normalized.subsection_name || normalized.subsection_title || undefined,
     secondary_subsection: normalized.secondary_subsection,
+    secondary_subsection_name:
+      normalized.secondary_subsection_name ||
+      normalized.secondary_subsection_title ||
+      undefined,
     main_section: normalized.main_section,
     main_section_id: normalized.main_section_id,
     main_section_name: normalized.main_section_name,
