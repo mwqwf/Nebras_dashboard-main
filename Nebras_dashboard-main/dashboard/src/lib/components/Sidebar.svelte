@@ -5,8 +5,7 @@
 -->
 
 <script>
-	import { getAuthState, toggleViewMode } from '$lib/stores/auth.svelte.js';
-	import { logout } from '$lib/api/auth.js';
+	import { getAuthState } from '$lib/stores/auth.svelte.js';
 	import { page } from '$app/state';
 	import { t } from '$lib/i18n/store.svelte.js';
 
@@ -14,8 +13,6 @@
 
 	const authState = getAuthState();
 
-	let isAdmin = $derived(authState.user?.is_super_admin === true);
-	let viewMode = $derived(authState.viewMode);
 	let currentPath = $derived(page.url?.pathname || '');
 
 	let displayName = $derived(
@@ -24,37 +21,20 @@
 			: authState.user?.username || 'User'
 	);
 	let userEmail = $derived(authState.user?.email || '');
-	let userRole = $derived(isAdmin ? 'Super Admin' : 'Moderator');
+	let userRole = $derived('User');
 
 	// ─── Menu Items ────────────────────────────────────────
 
-	let adminMenu = $derived([
-		{ label: t('common.dashboard'), href: '/admin', icon: 'dashboard' },
-		{
-			label: t('common.users'),
-			icon: 'users',
-			children: [
-				{ label: t('common.moderators'), href: '/admin/users/moderators' },
-				{ label: t('common.bans'), href: '/admin/users/bans' }
-			]
-		},
-		{ label: t('common.sections'), href: '/admin/sections', icon: 'sections' },
-		{ label: t('common.content'), href: '/admin/content', icon: 'content' },
-		{ label: t('common.chat'), href: '/admin/chat', icon: 'chat' }
-	]);
-
-	let moderatorMenu = $derived([
+	let menuItems = $derived([
 		{ label: t('common.dashboard'), href: '/moderator', icon: 'dashboard' },
 		{ label: t('common.sections'), href: '/moderator/sections', icon: 'sections' },
-		{ label: t('common.content'), href: '/moderator/content', icon: 'content' },
+		{ label: t('common.content'), href: '/moderator/content/files', icon: 'content' },
 		{ label: t('common.chat'), href: '/moderator/chat', icon: 'chat' }
 	]);
 
-	let menuItems = $derived(viewMode === 'admin' ? adminMenu : moderatorMenu);
-
 	function isActive(href) {
 		if (!href) return false;
-		if (href === '/admin' || href === '/moderator') {
+		if (href === '/moderator') {
 			return currentPath === href;
 		}
 		return currentPath.startsWith(href);
@@ -74,19 +54,16 @@
 	const icons = {
 		dashboard: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6',
 		stats: 'M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z',
-		users: 'M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z',
 		sections: 'M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10',
 		content: 'M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z',
-		chat: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z',
-		logout: 'M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1',
-		toggle: 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4'
+		chat: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z'
 	};
 </script>
 
 <aside class="sidebar {isOpen ? 'open' : ''}" id="sidebar">
 	<!-- ─── Top: Logo ────────────────────────────── -->
 	<div class="sidebar-top">
-		<a href={viewMode === 'admin' ? '/admin' : '/moderator'} class="app-brand">
+		<a href="/moderator" class="app-brand">
 			<div class="brand-icon">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
 					<path d="M12 3L2 12h3v8h6v-6h2v6h6v-8h3L12 3z" />
@@ -141,20 +118,10 @@
 		{/each}
 	</nav>
 
-	<!-- ─── Bottom: Role Toggle + User + Logout ───── -->
+	<!-- ─── Bottom: User ───── -->
 	<div class="sidebar-bottom">
-		{#if isAdmin}
-			<button class="role-toggle" onclick={toggleViewMode}>
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-					stroke-linecap="round" stroke-linejoin="round" class="toggle-icon">
-					<path d={icons.toggle} />
-				</svg>
-				<span>{viewMode === 'admin' ? t('sidebar.moderator_view') : t('sidebar.admin_view')}</span>
-			</button>
-		{/if}
-
 		<!-- User info -->
-		<a href="/profile" class="user-info" title="Edit profile">
+		<div class="user-info">
 			<div class="avatar">
 				{#if authState.user?.profile?.profile_image}
 					<img src={authState.user.profile.profile_image} alt="Avatar" />
@@ -166,16 +133,8 @@
 				<span class="user-name">{displayName}</span>
 				<span class="user-email">{userEmail || userRole}</span>
 			</div>
-		</a>
+		</div>
 
-		<!-- Logout -->
-		<button class="logout-btn" id="logout-btn" onclick={logout}>
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-				stroke-linecap="round" stroke-linejoin="round" class="nav-icon">
-				<path d={icons.logout} />
-			</svg>
-			<span>{t('common.logout')}</span>
-		</button>
 	</div>
 </aside>
 
@@ -352,43 +311,13 @@
 		background: var(--color-primary-500);
 	}
 
-	/* ─── Bottom: User + Toggle + Logout ──────────── */
+	/* ─── Bottom: User ──────────── */
 	.sidebar-bottom {
 		padding: 0.75rem;
 		border-top: 1px solid var(--color-sidebar-border);
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
-	}
-
-	/* Role toggle */
-	.role-toggle {
-		display: flex;
-		align-items: center;
-		gap: 0.625rem;
-		width: 100%;
-		padding: 0.5rem 0.75rem;
-		background: transparent;
-		border: 1px solid var(--color-primary-800);
-		border-radius: 8px;
-		color: var(--color-primary-400);
-		font-size: 0.75rem;
-		font-weight: 500;
-		font-family: inherit;
-		cursor: pointer;
-		transition: all 0.2s ease;
-	}
-
-	.role-toggle:hover {
-		background: var(--color-primary-900);
-		border-color: var(--color-primary-600);
-		color: var(--color-primary-300);
-	}
-
-	.toggle-icon {
-		width: 16px;
-		height: 16px;
-		flex-shrink: 0;
 	}
 
 	/* User info */
@@ -453,26 +382,4 @@
 		white-space: nowrap;
 	}
 
-	/* Logout */
-	.logout-btn {
-		display: flex;
-		align-items: center;
-		gap: 0.75rem;
-		width: 100%;
-		padding: 0.625rem 0.75rem;
-		background: transparent;
-		border: none;
-		border-radius: 8px;
-		color: var(--color-surface-500);
-		font-size: 0.8125rem;
-		font-weight: 500;
-		font-family: inherit;
-		cursor: pointer;
-		transition: all 0.15s ease;
-	}
-
-	.logout-btn:hover {
-		background: rgba(244, 63, 94, 0.1);
-		color: var(--color-danger-400);
-	}
 </style>

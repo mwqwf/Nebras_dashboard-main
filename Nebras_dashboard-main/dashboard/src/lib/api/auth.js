@@ -150,10 +150,10 @@ export async function fetchMe() {
 // ─── Logout ─────────────────────────────────────────────
 
 /**
- * Clear all auth state and redirect to login.
+ * Clear all auth state and redirect to root.
  */
 export function logout() {
     clearAuth();
     clearRefreshCookie();
-    goto('/login');
+    goto('/');
 }

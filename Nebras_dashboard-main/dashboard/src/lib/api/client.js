@@ -3,7 +3,7 @@
  *
  * - Attaches Bearer token from in-memory store
  * - On 401: attempts one silent refresh, retries original request
- * - On refresh failure: clears auth and redirects to /login
+ * - On refresh failure: clears auth and redirects to /
  */
 
 import { getAuthState, setAccessToken, clearAuth } from '$lib/stores/auth.svelte.js';
@@ -48,9 +48,9 @@ export async function apiRequest(endpoint, options = {}, _isRetry = false) {
             // Retry original request with new token
             return apiRequest(endpoint, options, true);
         } else {
-            // Refresh failed — clear state and redirect to login
+            // Refresh failed — clear state and redirect to root
             clearAuth();
-            goto('/login');
+            goto('/');
             throw new Error('Session expired. Please log in again.');
         }
     }
