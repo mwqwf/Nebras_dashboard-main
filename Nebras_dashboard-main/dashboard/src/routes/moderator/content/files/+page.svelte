@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { listMyFiles, removeFile, updateFile, listMyMainSections, listMySubSections, listMySecondarySections } from '$lib/api/moderator.js';
 	import { createFileUploader, createResumeUploader, formatFileSize, mimeToContentType } from '$lib/utils/fileUpload.js';
+	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
 
 	// List state
@@ -156,7 +157,22 @@
 		currentUploader = uploader;
 
 		try {
-			await uploader.start();
+			const result = await uploader.start();
+			// إشعار FCM غير مُعطِّل: لا نَوقف التدفّق إن فشل.
+			const mainName = mainSectionsList.find((m) => String(m.id) === String(uploadForm.main_section))?.name || '';
+			const subName = uploadSubOptions.find((s) => String(s.id) === String(uploadForm.subsection))?.name || '';
+			const secName = uploadSecondaryOptions.find((s) => String(s.id) === String(uploadForm.secondary_subsection))?.name || '';
+			notifyContentAdded({
+				title: uploadForm.title,
+				contentType: contentType,
+				contentId: result?.id,
+				mainSectionId: uploadForm.main_section,
+				subSectionId: uploadForm.subsection,
+				secondarySectionId: uploadForm.secondary_subsection,
+				mainSectionName: mainName,
+				subSectionName: subName,
+				secondarySectionName: secName
+			});
 			setTimeout(() => { showUploadModal = false; fetchItems(); }, 800);
 		} catch { /* error already handled via onError */ }
 	}

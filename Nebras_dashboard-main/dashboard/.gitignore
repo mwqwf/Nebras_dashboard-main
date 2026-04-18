@@ -18,6 +18,11 @@ Thumbs.db
 !.env.example
 !.env.test
 
+# Firebase Service Account — يجب ألّا يُرفَع لأي repo عمومي
+secrets/
+*firebase-adminsdk*.json
+serviceAccountKey.json
+
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*

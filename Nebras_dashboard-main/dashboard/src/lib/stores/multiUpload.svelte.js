@@ -14,6 +14,7 @@
  */
 
 import { createFileUploader, mimeToContentType } from '$lib/utils/fileUpload.js';
+import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 
 /** @typedef {'queued'|'uploading'|'completed'|'failed'} QueueStatus */
 
@@ -262,9 +263,21 @@ async function uploadOne(itemId) {
 	uploaderRegistry.set(itemId, uploader);
 
 	try {
-		await uploader.start();
+		const result = await uploader.start();
 		if (multiState.queue.some((it) => it.id === itemId)) {
 			updateItem(itemId, { status: 'completed', progress: 100, error: '' });
+			// إشعار FCM بعد نجاح كل بند — لا يُعطَّل الطابور إن فشل.
+			notifyContentAdded({
+				title: startSnapshot.form.title,
+				contentType: contentType,
+				contentId: result?.id,
+				mainSectionId: startSnapshot.form?.main_section,
+				subSectionId: startSnapshot.form?.subsection,
+				secondarySectionId: startSnapshot.form?.secondary_subsection,
+				mainSectionName: startSnapshot.labels?.main || '',
+				subSectionName: startSnapshot.labels?.sub || '',
+				secondarySectionName: startSnapshot.labels?.secondary || ''
+			});
 		}
 	} catch (err) {
 		if (multiState.queue.some((it) => it.id === itemId)) {

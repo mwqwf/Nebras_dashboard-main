@@ -13,6 +13,7 @@
 		listMySubSections, createSubSection, updateSubSection, removeSubSection,
 		listMySecondarySections, createSecondarySection, updateSecondarySection, removeSecondarySection
 	} from '$lib/api/moderator.js';
+	import { notifySectionCreated } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
 
 	// ─── Level & Parent State ───────────────────────────
@@ -248,38 +249,48 @@
 		createFormError = '';
 		createFormLoading = true;
 		try {
+			/** @type {{level:'main'|'sub'|'secondary', name:string, parentName:string, sectionId?:string|number}} */
+			let notifyInfo = null;
+
 			if (activeLevel === 'main') {
-				await createMainSection({
+				const created = await createMainSection({
 					name: createForm.name,
 					order_index: createForm.order_index || 0,
 					is_listed: createForm.is_listed,
 					thumbnail: createThumbnail || undefined
 				});
+				notifyInfo = { level: 'main', name: createForm.name, parentName: '', sectionId: created?.id, parentId: '' };
 			} else if (activeLevel === 'sub') {
 				if (!createForm.main_section) {
 					createFormError = 'Please select a parent main section.';
 					createFormLoading = false;
 					return;
 				}
-				await createSubSection({
+				const created = await createSubSection({
 					name: createForm.name,
 					main_section: Number(createForm.main_section),
 					is_listed: createForm.is_listed,
 					thumbnail: createThumbnail || undefined
 				});
+				const parent = mainSectionsList.find((m) => String(m.id) === String(createForm.main_section))?.name || '';
+				notifyInfo = { level: 'sub', name: createForm.name, parentName: parent, sectionId: created?.id, parentId: createForm.main_section };
 			} else {
 				if (!createForm.sub_section) {
 					createFormError = 'Please select a parent sub section.';
 					createFormLoading = false;
 					return;
 				}
-				await createSecondarySection({
+				const created = await createSecondarySection({
 					name: createForm.name,
 					sub_section: Number(createForm.sub_section),
 					is_listed: createForm.is_listed,
 					thumbnail: createThumbnail || undefined
 				});
+				const parent = subSectionsList.find((s) => String(s.id) === String(createForm.sub_section))?.name || '';
+				notifyInfo = { level: 'secondary', name: createForm.name, parentName: parent, sectionId: created?.id, parentId: createForm.sub_section };
 			}
+			// إشعار FCM غير مُعطِّل.
+			if (notifyInfo) notifySectionCreated(notifyInfo);
 			showCreateModal = false;
 			fetchItems();
 			// Refresh options in case a new parent was created

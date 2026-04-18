@@ -9,6 +9,7 @@
 		listMyYoutubeVideos, createYoutubeVideo, updateYoutubeVideo, removeYoutubeVideo,
 		listMyMainSections, listMySubSections, listMySecondarySections
 	} from '$lib/api/moderator.js';
+	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
 
 	// ─── State ──────────────────────────────────────────
@@ -193,7 +194,22 @@
 			}
 			if (createThumbnail) payload.thumbnail = createThumbnail;
 
-			await createYoutubeVideo(payload);
+			const created = await createYoutubeVideo(payload);
+			const mainName = mainSectionsList.find((m) => String(m.id) === String(createForm.main_section))?.name || '';
+			const subName = createSubOptions.find((s) => String(s.id) === String(createForm.subsection))?.name || '';
+			const secName = createSecondaryOptions.find((s) => String(s.id) === String(createForm.secondary_subsection))?.name || '';
+			notifyContentAdded({
+				title: createForm.title,
+				contentType: 'youtube',
+				contentId: created?.id,
+				mainSectionId: createForm.main_section,
+				subSectionId: createForm.subsection,
+				secondarySectionId: createForm.secondary_subsection,
+				mainSectionName: mainName,
+				subSectionName: subName,
+				secondarySectionName: secName,
+				sourceUrl: createForm.video_url
+			});
 			showCreateModal = false;
 			fetchItems();
 		} catch (err) { createFormError = parseFormError(err.message); }
