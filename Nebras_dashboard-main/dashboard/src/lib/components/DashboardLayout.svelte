@@ -6,6 +6,7 @@
 
 <script>
 	import Sidebar from './Sidebar.svelte';
+	import MultiUploadIndicator from './MultiUploadIndicator.svelte';
 	import { getAuthState } from '$lib/stores/auth.svelte.js';
 	import { toggleLanguage, getLanguage, t } from '$lib/i18n/store.svelte.js';
 
@@ -85,6 +86,9 @@
 			</div>
 		</main>
 	</div>
+
+	<!-- Floating multi-upload progress indicator (visible across dashboard pages) -->
+	<MultiUploadIndicator />
 </div>
 
 <style>
