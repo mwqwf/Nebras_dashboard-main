@@ -2,7 +2,12 @@
  * رفع الملف إلى Firebase Storage ثم تسجيل الرابط في Realtime Database.
  * يُستدعى من orchestrator الرفع بدل التوقيع المباشر لـ R2.
  */
-import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
+import {
+  ref,
+  uploadBytes,
+  uploadBytesResumable,
+  getDownloadURL,
+} from "firebase/storage";
 import { ref as dbRef, set, serverTimestamp } from "firebase/database";
 import { getFirebaseStorage, getFirebaseDatabase } from "./client.js";
 
@@ -14,6 +19,35 @@ function sanitizeFileSegment(name) {
   return String(name || "file")
     .replace(/[#$\[\]./]/g, "_")
     .slice(0, 180);
+}
+
+/**
+ * Upload an optional thumbnail image for a content record. Returns the download URL
+ * or `null` if no file was provided. The URL must be written into
+ * `metadata.thumbnail` so the mobile app (which reads `metadata.thumbnail` /
+ * root-level `thumbnail`) can render it.
+ *
+ * @param {string|number} fileId
+ * @param {File|null|undefined} thumbnail
+ * @returns {Promise<string|null>}
+ */
+export async function uploadContentThumbnail(fileId, thumbnail) {
+  if (!thumbnail || typeof thumbnail !== "object" || !("size" in thumbnail)) {
+    return null;
+  }
+  const storage = getFirebaseStorage();
+  if (!storage) {
+    throw new Error(
+      "Firebase غير مهيأ. تحقق من متغيرات VITE_FIREBASE_* في .env",
+    );
+  }
+  const safe = sanitizeFileSegment(thumbnail.name || "thumbnail");
+  const path = `dashboard/content/${fileId}/thumbnail_${Date.now()}_${safe}`;
+  const thumbRef = ref(storage, path);
+  await uploadBytes(thumbRef, thumbnail, {
+    contentType: thumbnail.type || "image/jpeg",
+  });
+  return getDownloadURL(thumbRef);
 }
 
 function stripUndefinedDeep(value) {

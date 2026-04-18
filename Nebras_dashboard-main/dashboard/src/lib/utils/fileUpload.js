@@ -3,7 +3,10 @@
  *
  * Handles upload lifecycle through Firebase Storage + Realtime Database only.
  */
-import { firebaseUploadContentFile } from '$lib/firebase/storageUpload.js';
+import {
+	firebaseUploadContentFile,
+	uploadContentThumbnail
+} from '$lib/firebase/storageUpload.js';
 
 /**
  * @param {File} file - The file to upload
@@ -35,8 +38,22 @@ export function createFileUploader(file, metadata, thumbnail, { onProgress, onSt
 			const fileId = `fb_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 			if (aborted) throw new Error('Upload aborted');
 
+			// Upload the thumbnail FIRST (if any) so its download URL can be mirrored
+			// into the metadata + root-level fields the mobile app reads.
+			let thumbnailUrl = null;
+			if (thumbnail) {
+				try {
+					thumbnailUrl = await uploadContentThumbnail(fileId, thumbnail);
+				} catch (thumbErr) {
+					console.warn('[fileUpload] Thumbnail upload failed, continuing without it:', thumbErr);
+				}
+			}
+			const finalMetadata = thumbnailUrl
+				? { ...metadata, thumbnail: thumbnailUrl }
+				: metadata;
+
 			setStatus('uploading');
-			await firebaseUploadContentFile(file, fileId, metadata, {
+			await firebaseUploadContentFile(file, fileId, finalMetadata, {
 				onProgress: (pct) => setProgress(pct),
 				isAborted: () => aborted,
 				onTaskCreated: (task) => {
