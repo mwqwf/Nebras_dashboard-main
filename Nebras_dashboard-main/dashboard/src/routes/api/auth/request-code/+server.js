@@ -20,7 +20,7 @@
 
 import { json } from '@sveltejs/kit';
 import { getAdminDatabase, verifyIdToken } from '$lib/server/firebaseAdmin.js';
-import { sendOwnerCode } from '$lib/server/mailer.js';
+import { sendOwnerCode, isOwnerEmail } from '$lib/server/mailer.js';
 import { issueNewCode } from '$lib/server/ownerCode.js';
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
@@ -40,6 +40,12 @@ export async function POST({ request }) {
 			{ error: 'invalid_token', message: err?.message || 'token verification failed' },
 			{ status: 401 }
 		);
+	}
+
+	// دفاع في العمق: المالك لا يحتاج إلى رمز إطلاقاً (يدخل عبر Owner
+	// Bypass في /api/auth/check). لو وصل هنا بطريقةٍ ما نرفض فوراً.
+	if (isOwnerEmail(decoded.email)) {
+		return json({ ok: false, reason: 'already_authorized' }, { status: 400 });
 	}
 
 	// إن كان المستخدم مُصرّحاً له أصلاً، لا معنى لطلب رمز مالك.

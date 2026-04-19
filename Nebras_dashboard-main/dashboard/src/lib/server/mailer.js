@@ -27,6 +27,20 @@ export function getOwnerEmail() {
 	return readEnv('OWNER_EMAIL');
 }
 
+/**
+ * فحص آمن يُطابق بريد المرشّح مع بريد المالك في `.env`.
+ * يستخدم trim + toLowerCase لتجنّب أخطاء تباين الحالة أو المسافات
+ * (خصوصاً أنّ Google قد يُعيد البريد بأحرف كبيرة أحياناً).
+ *
+ * @param {string} email
+ * @returns {boolean}
+ */
+export function isOwnerEmail(email) {
+	const owner = getOwnerEmail().toLowerCase();
+	if (!owner) return false;
+	return String(email || '').trim().toLowerCase() === owner;
+}
+
 export function isSmtpConfigured() {
 	return Boolean(readEnv('SMTP_HOST') && readEnv('SMTP_USER') && readEnv('SMTP_PASS'));
 }

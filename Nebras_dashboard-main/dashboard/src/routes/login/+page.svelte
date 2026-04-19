@@ -12,7 +12,7 @@
 -->
 
 <script>
-	import { onMount, onDestroy } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { getAuthState } from '$lib/stores/auth.svelte.js';
 	import {
@@ -20,7 +20,6 @@
 		requestOwnerCode,
 		verifyOwnerCode,
 		logout,
-		startAuthListener,
 		checkCurrentAuth
 	} from '$lib/api/auth.js';
 	import { getLanguage, toggleLanguage, t, getDir } from '$lib/i18n/store.svelte.js';
@@ -40,7 +39,6 @@
 	let code = $state('');
 	let resendCooldown = $state(0);
 	let cooldownTimer = null;
-	let unsubscribeAuth = null;
 
 	let dir = $derived(getDir());
 	let lang = $derived(getLanguage());
@@ -58,12 +56,7 @@
 		}
 	});
 
-	onMount(() => {
-		unsubscribeAuth = startAuthListener();
-	});
-
 	onDestroy(() => {
-		if (typeof unsubscribeAuth === 'function') unsubscribeAuth();
 		if (cooldownTimer) clearInterval(cooldownTimer);
 	});
 
@@ -113,7 +106,9 @@
 				}
 				step = 'owner_code';
 				// نطلب الرمز تلقائيًا عند الوصول لشاشة الرمز (أوّل مرة فقط).
-				await sendFreshCode({ silent: true });
+				// هنا تكون handleGoogle قد رفعت busy=true بالفعل، لذا نتجاوز
+				// الحارس حتى لا يُلغى الطلب صامتاً ولا يصل أي بريد إلى المالك.
+				await sendFreshCode({ silent: true, force: true });
 				return;
 			}
 			// حالة غير متوقّعة — لا authorized ولا needsOwnerCode.
@@ -126,8 +121,8 @@
 		}
 	}
 
-	async function sendFreshCode({ silent = false } = {}) {
-		if (busy) return;
+	async function sendFreshCode({ silent = false, force = false } = {}) {
+		if (busy && !force) return;
 		busy = true;
 		errorKey = '';
 		if (!silent) infoKey = '';
