@@ -36,7 +36,7 @@
 
 	// Create modal
 	let showCreateModal = $state(false);
-	let createForm = $state({ name: '', order_index: 0, main_section: '', sub_section: '', is_listed: true });
+	let createForm = $state({ name: '', order_index: 0, main_section: '', sub_section: '', is_listed: true, archive_id: '' });
 	let createThumbnail = $state(null);       // File object
 	let createThumbnailPreview = $state('');   // data URL for preview
 	let createFormError = $state('');
@@ -45,7 +45,7 @@
 	// Edit modal
 	let showEditModal = $state(false);
 	let editingItem = $state(null);
-	let editForm = $state({ name: '', order_index: 0, is_listed: true });
+	let editForm = $state({ name: '', order_index: 0, is_listed: true, archive_id: '' });
 	let editThumbnail = $state(null);         // File object (null = no change)
 	let editThumbnailPreview = $state('');     // data URL or existing URL
 	let editFormError = $state('');
@@ -205,7 +205,7 @@
 	// ─── Create ─────────────────────────────────────────
 
 	function openCreateModal() {
-		createForm = { name: '', order_index: 0, main_section: '', sub_section: '', is_listed: true };
+		createForm = { name: '', order_index: 0, main_section: '', sub_section: '', is_listed: true, archive_id: '' };
 		createThumbnail = null;
 		createThumbnailPreview = '';
 		createFormError = '';
@@ -257,6 +257,7 @@
 					name: createForm.name,
 					order_index: createForm.order_index || 0,
 					is_listed: createForm.is_listed,
+					archive_id: createForm.archive_id,
 					thumbnail: createThumbnail || undefined
 				});
 				notifyInfo = { level: 'main', name: createForm.name, parentName: '', sectionId: created?.id, parentId: '' };
@@ -270,6 +271,7 @@
 					name: createForm.name,
 					main_section: Number(createForm.main_section),
 					is_listed: createForm.is_listed,
+					archive_id: createForm.archive_id,
 					thumbnail: createThumbnail || undefined
 				});
 				const parent = mainSectionsList.find((m) => String(m.id) === String(createForm.main_section))?.name || '';
@@ -284,6 +286,7 @@
 					name: createForm.name,
 					sub_section: Number(createForm.sub_section),
 					is_listed: createForm.is_listed,
+					archive_id: createForm.archive_id,
 					thumbnail: createThumbnail || undefined
 				});
 				const parent = subSectionsList.find((s) => String(s.id) === String(createForm.sub_section))?.name || '';
@@ -309,7 +312,8 @@
 		editForm = {
 			name: item.name,
 			order_index: item.order_index ?? 0,
-			is_listed: item.is_listed ?? true
+			is_listed: item.is_listed ?? true,
+			archive_id: item.archive_id ?? ''
 		};
 		editThumbnail = null;
 		editThumbnailPreview = item.thumbnail || '';
@@ -587,6 +591,14 @@
 										Sub: {getSubSectionName(item.sub_section)}
 									</span>
 								{/if}
+								{#if item.archive_id}
+									<span class="meta-item meta-archive" title="Internet Archive collection: {item.archive_id}">
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="meta-icon">
+											<path d="M3 7h18M3 12h18M3 17h18" />
+										</svg>
+										Archive: <code dir="ltr" style="font-family: monospace; margin-inline-start: 4px;">{item.archive_id}</code>
+									</span>
+								{/if}
 							</div>
 
 							<div class="card-footer">
@@ -684,6 +696,12 @@
 							<span class="detail-value">{getSubSectionName(detailItem.sub_section)}</span>
 						</div>
 					{/if}
+					{#if detailItem.archive_id}
+						<div class="detail-row">
+							<span class="detail-label">Archive Collection</span>
+							<span class="detail-value" dir="ltr" style="font-family: monospace;">{detailItem.archive_id}</span>
+						</div>
+					{/if}
 					<div class="detail-row">
 						<span class="detail-label">Created At</span>
 						<span class="detail-value">{formatDate(detailItem.created_at)}</span>
@@ -778,6 +796,25 @@
 					</label>
 				</div>
 
+				<!-- Internet Archive collection identifier (optional) -->
+				<div class="form-group">
+					<label for="create-archive-id" class="form-label">Internet Archive — Collection ID</label>
+					<input
+						type="text"
+						id="create-archive-id"
+						bind:value={createForm.archive_id}
+						class="form-input"
+						placeholder="e.g. librivoxaudio, opensource_movies, quranmajeed"
+						dir="ltr"
+						autocomplete="off"
+						spellcheck="false"
+					/>
+					<span class="form-hint">
+						Optional. If set, content from this Internet Archive collection will appear below the local content in the app.
+						Example: <code>librivoxaudio</code>. Leave blank to show local content only.
+					</span>
+				</div>
+
 				<!-- Thumbnail upload -->
 				<div class="form-group">
 					<span class="form-label">{t('content.thumbnail')}</span>
@@ -853,6 +890,24 @@
 						<span class="toggle-slider"></span>
 						<span class="toggle-label">{t('common.is_listed')}</span>
 					</label>
+				</div>
+
+				<!-- Internet Archive collection identifier (optional) -->
+				<div class="form-group">
+					<label for="edit-archive-id" class="form-label">Internet Archive — Collection ID</label>
+					<input
+						type="text"
+						id="edit-archive-id"
+						bind:value={editForm.archive_id}
+						class="form-input"
+						placeholder="e.g. librivoxaudio, opensource_movies, quranmajeed"
+						dir="ltr"
+						autocomplete="off"
+						spellcheck="false"
+					/>
+					<span class="form-hint">
+						Optional. Leave blank to disable Internet Archive augmentation for this section.
+					</span>
 				</div>
 
 				<!-- Thumbnail upload -->
@@ -1238,6 +1293,11 @@
 	.meta-parent {
 		color: var(--color-primary-400);
 		opacity: 0.8;
+	}
+
+	.meta-archive {
+		color: #fbbf24;
+		opacity: 0.9;
 	}
 
 	.meta-icon {

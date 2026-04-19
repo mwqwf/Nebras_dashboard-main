@@ -413,8 +413,21 @@ export async function listMyMainSections({ search = "", page = 1 } = {}) {
 }
 
 /**
+ * Normalize optional Internet Archive collection identifier. An empty or
+ * whitespace-only value is persisted as `null` so the mobile app can cleanly
+ * distinguish between "no archive collection" and "user cleared it".
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function normalizeArchiveId(value) {
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
  * Create a main section (multipart/form-data).
- * @param {Object} data - { name, order_index?, thumbnail? (File) }
+ * @param {Object} data - { name, order_index?, thumbnail? (File), archive_id? }
  */
 export async function createMainSection(data) {
   const db = sectionsDb();
@@ -426,6 +439,7 @@ export async function createMainSection(data) {
     order_index: Number(data?.order_index || 0),
     is_listed: data?.is_listed ?? true,
     thumbnail: thumbUrl || null,
+    archive_id: normalizeArchiveId(data?.archive_id),
     created_at: new Date().toISOString(),
   };
   await set(dbRef(db, `${SECTIONS_ROOT}/main/${id}`), payload);
@@ -450,6 +464,9 @@ export async function updateMainSection(id, data) {
       : {}),
     ...(data?.is_listed !== undefined
       ? { is_listed: Boolean(data.is_listed) }
+      : {}),
+    ...(data?.archive_id !== undefined
+      ? { archive_id: normalizeArchiveId(data.archive_id) }
       : {}),
   };
   if (data?.thumbnail instanceof File) {
@@ -501,7 +518,7 @@ export async function listMySubSections({
 
 /**
  * Create a sub section (multipart/form-data).
- * @param {Object} data - { name, main_section, thumbnail? (File) }
+ * @param {Object} data - { name, main_section, thumbnail? (File), archive_id? }
  */
 export async function createSubSection(data) {
   const db = sectionsDb();
@@ -513,6 +530,7 @@ export async function createSubSection(data) {
     main_section: Number(data?.main_section),
     is_listed: data?.is_listed ?? true,
     thumbnail: thumbUrl || null,
+    archive_id: normalizeArchiveId(data?.archive_id),
     created_at: new Date().toISOString(),
   };
   await set(dbRef(db, `${SECTIONS_ROOT}/sub/${id}`), payload);
@@ -534,6 +552,9 @@ export async function updateSubSection(id, data) {
     ...(data?.name !== undefined ? { name: String(data.name).trim() } : {}),
     ...(data?.is_listed !== undefined
       ? { is_listed: Boolean(data.is_listed) }
+      : {}),
+    ...(data?.archive_id !== undefined
+      ? { archive_id: normalizeArchiveId(data.archive_id) }
       : {}),
   };
   if (data?.thumbnail instanceof File) {
@@ -578,7 +599,7 @@ export async function listMySecondarySections({
 
 /**
  * Create a secondary sub section (multipart/form-data).
- * @param {Object} data - { name, sub_section, thumbnail? (File) }
+ * @param {Object} data - { name, sub_section, thumbnail? (File), archive_id? }
  */
 export async function createSecondarySection(data) {
   const db = sectionsDb();
@@ -594,6 +615,7 @@ export async function createSecondarySection(data) {
     sub_section: Number(data?.sub_section),
     is_listed: data?.is_listed ?? true,
     thumbnail: thumbUrl || null,
+    archive_id: normalizeArchiveId(data?.archive_id),
     created_at: new Date().toISOString(),
   };
   await set(dbRef(db, `${SECTIONS_ROOT}/secondary/${id}`), payload);
@@ -615,6 +637,9 @@ export async function updateSecondarySection(id, data) {
     ...(data?.name !== undefined ? { name: String(data.name).trim() } : {}),
     ...(data?.is_listed !== undefined
       ? { is_listed: Boolean(data.is_listed) }
+      : {}),
+    ...(data?.archive_id !== undefined
+      ? { archive_id: normalizeArchiveId(data.archive_id) }
       : {}),
   };
   if (data?.thumbnail instanceof File) {
