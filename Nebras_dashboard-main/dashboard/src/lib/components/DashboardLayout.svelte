@@ -69,10 +69,10 @@
 				<!-- User avatar in header -->
 				<div class="header-user">
 					<div class="header-avatar">
-						{#if authState.user?.profile?.profile_image}
-							<img src={authState.user.profile.profile_image} alt="Avatar" />
+						{#if authState.user?.photoURL}
+							<img src={authState.user.photoURL} alt="Avatar" referrerpolicy="no-referrer" />
 						{:else}
-							<span>{(authState.user?.username || 'U').charAt(0).toUpperCase()}</span>
+							<span>{((authState.user?.displayName || authState.user?.email || 'U')).charAt(0).toUpperCase()}</span>
 						{/if}
 					</div>
 				</div>

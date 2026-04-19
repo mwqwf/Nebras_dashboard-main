@@ -6,6 +6,8 @@
 
 <script>
 	import { getAuthState } from '$lib/stores/auth.svelte.js';
+	import { logout } from '$lib/api/auth.js';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { t } from '$lib/i18n/store.svelte.js';
 
@@ -16,12 +18,16 @@
 	let currentPath = $derived(page.url?.pathname || '');
 
 	let displayName = $derived(
-		authState.user?.first_name
-			? `${authState.user.first_name} ${authState.user.last_name || ''}`.trim()
-			: authState.user?.username || 'User'
+		authState.user?.displayName?.trim() ||
+			(authState.user?.email ? authState.user.email.split('@')[0] : 'User')
 	);
 	let userEmail = $derived(authState.user?.email || '');
-	let userRole = $derived('User');
+	let userPhoto = $derived(authState.user?.photoURL || '');
+
+	async function handleLogout() {
+		await logout();
+		goto('/login');
+	}
 
 	// ─── Menu Items ────────────────────────────────────────
 
@@ -120,23 +126,31 @@
 		{/each}
 	</nav>
 
-	<!-- ─── Bottom: User ───── -->
+	<!-- ─── Bottom: User + Logout ───── -->
 	<div class="sidebar-bottom">
-		<!-- User info -->
 		<div class="user-info">
 			<div class="avatar">
-				{#if authState.user?.profile?.profile_image}
-					<img src={authState.user.profile.profile_image} alt="Avatar" />
+				{#if userPhoto}
+					<img src={userPhoto} alt="Avatar" referrerpolicy="no-referrer" />
 				{:else}
 					<span class="avatar-letter">{displayName.charAt(0).toUpperCase()}</span>
 				{/if}
 			</div>
 			<div class="user-details">
 				<span class="user-name">{displayName}</span>
-				<span class="user-email">{userEmail || userRole}</span>
+				<span class="user-email">{userEmail}</span>
 			</div>
 		</div>
 
+		<button type="button" class="logout-btn" onclick={handleLogout}>
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+				stroke-linecap="round" stroke-linejoin="round">
+				<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+				<polyline points="16 17 21 12 16 7" />
+				<line x1="21" y1="12" x2="9" y2="12" />
+			</svg>
+			<span>{t('auth.logout')}</span>
+		</button>
 	</div>
 </aside>
 
@@ -382,6 +396,32 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.logout-btn {
+		display: flex;
+		align-items: center;
+		gap: 0.625rem;
+		width: 100%;
+		padding: 0.55rem 0.75rem;
+		border-radius: 10px;
+		border: 1px solid var(--color-surface-700);
+		background: transparent;
+		color: var(--color-surface-300);
+		font-size: 0.8125rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+	}
+	.logout-btn:hover {
+		background: rgba(220, 38, 38, 0.12);
+		border-color: rgba(220, 38, 38, 0.4);
+		color: #fecaca;
+	}
+	.logout-btn svg {
+		width: 16px;
+		height: 16px;
+		flex-shrink: 0;
 	}
 
 </style>

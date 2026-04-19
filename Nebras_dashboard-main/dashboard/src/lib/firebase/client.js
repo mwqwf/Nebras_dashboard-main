@@ -6,6 +6,12 @@ import { initializeApp, getApps } from 'firebase/app';
 import { getAnalytics, isSupported } from 'firebase/analytics';
 import { getDatabase } from 'firebase/database';
 import { getStorage } from 'firebase/storage';
+import {
+	getAuth,
+	setPersistence,
+	browserLocalPersistence,
+	GoogleAuthProvider
+} from 'firebase/auth';
 import { browser } from '$app/environment';
 
 const firebaseConfig = {
@@ -21,6 +27,7 @@ const firebaseConfig = {
 
 /** @type {import('firebase/app').FirebaseApp | undefined} */
 let app;
+let authPersistenceReady = false;
 
 /** @returns {import('firebase/app').FirebaseApp | undefined} */
 export function getFirebaseApp() {
@@ -49,6 +56,32 @@ export function getFirebaseStorage() {
 	const application = getFirebaseApp();
 	if (!application) return undefined;
 	return getStorage(application);
+}
+
+/**
+ * Firebase Auth — نستخدمه لتسجيل الدخول عبر Google.
+ * نضبط persistence على localStorage مرّة واحدة حتى تبقى الجلسة بعد التحديث.
+ */
+export function getFirebaseAuth() {
+	const application = getFirebaseApp();
+	if (!application) return undefined;
+	const auth = getAuth(application);
+	if (!authPersistenceReady) {
+		authPersistenceReady = true;
+		setPersistence(auth, browserLocalPersistence).catch((err) => {
+			console.warn('[Firebase Auth] setPersistence failed:', err);
+		});
+	}
+	return auth;
+}
+
+/** مزوّد Google جاهز للاستخدام مع signInWithPopup */
+export function buildGoogleProvider() {
+	const provider = new GoogleAuthProvider();
+	provider.addScope('email');
+	provider.addScope('profile');
+	provider.setCustomParameters({ prompt: 'select_account' });
+	return provider;
 }
 
 /** تهيئة Analytics عندما يدعمها المتصفح */

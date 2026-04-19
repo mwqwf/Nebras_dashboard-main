@@ -1,12 +1,20 @@
 ﻿<!--
-  Root Layout â€” Auth hydration on app load
-  If token exists in localStorage â†’ use it directly (instant load).
-  If no token â†’ attempt silent refresh via cookie â†’ fetchMe â†’ redirect.
+  Root Layout — حارس المصادقة.
+
+  عند الإقلاع:
+   1) نُهيّئ Firebase (Analytics/DB/Storage/Auth).
+   2) نُشغّل مُستمع onAuthStateChanged الموحّد (في api/auth.js).
+   3) أثناء التحميل نعرض LoadingScreen.
+   4) بعد الانتهاء:
+       • إذا كان المستخدم غير موقّع → ندفعه إلى /login (إلّا إذا كان هناك).
+       • إذا كان موقّعاً لكن غير مصرّح (needsOwnerCode) → /login للرمز.
+       • إذا كان مصرّحاً ومسار الجذر → ندخله للوحة التحكّم مباشرةً.
 -->
 
 <script>
-	import { onMount } from 'svelte';
-	import { getAuthState, setLoading } from '$lib/stores/auth.svelte.js';
+	import { onMount, onDestroy } from 'svelte';
+	import { getAuthState } from '$lib/stores/auth.svelte.js';
+	import { startAuthListener } from '$lib/api/auth.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import LoadingScreen from '$lib/components/LoadingScreen.svelte';
@@ -18,28 +26,43 @@
 
 	const authState = getAuthState();
 	let currentDir = $derived(getDir());
+	let unsubscribe = null;
 
-	onMount(async () => {
-		await initFirebase();
+	function isPublicPath(path) {
+		return path === '/login' || path.startsWith('/login/');
+	}
 
-		// Initialize Document Language/Dir direction
-		setLanguage(getLanguage());
-		
+	$effect(() => {
+		if (authState.isLoading) return;
+
 		const currentPath = page.url?.pathname || '/';
 
-		// â”€â”€ Fast path: token + user already in localStorage â”€â”€
-		if (authState.accessToken && authState.user) {
-			// Redirect from root
-			if (currentPath === '/') {
-				goto('/moderator/content/files');
-			}
-
-			setLoading(false);
+		// مستخدم غير موقّع → /login (إن لم يكن هناك أصلاً).
+		if (!authState.user) {
+			if (!isPublicPath(currentPath)) goto('/login');
 			return;
 		}
 
-		// ظ„ط§ ظ†ط­ط§ظˆظ„ طھط³ط¬ظٹظ„ ط§ظ„ط¯ط®ظˆظ„/طھط¬ط¯ظٹط¯ ط§ظ„ط¬ظ„ط³ط© طھظ„ظ‚ط§ط¦ظٹظ‹ط§ ط¨ط¹ط¯ ط­ط°ظپ طµظپط­ط© ط§ظ„ط¯ط®ظˆظ„.
-		setLoading(false);
+		// موقّع لكن جديد (يحتاج رمز المالك) → /login مرحلة الرمز.
+		if (!authState.authorized) {
+			if (!isPublicPath(currentPath)) goto('/login');
+			return;
+		}
+
+		// مصرّح له — إذا كان على /login أو /، انقله للوحة التحكّم.
+		if (currentPath === '/' || isPublicPath(currentPath)) {
+			goto('/moderator/content/files');
+		}
+	});
+
+	onMount(async () => {
+		await initFirebase();
+		setLanguage(getLanguage());
+		unsubscribe = startAuthListener();
+	});
+
+	onDestroy(() => {
+		if (typeof unsubscribe === 'function') unsubscribe();
 	});
 </script>
 
@@ -54,4 +77,3 @@
 		{@render children()}
 	</div>
 {/if}
-

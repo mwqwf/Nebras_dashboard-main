@@ -1,159 +1,239 @@
 /**
- * Auth API — Login, Refresh, Me, Logout
+ * Auth API — Google Sign-In + جسر إلى مسارات الخادم (/api/auth/*).
  *
- * Refresh token storage note:
- * Ideally, the backend should set the refresh token as an httpOnly
- * Set-Cookie header. Since JS cannot set httpOnly cookies, we store
- * it in a regular Secure, SameSite=Strict cookie as the best
- * available alternative. For production, configure the backend to
- * return the refresh token via Set-Cookie.
+ * كلّ العمليّات الحسّاسة (التحقّق من الأهليّة، توليد الرمز، التحقّق منه)
+ * تجري في الخادم. الواجهة مسؤولة فقط عن:
+ *   1) فتح نافذة Google Sign-In عبر Firebase Auth.
+ *   2) التقاط ID token وإرساله للخادم في كلّ طلب حسّاس.
+ *
+ * تنبيه: إيميل المالك لا يُعاد إلى الواجهة أبداً؛ كلّ الرسائل تقول
+ * فقط «الرمز أُرسل إلى المالك».
  */
 
-import { setUser, setAccessToken, clearAuth } from '$lib/stores/auth.svelte.js';
-import { goto } from '$app/navigation';
+import {
+	signInWithPopup,
+	onAuthStateChanged,
+	signOut as firebaseSignOut,
+	getIdToken
+} from 'firebase/auth';
+import { getFirebaseAuth, buildGoogleProvider } from '$lib/firebase/client.js';
+import {
+	getAuthState,
+	setUser,
+	setAuthorized,
+	setNeedsOwnerCode,
+	setLoading,
+	clearAuth
+} from '$lib/stores/auth.svelte.js';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-
-// ─── Cookie Helpers ─────────────────────────────────────
-
-function setRefreshCookie(token) {
-    const maxAge = 60 * 60 * 24 * 7; // 7 days
-    document.cookie = `nebras_refresh=${token}; path=/; max-age=${maxAge}; SameSite=Strict; Secure`;
+function toPlainUser(firebaseUser) {
+	if (!firebaseUser) return null;
+	return {
+		uid: firebaseUser.uid,
+		email: firebaseUser.email || '',
+		displayName: firebaseUser.displayName || '',
+		photoURL: firebaseUser.photoURL || ''
+	};
 }
 
-function getRefreshCookie() {
-    const match = document.cookie.match(/(?:^|;\s*)nebras_refresh=([^;]*)/);
-    return match ? match[1] : null;
+async function fetchIdToken(forceRefresh = false) {
+	const auth = getFirebaseAuth();
+	if (!auth?.currentUser) return null;
+	try {
+		return await getIdToken(auth.currentUser, forceRefresh);
+	} catch (err) {
+		console.warn('[auth] getIdToken failed:', err);
+		return null;
+	}
 }
 
-function clearRefreshCookie() {
-    document.cookie = 'nebras_refresh=; path=/; max-age=0; SameSite=Strict; Secure';
+async function postJson(path, body) {
+	const res = await fetch(path, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+	let data = null;
+	try {
+		data = await res.json();
+	} catch {
+		data = null;
+	}
+	return { status: res.status, ok: res.ok, data };
 }
 
-// ─── Login ──────────────────────────────────────────────
+// ─── Public API ─────────────────────────────────────────
 
 /**
- * Authenticate with username + password.
- * @param {string} username
- * @param {string} password
- * @returns {Promise<{ success: boolean, error?: string }>}
+ * استدعاء واحد للتحقّق من حالة المستخدم الحاليّة (مستخدم Google صالح
+ * + مُدرَج في قائمة المصرّح لهم).
+ *
+ * يُحدِّث store تلقائياً ويُرجِع النتيجة المختصرة.
+ *
+ * @returns {Promise<{ signedIn: boolean, authorized: boolean, needsOwnerCode: boolean }>}
  */
-export async function login(username, password) {
-    try {
-        const res = await fetch(`${API_BASE}/api/users/login/`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username, password }),
-            credentials: 'include'
-        });
+export async function checkCurrentAuth() {
+	const idToken = await fetchIdToken(false);
+	if (!idToken) {
+		setAuthorized(false);
+		setNeedsOwnerCode(false);
+		return { signedIn: false, authorized: false, needsOwnerCode: false };
+	}
 
-        if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            return {
-                success: false,
-                error: data.detail || data.non_field_errors?.[0] || 'Invalid credentials'
-            };
-        }
+	const { ok, data } = await postJson('/api/auth/check', { idToken });
+	if (!ok || !data) {
+		setAuthorized(false);
+		setNeedsOwnerCode(false);
+		return { signedIn: true, authorized: false, needsOwnerCode: false };
+	}
 
-        const data = await res.json();
+	if (data.authorized) {
+		setAuthorized(true);
+		setNeedsOwnerCode(false);
+		return { signedIn: true, authorized: true, needsOwnerCode: false };
+	}
 
-        // Store access token in memory
-        setAccessToken(data.access);
-
-        // Store refresh token in cookie
-        if (data.refresh) {
-            setRefreshCookie(data.refresh);
-        }
-
-        // Fetch complete user profile data immediately (including profile_image url)
-        await fetchMe();
-
-        return { success: true };
-    } catch (err) {
-        return {
-            success: false,
-            error: 'Network error. Please check your connection.'
-        };
-    }
+	setAuthorized(false);
+	setNeedsOwnerCode(Boolean(data.needsOwnerCode));
+	return { signedIn: true, authorized: false, needsOwnerCode: Boolean(data.needsOwnerCode) };
 }
 
-// ─── Refresh ────────────────────────────────────────────
-
 /**
- * Attempt silent token refresh using the stored refresh cookie.
- * @returns {Promise<boolean>} true if refresh succeeded
+ * يفتح نافذة Google Sign-In. عند النجاح يُحدِّث store ثمّ يُعيد نتيجة
+ * التحقّق من الأهليّة (checkCurrentAuth).
+ *
+ * @returns {Promise<{ ok: boolean, signedIn: boolean, authorized: boolean, needsOwnerCode: boolean, error?: string }>}
  */
-export async function refreshAccessToken() {
-    const refreshToken = getRefreshCookie();
-    if (!refreshToken) return false;
+export async function signInWithGoogle() {
+	const auth = getFirebaseAuth();
+	if (!auth) {
+		return {
+			ok: false,
+			signedIn: false,
+			authorized: false,
+			needsOwnerCode: false,
+			error: 'firebase_not_configured'
+		};
+	}
 
-    try {
-        const res = await fetch(`${API_BASE}/api/users/token/refresh/`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refresh: refreshToken }),
-            credentials: 'include'
-        });
-
-        if (!res.ok) {
-            clearRefreshCookie();
-            return false;
-        }
-
-        const data = await res.json();
-        setAccessToken(data.access);
-
-        // Some backends also rotate the refresh token
-        if (data.refresh) {
-            setRefreshCookie(data.refresh);
-        }
-
-        return true;
-    } catch {
-        return false;
-    }
+	try {
+		const provider = buildGoogleProvider();
+		const result = await signInWithPopup(auth, provider);
+		setUser(toPlainUser(result.user));
+		const checked = await checkCurrentAuth();
+		return { ok: true, ...checked };
+	} catch (err) {
+		const code = err?.code || '';
+		if (
+			code === 'auth/popup-closed-by-user' ||
+			code === 'auth/cancelled-popup-request' ||
+			code === 'auth/user-cancelled'
+		) {
+			return {
+				ok: false,
+				signedIn: false,
+				authorized: false,
+				needsOwnerCode: false,
+				error: 'cancelled'
+			};
+		}
+		console.error('[auth] signInWithGoogle failed:', err);
+		return {
+			ok: false,
+			signedIn: false,
+			authorized: false,
+			needsOwnerCode: false,
+			error: code || 'unknown'
+		};
+	}
 }
 
-// ─── Fetch Current User ─────────────────────────────────
-
 /**
- * Fetch current user profile from /api/users/me/.
- * Requires a valid access token in memory.
- * @returns {Promise<boolean>} true if user was fetched successfully
+ * يطلب من الخادم إرسال رمز تحقّق جديد إلى بريد المالك.
+ * @returns {Promise<{ ok: boolean, delivered?: boolean, reason?: string, retryAfterSec?: number }>}
  */
-export async function fetchMe() {
-    const { getAuthState } = await import('$lib/stores/auth.svelte.js');
-    const state = getAuthState();
+export async function requestOwnerCode() {
+	const idToken = await fetchIdToken(true);
+	if (!idToken) return { ok: false, reason: 'not_signed_in' };
 
-    if (!state.accessToken) return false;
-
-    try {
-        const res = await fetch(`${API_BASE}/api/users/me/`, {
-            method: 'GET',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${state.accessToken}`
-            },
-            credentials: 'include'
-        });
-
-        if (!res.ok) return false;
-
-        const user = await res.json();
-        setUser(user);
-        return true;
-    } catch {
-        return false;
-    }
+	const { ok, status, data } = await postJson('/api/auth/request-code', { idToken });
+	if (!ok) {
+		return { ok: false, reason: data?.reason || data?.error || `http_${status}` };
+	}
+	if (data?.ok === false) {
+		return { ok: false, reason: data.reason, retryAfterSec: data.retryAfterSec };
+	}
+	return { ok: true, delivered: Boolean(data?.delivered) };
 }
 
-// ─── Logout ─────────────────────────────────────────────
+/**
+ * يُرسل الرمز للتحقّق. عند النجاح يُضاف المستخدم لقائمة المصرّح لهم
+ * في الخادم، ونحدِّث store محلّياً.
+ *
+ * @param {string} code
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+export async function verifyOwnerCode(code) {
+	const idToken = await fetchIdToken(true);
+	if (!idToken) return { ok: false, reason: 'not_signed_in' };
+
+	const { ok, status, data } = await postJson('/api/auth/verify-code', { idToken, code });
+	if (!ok) {
+		return { ok: false, reason: data?.reason || data?.error || `http_${status}` };
+	}
+	if (data?.ok) {
+		setAuthorized(true);
+		setNeedsOwnerCode(false);
+		return { ok: true };
+	}
+	return { ok: false, reason: data?.reason || 'unknown' };
+}
 
 /**
- * Clear all auth state and redirect to root.
+ * تسجيل الخروج — يفسخ جلسة Firebase ويُنظّف store.
  */
-export function logout() {
-    clearAuth();
-    clearRefreshCookie();
-    goto('/');
+export async function logout() {
+	const auth = getFirebaseAuth();
+	try {
+		if (auth) await firebaseSignOut(auth);
+	} catch (err) {
+		console.warn('[auth] signOut error:', err);
+	} finally {
+		clearAuth();
+	}
+}
+
+/**
+ * يُشغِّل مُستمعاً موحّداً لحالة Firebase Auth. يُستخدَم مرّة واحدة
+ * في +layout.svelte الجذر.
+ *
+ * عند تغيّر المستخدم:
+ *   • null → نُنظّف store ونوقف التحميل.
+ *   • user → نخزّنه ثم نستدعي checkCurrentAuth لتحديد الأهليّة.
+ */
+export function startAuthListener() {
+	const auth = getFirebaseAuth();
+	if (!auth) {
+		setLoading(false);
+		return () => {};
+	}
+
+	return onAuthStateChanged(auth, async (firebaseUser) => {
+		if (!firebaseUser) {
+			clearAuth();
+			setLoading(false);
+			return;
+		}
+		setUser(toPlainUser(firebaseUser));
+		try {
+			await checkCurrentAuth();
+		} finally {
+			setLoading(false);
+		}
+	});
+}
+
+// (اختياري) مُساعد لإرجاع الـ user الحالي من store
+export function getCurrentUser() {
+	return getAuthState().user;
 }

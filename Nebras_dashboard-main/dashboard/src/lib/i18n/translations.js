@@ -80,6 +80,49 @@ export const translations = {
             sign_in: 'Sign in to Dashboard',
             signing_in: 'Signing in...'
         },
+        auth: {
+            login_title: 'Sign in',
+            greeting: 'Peace be upon you',
+            welcome_title: 'Welcome to Nebras Dashboard',
+            welcome_subtitle: 'Sign in with your Google account to manage the platform.',
+            create_account: 'Create account',
+            sign_in: 'Sign in',
+            google_hint: 'Both buttons continue with Google.',
+            signup_title: 'Create your account',
+            signup_subtitle: 'Use your Google account, then enter the owner verification code.',
+            signin_title: 'Welcome back',
+            signin_subtitle: 'Sign in with the Google account you previously used.',
+            google_signup: 'Continue with Google',
+            google_signin: 'Continue with Google',
+            privacy_note: 'We only read your basic Google profile. No passwords are stored here.',
+            owner_code_title: 'Owner verification code',
+            owner_code_subtitle: 'A 6-digit code was sent to the owner. Enter it below to finish creating your account.',
+            owner_code_label: 'Verification code',
+            verify: 'Verify & continue',
+            resend: 'Resend code',
+            resend_in: 'Resend in',
+            cancel_and_signout: 'Cancel and sign out',
+            logout: 'Sign out',
+            code: {
+                sent: 'A new code has been sent to the owner.',
+                sent_fallback: 'A new code has been issued. Please contact the owner to retrieve it.'
+            },
+            hint: {
+                account_not_found: 'This Google account is not registered yet. To finish creating it, you must enter the code sent to the owner.'
+            },
+            error: {
+                google_failed: 'Google sign-in failed. Please try again.',
+                unexpected: 'Unexpected authorization state. Please try again.',
+                invalid_code_format: 'Please enter the full 6-digit code.',
+                invalid_code: 'The code is incorrect. Please try again.',
+                code_expired: 'The code has expired. Please request a new one.',
+                too_many_attempts: 'Too many incorrect attempts. Please request a new code.',
+                no_code: 'No active code. Please request a new one.',
+                rate_limited: 'Please wait a moment before requesting a new code.',
+                send_failed: 'Could not send the code right now. Please try again.',
+                server: 'Server error. Please try again.'
+            }
+        },
         bans: {
             title: 'Ban Management',
             desc: 'Temporarily block moderators without deleting their accounts',
@@ -344,6 +387,49 @@ export const translations = {
             password: 'كلمة المرور',
             sign_in: 'تسجيل الدخول إلى لوحة القيادة',
             signing_in: 'جاري تسجيل الدخول...'
+        },
+        auth: {
+            login_title: 'تسجيل الدخول',
+            greeting: 'السلام عليكم ورحمة الله وبركاته',
+            welcome_title: 'مرحبًا بك في لوحة تحكّم نبراس',
+            welcome_subtitle: 'سجّل الدخول بحساب Google لإدارة المنصّة.',
+            create_account: 'إنشاء حساب',
+            sign_in: 'تسجيل الدخول',
+            google_hint: 'كلا الزرّين يُكمل بواسطة Google.',
+            signup_title: 'إنشاء حسابك',
+            signup_subtitle: 'استخدم حساب Google، ثم أدخل رمز التحقّق المرسَل إلى المالك.',
+            signin_title: 'مرحبًا بعودتك',
+            signin_subtitle: 'سجّل الدخول بحساب Google الذي استخدمته سابقًا.',
+            google_signup: 'المتابعة عبر Google',
+            google_signin: 'المتابعة عبر Google',
+            privacy_note: 'نقرأ فقط بياناتك الأساسيّة من Google. لا نخزّن أيّ كلمة مرور هنا.',
+            owner_code_title: 'رمز التحقّق الخاصّ بالمالك',
+            owner_code_subtitle: 'أُرسِل رمز من ٦ أرقام إلى المالك. أدخِله هنا لإتمام إنشاء حسابك.',
+            owner_code_label: 'رمز التحقّق',
+            verify: 'تحقّق وتابع',
+            resend: 'إرسال رمز جديد',
+            resend_in: 'إعادة الإرسال بعد',
+            cancel_and_signout: 'إلغاء وتسجيل الخروج',
+            logout: 'تسجيل الخروج',
+            code: {
+                sent: 'أُرسِل رمز جديد إلى المالك.',
+                sent_fallback: 'تمّ توليد رمز جديد. يُرجى التواصل مع المالك للحصول عليه.'
+            },
+            hint: {
+                account_not_found: 'هذا الحساب غير مسجَّل بعد. لإتمام إنشائه يجب إدخال الرمز الذي أُرسِل إلى المالك.'
+            },
+            error: {
+                google_failed: 'فشل تسجيل الدخول عبر Google. حاول مجدّدًا.',
+                unexpected: 'حالة تفويض غير متوقّعة. حاول مجدّدًا.',
+                invalid_code_format: 'يرجى إدخال الرمز كاملًا (٦ أرقام).',
+                invalid_code: 'الرمز غير صحيح. حاول مجدّدًا.',
+                code_expired: 'انتهت صلاحيّة الرمز. اطلب رمزًا جديدًا.',
+                too_many_attempts: 'تجاوزت عدد المحاولات. اطلب رمزًا جديدًا.',
+                no_code: 'لا يوجد رمز نشط. اطلب رمزًا جديدًا.',
+                rate_limited: 'انتظر قليلًا قبل طلب رمز جديد.',
+                send_failed: 'تعذّر إرسال الرمز الآن. حاول مجدّدًا.',
+                server: 'خطأ في الخادم. حاول مجدّدًا.'
+            }
         },
         bans: {
             title: 'إدارة الحظر',

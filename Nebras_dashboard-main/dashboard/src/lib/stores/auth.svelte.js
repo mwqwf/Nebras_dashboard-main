@@ -1,96 +1,98 @@
 /**
  * Auth Store — Svelte 5 Reactive Store
  *
- * Stores the authenticated user and access token in localStorage
- * so page refreshes are instant (no need for a /refresh call every time).
- * Refresh token is still handled via a Secure cookie for silent renewal.
+ * الحالة موحّدة بـ Firebase Authentication:
+ *   user         : الكائن القياسيّ من firebase/auth (أو null).
+ *   authorized   : هل تمّ التحقّق من وجود الـ UID في dashboard_users.
+ *   isLoading    : true أثناء bootstrap الأوّلي و/أو أثناء check.
+ *   needsOwnerCode : true إذا كان المستخدم جديداً ويجب أن يُدخِل الرمز.
  *
- * viewMode: 'admin' | 'moderator' — allows admins to toggle
- * their dashboard view without changing their actual role.
+ * ملاحظات:
+ *   • لا نحتفظ بأيّ JWT يدويّاً؛ Firebase يتكفّل بـ refresh + persistence.
+ *   • viewMode محفوظ في localStorage (بقي من التصميم السابق).
  */
 
-// ─── LocalStorage helpers (safe for SSR) ────────────────
-
 function loadFromStorage(key, fallback) {
-    if (typeof window === 'undefined') return fallback;
-    try {
-        const raw = localStorage.getItem(key);
-        return raw ? JSON.parse(raw) : fallback;
-    } catch {
-        return fallback;
-    }
+	if (typeof window === 'undefined') return fallback;
+	try {
+		const raw = localStorage.getItem(key);
+		return raw ? JSON.parse(raw) : fallback;
+	} catch {
+		return fallback;
+	}
 }
 
 function saveToStorage(key, value) {
-    if (typeof window === 'undefined') return;
-    try {
-        if (value === null || value === undefined) {
-            localStorage.removeItem(key);
-        } else {
-            localStorage.setItem(key, JSON.stringify(value));
-        }
-    } catch {
-        // Storage full or blocked — ignore silently
-    }
+	if (typeof window === 'undefined') return;
+	try {
+		if (value === null || value === undefined) {
+			localStorage.removeItem(key);
+		} else {
+			localStorage.setItem(key, JSON.stringify(value));
+		}
+	} catch {
+		/* ignore */
+	}
 }
 
-function clearStorage() {
-    if (typeof window === 'undefined') return;
-    try {
-        localStorage.removeItem('nebras_access_token');
-        localStorage.removeItem('nebras_user');
-        localStorage.removeItem('nebras_view_mode');
-    } catch {
-        // ignore
-    }
-}
+/**
+ * @typedef {Object} AuthUser
+ * @property {string} uid
+ * @property {string} email
+ * @property {string} displayName
+ * @property {string} photoURL
+ */
 
-// ─── State (hydrated from localStorage) ─────────────────
-
-/** @type {{ user: object|null, accessToken: string|null, isLoading: boolean, viewMode: 'admin'|'moderator' }} */
+/** @type {{
+ *   user: AuthUser|null,
+ *   authorized: boolean,
+ *   isLoading: boolean,
+ *   needsOwnerCode: boolean,
+ *   viewMode: 'admin'|'moderator'
+ * }} */
 let authState = $state({
-    user: loadFromStorage('nebras_user', null),
-    accessToken: loadFromStorage('nebras_access_token', null),
-    isLoading: true,
-    viewMode: loadFromStorage('nebras_view_mode', 'admin')
+	user: null,
+	authorized: false,
+	isLoading: true,
+	needsOwnerCode: false,
+	viewMode: loadFromStorage('nebras_view_mode', 'admin')
 });
 
-// ─── Setters (persist to localStorage) ──────────────────
+// ─── Setters ────────────────────────────────────────────
 
 export function setUser(user) {
-    authState.user = user;
-    saveToStorage('nebras_user', user);
+	authState.user = user;
 }
 
-export function setAccessToken(token) {
-    authState.accessToken = token;
-    saveToStorage('nebras_access_token', token);
+export function setAuthorized(value) {
+	authState.authorized = Boolean(value);
+}
+
+export function setNeedsOwnerCode(value) {
+	authState.needsOwnerCode = Boolean(value);
 }
 
 export function setLoading(loading) {
-    authState.isLoading = loading;
+	authState.isLoading = Boolean(loading);
 }
 
 export function setViewMode(mode) {
-    authState.viewMode = mode;
-    saveToStorage('nebras_view_mode', mode);
+	authState.viewMode = mode;
+	saveToStorage('nebras_view_mode', mode);
 }
 
 export function toggleViewMode() {
-    const newMode = authState.viewMode === 'admin' ? 'moderator' : 'admin';
-    authState.viewMode = newMode;
-    saveToStorage('nebras_view_mode', newMode);
+	const newMode = authState.viewMode === 'admin' ? 'moderator' : 'admin';
+	authState.viewMode = newMode;
+	saveToStorage('nebras_view_mode', newMode);
 }
 
 export function clearAuth() {
-    authState.user = null;
-    authState.accessToken = null;
-    authState.viewMode = 'admin';
-    clearStorage();
+	authState.user = null;
+	authState.authorized = false;
+	authState.needsOwnerCode = false;
 }
 
-// ─── Getters (reactive via $derived) ────────────────────
-
 export function getAuthState() {
-    return authState;
+	return authState;
 }

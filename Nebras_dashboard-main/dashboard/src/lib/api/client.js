@@ -1,28 +1,40 @@
 /**
- * API Client — Fetch wrapper with JWT auth
+ * API Client — Fetch wrapper (legacy Django backend).
  *
- * - Attaches Bearer token from in-memory store
- * - On 401: attempts one silent refresh, retries original request
- * - On refresh failure: clears auth and redirects to /
+ * المصادقة الجديدة في لوحة التحكّم تعتمد على Firebase بشكل مباشر؛
+ * هذا الملفّ يبقى كـ wrapper لأيّ مسارات قديمة في الخلفيّة (user/chat/
+ * admin/moderator) لكنّها غير فعّالة حاليًا. نرفق Firebase ID token
+ * كـ Bearer header إن توفّر، وإلّا نُرسل الطلب بلا Authorization.
+ *
+ * إن فشل الطلب بـ 401 فنحن لا نمتلك مسار refresh مخصّصاً — Firebase
+ * يتكفّل بتجديد توكناته تلقائياً، وإن انتهت الجلسة فسيتولّى حارس
+ * +layout.svelte إعادة المستخدم إلى /login.
  */
 
-import { getAuthState, setAccessToken, clearAuth } from '$lib/stores/auth.svelte.js';
-import { refreshAccessToken } from '$lib/api/auth.js';
-import { goto } from '$app/navigation';
+import { getFirebaseAuth } from '$lib/firebase/client.js';
+import { getIdToken } from 'firebase/auth';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
+async function getAuthHeaderValue() {
+    try {
+        const auth = getFirebaseAuth();
+        if (!auth?.currentUser) return null;
+        const token = await getIdToken(auth.currentUser, false);
+        return token ? `Bearer ${token}` : null;
+    } catch {
+        return null;
+    }
+}
 
 /**
  * Make an authenticated API request.
  * @param {string} endpoint - API path (e.g. '/api/users/me/')
  * @param {RequestInit} options - Fetch options
- * @param {boolean} _isRetry - Internal flag, do not use externally
  * @returns {Promise<Response>}
  */
-export async function apiRequest(endpoint, options = {}, _isRetry = false) {
-    const state = getAuthState();
+export async function apiRequest(endpoint, options = {}) {
     const url = `${API_BASE}${endpoint}`;
-
     const isFormData = options.body instanceof FormData;
 
     const headers = {
@@ -30,32 +42,10 @@ export async function apiRequest(endpoint, options = {}, _isRetry = false) {
         ...options.headers
     };
 
-    // Attach Bearer token if available
-    if (state.accessToken) {
-        headers['Authorization'] = `Bearer ${state.accessToken}`;
-    }
+    const authHeader = await getAuthHeaderValue();
+    if (authHeader) headers['Authorization'] = authHeader;
 
-    const response = await fetch(url, {
-        ...options,
-        headers,
-        credentials: 'include' // include cookies for refresh token
-    });
-
-    // If 401 and not already a retry, attempt silent refresh
-    if (response.status === 401 && !_isRetry) {
-        const refreshed = await refreshAccessToken();
-        if (refreshed) {
-            // Retry original request with new token
-            return apiRequest(endpoint, options, true);
-        } else {
-            // Refresh failed — clear state and redirect to root
-            clearAuth();
-            goto('/');
-            throw new Error('Session expired. Please log in again.');
-        }
-    }
-
-    return response;
+    return fetch(url, { ...options, headers, credentials: 'include' });
 }
 
 /**

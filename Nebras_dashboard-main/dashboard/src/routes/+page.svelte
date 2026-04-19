@@ -1,13 +1,15 @@
-<!-- Root Page — simple static landing after login removal -->
+<!--
+  Root index — صفحة فارغة عمداً.
+  حارس +layout.svelte يتكفّل بإعادة التوجيه:
+    • غير مسجّل → /login
+    • مصرّح له → /moderator/content/files
+-->
 <script>
-	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
-
-	onMount(() => {
-		goto('/moderator/content/files');
-	});
+	import LoadingScreen from '$lib/components/LoadingScreen.svelte';
 </script>
 
 <svelte:head>
 	<title>Nebras Dashboard</title>
 </svelte:head>
+
+<LoadingScreen message="Loading" />

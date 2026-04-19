@@ -16,6 +16,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { cert, getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
+import { getDatabase as getAdminRtdb } from 'firebase-admin/database';
 import { env } from '$env/dynamic/private';
 
 /** @type {import('firebase-admin/app').App | null} */
@@ -71,15 +73,54 @@ export function getAdminApp() {
 
 	try {
 		const serviceAccount = loadServiceAccount();
+		const databaseURL =
+			env.FIREBASE_DATABASE_URL ||
+			process.env.FIREBASE_DATABASE_URL ||
+			`https://${serviceAccount.project_id}-default-rtdb.firebaseio.com`;
 		cachedApp = initializeApp({
 			credential: cert(serviceAccount),
-			projectId: serviceAccount.project_id
+			projectId: serviceAccount.project_id,
+			databaseURL
 		});
 		return cachedApp;
 	} catch (err) {
 		initError = err;
 		throw err;
 	}
+}
+
+/**
+ * يُعيد خدمة Admin Auth للتحقّق من ID tokens الصادرة من Firebase Auth في العميل.
+ * تُستخدم في مسارات /api/auth/* للتأكّد من أن الطلب صادر من مستخدم
+ * مُوثَّق فعلاً بـ Google قبل تمرير أيّ عمليّة حسّاسة.
+ */
+export function getAdminAuthService() {
+	return getAdminAuth(getAdminApp());
+}
+
+/**
+ * يُعيد مرجعاً لقاعدة بيانات Realtime على الخادم (بصلاحيات service account).
+ * نستخدمه لقراءة/كتابة `dashboard_users` و `dashboard_owner_codes` بأمان
+ * حتى لو كانت قواعد RTDB تمنع القراءة العموميّة لهذه المسارات.
+ */
+export function getAdminDatabase() {
+	return getAdminRtdb(getAdminApp());
+}
+
+/**
+ * يتحقّق من ID token الصادر عن Firebase Auth في الواجهة.
+ * يرمي خطأً إن كان التوكن غير صالح/منتهي.
+ *
+ * @param {string} idToken
+ * @returns {Promise<import('firebase-admin/auth').DecodedIdToken>}
+ */
+export async function verifyIdToken(idToken) {
+	const token = (idToken || '').toString().trim();
+	if (!token) {
+		throw new Error('missing_id_token');
+	}
+	const decoded = await getAdminAuthService().verifyIdToken(token, true);
+	return decoded;
 }
 
 /** ملخّص: هل الـ Admin SDK جاهز للإرسال؟ (للاستخدام في فحوصات 501). */
