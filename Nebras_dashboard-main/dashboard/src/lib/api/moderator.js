@@ -24,6 +24,28 @@ import {
   getDownloadURL,
   deleteObject,
 } from "firebase/storage";
+import {
+  isOldAppConfigured,
+  isOldAppId,
+  parseOldAppId,
+  getHostMainSectionId,
+  listOldAppMainSections,
+  listOldAppSubSections,
+  adaptOldAppMainAsSub,
+  adaptOldAppSubAsSecondary,
+  createOldAppMainSection,
+  updateOldAppMainSection,
+  deleteOldAppMainSection,
+  createOldAppSubSection,
+  updateOldAppSubSection,
+  deleteOldAppSubSection,
+  listOldAppLessonsBySub,
+  createOldAppLesson,
+  updateOldAppLesson,
+  deleteOldAppLesson,
+  adaptOldAppLessonAsFile,
+  adaptOldAppLessonAsYoutube,
+} from "$lib/api/oldAppBrowse.js";
 
 // ─── Helpers ────────────────────────────────────────────
 
@@ -168,6 +190,30 @@ export async function listMyYoutubeVideos({
   const listedFilter = metadata__is_listed ?? is_listed;
   let list = ytSnap.exists() ? Object.values(ytSnap.val() || {}) : [];
 
+  if (isOldAppConfigured()) {
+    const hostId = await getHostMainSectionId();
+    const shouldMergeOldApp =
+      main_section === undefined || main_section === "" || sameSectionId(main_section, hostId);
+    if (hostId != null && shouldMergeOldApp) {
+      const oldMains = await listOldAppMainSections();
+      for (const m of oldMains) {
+        const oldSubs = await listOldAppSubSections(m.id);
+        for (const s of oldSubs) {
+          const lessons = await listOldAppLessonsBySub(m.id, s.id);
+          for (const lesson of lessons) {
+            const asYoutube = adaptOldAppLessonAsYoutube(lesson, {
+              mainDocId: m.id,
+              subDocId: s.id,
+            });
+            if (String(asYoutube?.metadata?.content_type) === "youtube") {
+              list.push(asYoutube);
+            }
+          }
+        }
+      }
+    }
+  }
+
   if (search) {
     const q = String(search).toLowerCase();
     list = list.filter((item) => {
@@ -185,21 +231,23 @@ export async function listMyYoutubeVideos({
   }
   if (subsection !== undefined && subsection !== "") {
     list = list.filter(
-      (item) => Number(item?.metadata?.subsection) === Number(subsection),
+      (item) => sameSectionId(item?.metadata?.subsection, subsection),
     );
   }
   if (secondary_subsection !== undefined && secondary_subsection !== "") {
     list = list.filter(
       (item) =>
-        Number(item?.metadata?.secondary_subsection) ===
-        Number(secondary_subsection),
+        sameSectionId(item?.metadata?.secondary_subsection, secondary_subsection),
     );
   }
   if (main_section !== undefined && main_section !== "") {
     list = list.filter((item) => {
       const subId = item?.metadata?.subsection;
       const sub = subMap[String(subId)];
-      return Number(sub?.main_section) === Number(main_section);
+      return (
+        sameSectionId(sub?.main_section, main_section) ||
+        sameSectionId(item?.__oldappMainDocId, parseOldAppId(subId)?.mainDocId)
+      );
     });
   }
   if (listedFilter !== undefined && listedFilter !== "") {
@@ -226,6 +274,46 @@ export async function listMyYoutubeVideos({
  * @param {Object} data - { video_url, thumbnail? (File), metadata: { title, description?, subsection, secondary_subsection?, content_type:'youtube' } }
  */
 export async function createYoutubeVideo(data) {
+  const subId = String(data?.metadata?.subsection ?? "");
+  const secId = String(data?.metadata?.secondary_subsection ?? "");
+  const parsedSub = isOldAppId(subId) ? parseOldAppId(subId) : null;
+  const parsedSec = isOldAppId(secId) ? parseOldAppId(secId) : null;
+  const target = parsedSec?.level === "sub" ? parsedSec : parsedSub?.level === "sub" ? parsedSub : null;
+  if (target) {
+    let thumbnailUrl = null;
+    if (data?.thumbnail instanceof File) {
+      thumbnailUrl = await uploadSectionThumbnail("youtube-oldapp", Date.now(), data.thumbnail);
+    }
+    const created = await createOldAppLesson({
+      mainDocId: target.mainDocId,
+      subDocId: target.subDocId,
+      title: data?.metadata?.title,
+      description: data?.metadata?.description,
+      author: data?.metadata?.author,
+      contentType: "youtube",
+      sourceUrl: data?.video_url,
+      thumbnail: thumbnailUrl,
+    });
+    return {
+      id: `oldapp:lesson:${created.id}`,
+      video_url: String(data?.video_url || "").trim(),
+      metadata: {
+        title: String(data?.metadata?.title || "").trim(),
+        description: data?.metadata?.description ? String(data.metadata.description) : "",
+        author: data?.metadata?.author ? String(data.metadata.author) : "",
+        subsection: `oldapp:main:${target.mainDocId}`,
+        secondary_subsection: `oldapp:sub:${target.mainDocId}:${target.subDocId}`,
+        content_type: "youtube",
+        is_listed: data?.metadata?.is_listed ?? true,
+        thumbnail: thumbnailUrl || null,
+        created_at: new Date().toISOString(),
+      },
+      __oldappMainDocId: target.mainDocId,
+      __oldappSubDocId: target.subDocId,
+      __oldappContentDocId: created.id,
+    };
+  }
+
   const db = sectionsDb();
   const id = makeSectionId();
   const createdAt = new Date().toISOString();
@@ -239,9 +327,9 @@ export async function createYoutubeVideo(data) {
       ? String(data.metadata.description)
       : "",
     author: data?.metadata?.author ? String(data.metadata.author) : "",
-    subsection: Number(data?.metadata?.subsection),
+    subsection: String(data?.metadata?.subsection),
     secondary_subsection: data?.metadata?.secondary_subsection
-      ? Number(data.metadata.secondary_subsection)
+      ? String(data.metadata.secondary_subsection)
       : null,
     content_type: "youtube",
     is_listed: data?.metadata?.is_listed ?? true,
@@ -271,6 +359,23 @@ export async function createYoutubeVideo(data) {
  * @param {Object} data
  */
 export async function updateYoutubeVideo(id, data) {
+  const oldContent = parseOldAppContentId(id);
+  if (oldContent) {
+    let thumbnailUrl;
+    if (data?.thumbnail instanceof File) {
+      thumbnailUrl = await uploadSectionThumbnail("youtube-oldapp", oldContent.lessonDocId, data.thumbnail);
+    }
+    await updateOldAppLesson(oldContent.lessonDocId, {
+      title: data?.metadata?.title,
+      description: data?.metadata?.description,
+      author: data?.metadata?.author,
+      sourceUrl: data?.video_url,
+      contentType: "youtube",
+      ...(thumbnailUrl !== undefined ? { thumbnail: thumbnailUrl } : {}),
+    });
+    return { id };
+  }
+
   const db = sectionsDb();
   const itemRef = dbRef(db, `${CONTENT_ROOT}/youtube/${id}`);
   const snap = await get(itemRef);
@@ -310,6 +415,11 @@ export async function updateYoutubeVideo(id, data) {
  * @param {number} id
  */
 export async function removeYoutubeVideo(id) {
+  const oldContent = parseOldAppContentId(id);
+  if (oldContent) {
+    await deleteOldAppLesson(oldContent.lessonDocId);
+    return true;
+  }
   const db = sectionsDb();
   await remove(dbRef(db, `${CONTENT_ROOT}/youtube/${id}`));
   return true;
@@ -365,6 +475,19 @@ function paginate(list, page = 1, pageSize = 10) {
   };
 }
 
+/** مقارنة معرّفات متسامحة مع String/Number (OldApp يستعمل docId نصّي). */
+function sameSectionId(a, b) {
+  if (a === undefined || a === null || b === undefined || b === null) return false;
+  return String(a) === String(b);
+}
+
+function parseOldAppContentId(id) {
+  const s = String(id || "");
+  if (!s.startsWith("oldapp:lesson:")) return null;
+  const parts = s.split(":");
+  return parts[2] ? { lessonDocId: parts[2] } : null;
+}
+
 function applySectionFilters(
   list,
   { search = "", is_listed, main_section, sub_section } = {},
@@ -386,18 +509,19 @@ function applySectionFilters(
     main_section !== "" &&
     main_section !== null
   ) {
-    const m = Number(main_section);
-    out = out.filter((x) => Number(x.main_section) === m);
+    out = out.filter((x) => sameSectionId(x.main_section, main_section));
   }
   if (sub_section !== undefined && sub_section !== "" && sub_section !== null) {
-    const s = Number(sub_section);
-    out = out.filter((x) => Number(x.sub_section) === s);
+    out = out.filter((x) => sameSectionId(x.sub_section, sub_section));
   }
   out.sort((a, b) => {
     const ao = Number(a.order_index ?? 0);
     const bo = Number(b.order_index ?? 0);
     if (ao !== bo) return ao - bo;
-    return Number(b.id) - Number(a.id);
+    const an = Number(a.id);
+    const bn = Number(b.id);
+    if (Number.isFinite(an) && Number.isFinite(bn)) return bn - an;
+    return String(b.id || "").localeCompare(String(a.id || ""));
   });
   return out;
 }
@@ -413,21 +537,8 @@ export async function listMyMainSections({ search = "", page = 1 } = {}) {
 }
 
 /**
- * Normalize optional Internet Archive collection identifier. An empty or
- * whitespace-only value is persisted as `null` so the mobile app can cleanly
- * distinguish between "no archive collection" and "user cleared it".
- * @param {unknown} value
- * @returns {string|null}
- */
-function normalizeArchiveId(value) {
-  if (value === undefined || value === null) return null;
-  const trimmed = String(value).trim();
-  return trimmed.length === 0 ? null : trimmed;
-}
-
-/**
  * Create a main section (multipart/form-data).
- * @param {Object} data - { name, order_index?, thumbnail? (File), archive_id? }
+ * @param {Object} data - { name, order_index?, thumbnail? (File) }
  */
 export async function createMainSection(data) {
   const db = sectionsDb();
@@ -439,7 +550,6 @@ export async function createMainSection(data) {
     order_index: Number(data?.order_index || 0),
     is_listed: data?.is_listed ?? true,
     thumbnail: thumbUrl || null,
-    archive_id: normalizeArchiveId(data?.archive_id),
     created_at: new Date().toISOString(),
   };
   await set(dbRef(db, `${SECTIONS_ROOT}/main/${id}`), payload);
@@ -464,9 +574,6 @@ export async function updateMainSection(id, data) {
       : {}),
     ...(data?.is_listed !== undefined
       ? { is_listed: Boolean(data.is_listed) }
-      : {}),
-    ...(data?.archive_id !== undefined
-      ? { archive_id: normalizeArchiveId(data.archive_id) }
       : {}),
   };
   if (data?.thumbnail instanceof File) {
@@ -504,6 +611,10 @@ export async function removeMainSection(id) {
 
 /**
  * List the moderator's own sub sections, optionally filtered by main_section.
+ *
+ * توجيه شفّاف: إن كانت `main_section` هي القسم المضيف لـ OldApp، تُضاف
+ * قائمة أقسام OldApp الرئيسيّة الحقيقيّة كأقسام فرعيّة افتراضيّة مع
+ * الحفاظ على شكل البيانات المتوقّع من الواجهة.
  * @param {Object} params - { main_section?, search?, page? }
  */
 export async function listMySubSections({
@@ -512,15 +623,60 @@ export async function listMySubSections({
   page = 1,
 } = {}) {
   const all = await readLevel("sub");
-  const filtered = applySectionFilters(all, { search, main_section });
+  let merged = all;
+
+  if (isOldAppConfigured()) {
+    const hostId = await getHostMainSectionId();
+    if (hostId != null) {
+      const filteringByHost =
+        main_section !== undefined &&
+        main_section !== "" &&
+        main_section !== null &&
+        sameSectionId(main_section, hostId);
+      const noParentFilter =
+        main_section === undefined ||
+        main_section === "" ||
+        main_section === null;
+
+      if (filteringByHost || noParentFilter) {
+        try {
+          const oldMains = await listOldAppMainSections();
+          const adapted = oldMains.map((m) => adaptOldAppMainAsSub(m, hostId));
+          // نمرّر الأقسام الحقيقيّة من OldApp أوّلًا، ثمّ الأقسام المحلّية.
+          merged = [...adapted, ...all];
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            console.warn("[moderator] OldApp main list merge failed:", err);
+          }
+        }
+      }
+    }
+  }
+
+  const filtered = applySectionFilters(merged, { search, main_section });
   return paginate(filtered, page);
 }
 
 /**
- * Create a sub section (multipart/form-data).
- * @param {Object} data - { name, main_section, thumbnail? (File), archive_id? }
+ * Create a sub section. يوجَّه تلقائيًّا إلى OldApp Firestore إن كان
+ * الأب هو القسم المضيف — بدون أيّ مربّعات ربط في الواجهة.
+ * @param {Object} data - { name, main_section, thumbnail? (File) }
  */
 export async function createSubSection(data) {
+  const parent = data?.main_section;
+  if (isOldAppConfigured() && parent !== undefined && parent !== null && parent !== "") {
+    const hostId = await getHostMainSectionId();
+    if (hostId != null && sameSectionId(parent, hostId)) {
+      const thumbUrl = data?.thumbnail instanceof File
+        ? await uploadSectionThumbnail("sub-oldapp", Date.now(), data.thumbnail)
+        : null;
+      return createOldAppMainSection({
+        name: data?.name,
+        thumbnailUrl: thumbUrl,
+      });
+    }
+  }
+
   const db = sectionsDb();
   const id = makeSectionId();
   const thumbUrl = await uploadSectionThumbnail("sub", id, data?.thumbnail);
@@ -530,7 +686,6 @@ export async function createSubSection(data) {
     main_section: Number(data?.main_section),
     is_listed: data?.is_listed ?? true,
     thumbnail: thumbUrl || null,
-    archive_id: normalizeArchiveId(data?.archive_id),
     created_at: new Date().toISOString(),
   };
   await set(dbRef(db, `${SECTIONS_ROOT}/sub/${id}`), payload);
@@ -538,11 +693,30 @@ export async function createSubSection(data) {
 }
 
 /**
- * Update a sub section (PATCH, multipart/form-data).
- * @param {number} id
- * @param {Object} data - { name?, thumbnail? (File) }
+ * Update a sub section. يوجَّه تلقائيًّا إلى OldApp إن كان معرّفه افتراضيًّا.
+ * @param {number|string} id
+ * @param {Object} data
  */
 export async function updateSubSection(id, data) {
+  if (isOldAppId(id)) {
+    const parsed = parseOldAppId(id);
+    if (parsed?.level === "main") {
+      let thumbUrl;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "sub-oldapp",
+          parsed.mainDocId,
+          data.thumbnail,
+        );
+      }
+      await updateOldAppMainSection(parsed.mainDocId, {
+        name: data?.name,
+        ...(thumbUrl !== undefined ? { thumbnailUrl: thumbUrl } : {}),
+      });
+      return { id, name: data?.name, thumbnail: thumbUrl || null };
+    }
+  }
+
   const db = sectionsDb();
   const currentRef = dbRef(db, `${SECTIONS_ROOT}/sub/${id}`);
   const snap = await get(currentRef);
@@ -552,9 +726,6 @@ export async function updateSubSection(id, data) {
     ...(data?.name !== undefined ? { name: String(data.name).trim() } : {}),
     ...(data?.is_listed !== undefined
       ? { is_listed: Boolean(data.is_listed) }
-      : {}),
-    ...(data?.archive_id !== undefined
-      ? { archive_id: normalizeArchiveId(data.archive_id) }
       : {}),
   };
   if (data?.thumbnail instanceof File) {
@@ -566,15 +737,22 @@ export async function updateSubSection(id, data) {
 }
 
 /**
- * Delete a sub section.
- * @param {number} id
+ * Delete a sub section (يوجَّه إلى OldApp إن كان المعرّف افتراضيًّا).
+ * @param {number|string} id
  */
 export async function removeSubSection(id) {
+  if (isOldAppId(id)) {
+    const parsed = parseOldAppId(id);
+    if (parsed?.level === "main") {
+      await deleteOldAppMainSection(parsed.mainDocId);
+      return true;
+    }
+  }
   const db = sectionsDb();
   const secItems = await readLevel("secondary");
   await remove(dbRef(db, `${SECTIONS_ROOT}/sub/${id}`));
   for (const sec of secItems) {
-    if (Number(sec.sub_section) === Number(id)) {
+    if (sameSectionId(sec.sub_section, id)) {
       await remove(dbRef(db, `${SECTIONS_ROOT}/secondary/${sec.id}`));
     }
   }
@@ -584,7 +762,9 @@ export async function removeSubSection(id) {
 // ─── Secondary Sub Sections ────────────────────────────
 
 /**
- * List the moderator's own secondary sub sections, optionally filtered by sub_section.
+ * List secondary sub sections. إن كان `sub_section` معرّفًا افتراضيًّا
+ * (`oldapp:main:<docId>`) نُرجع الأقسام الفرعيّة الحقيقيّة من OldApp
+ * بعد تكييف شكلها.
  * @param {Object} params - { sub_section?, search?, page? }
  */
 export async function listMySecondarySections({
@@ -592,16 +772,83 @@ export async function listMySecondarySections({
   search = "",
   page = 1,
 } = {}) {
+  // حالة 1: استعراض ثانويات Main قديم محدد (oldapp:main:<id>)
+  if (isOldAppId(sub_section)) {
+    const parsed = parseOldAppId(sub_section);
+    if (parsed?.level === "main") {
+      try {
+        const subs = await listOldAppSubSections(parsed.mainDocId);
+        const adapted = subs.map((s) => adaptOldAppSubAsSecondary(s, parsed.mainDocId));
+        const filtered = applySectionFilters(adapted, { search, sub_section });
+        return paginate(filtered, page);
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn("[moderator] OldApp sub list failed:", err);
+        }
+        return paginate([], page);
+      }
+    }
+  }
+
+  // حالة 2: لا يوجد فلتر sub_section => ندمج ثانويات OldApp تلقائياً
+  // لتظهر في نفس قائمة الإدارة (تعديل/حذف) مثل الأقسام الفرعية.
+  const noSubFilter =
+    sub_section === undefined || sub_section === "" || sub_section === null;
+  if (noSubFilter && isOldAppConfigured()) {
+    const all = await readLevel("secondary");
+    let merged = all;
+    try {
+      const hostId = await getHostMainSectionId();
+      if (hostId != null) {
+        const oldMains = await listOldAppMainSections();
+        const oldSecondaries = [];
+        for (const m of oldMains) {
+          const oldSubs = await listOldAppSubSections(m.id);
+          oldSecondaries.push(
+            ...oldSubs.map((s) => adaptOldAppSubAsSecondary(s, m.id)),
+          );
+        }
+        merged = [...oldSecondaries, ...all];
+      }
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn("[moderator] OldApp secondary merge failed:", err);
+      }
+    }
+    const filtered = applySectionFilters(merged, { search, sub_section });
+    return paginate(filtered, page);
+  }
+
+  // حالة 3: مسار RTDB العادي
   const all = await readLevel("secondary");
   const filtered = applySectionFilters(all, { search, sub_section });
   return paginate(filtered, page);
 }
 
 /**
- * Create a secondary sub section (multipart/form-data).
- * @param {Object} data - { name, sub_section, thumbnail? (File), archive_id? }
+ * Create a secondary sub section. إن كان الأب افتراضيًّا (oldapp:main:*)
+ * نُنشئ قسمًا فرعيًّا حقيقيًّا في OldApp Firestore مباشرةً.
  */
 export async function createSecondarySection(data) {
+  const parent = data?.sub_section;
+  if (isOldAppId(parent)) {
+    const parsed = parseOldAppId(parent);
+    if (parsed?.level === "main") {
+      let thumbUrl = null;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "secondary-oldapp",
+          Date.now(),
+          data.thumbnail,
+        );
+      }
+      return createOldAppSubSection(parsed.mainDocId, {
+        name: data?.name,
+        thumbnailUrl: thumbUrl,
+      });
+    }
+  }
+
   const db = sectionsDb();
   const id = makeSectionId();
   const thumbUrl = await uploadSectionThumbnail(
@@ -615,19 +862,32 @@ export async function createSecondarySection(data) {
     sub_section: Number(data?.sub_section),
     is_listed: data?.is_listed ?? true,
     thumbnail: thumbUrl || null,
-    archive_id: normalizeArchiveId(data?.archive_id),
     created_at: new Date().toISOString(),
   };
   await set(dbRef(db, `${SECTIONS_ROOT}/secondary/${id}`), payload);
   return payload;
 }
 
-/**
- * Update a secondary sub section (PATCH, multipart/form-data).
- * @param {number} id
- * @param {Object} data - { name?, thumbnail? (File) }
- */
 export async function updateSecondarySection(id, data) {
+  if (isOldAppId(id)) {
+    const parsed = parseOldAppId(id);
+    if (parsed?.level === "sub") {
+      let thumbUrl;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "secondary-oldapp",
+          parsed.subDocId,
+          data.thumbnail,
+        );
+      }
+      await updateOldAppSubSection(parsed.mainDocId, parsed.subDocId, {
+        name: data?.name,
+        ...(thumbUrl !== undefined ? { thumbnailUrl: thumbUrl } : {}),
+      });
+      return { id, name: data?.name, thumbnail: thumbUrl || null };
+    }
+  }
+
   const db = sectionsDb();
   const currentRef = dbRef(db, `${SECTIONS_ROOT}/secondary/${id}`);
   const snap = await get(currentRef);
@@ -637,9 +897,6 @@ export async function updateSecondarySection(id, data) {
     ...(data?.name !== undefined ? { name: String(data.name).trim() } : {}),
     ...(data?.is_listed !== undefined
       ? { is_listed: Boolean(data.is_listed) }
-      : {}),
-    ...(data?.archive_id !== undefined
-      ? { archive_id: normalizeArchiveId(data.archive_id) }
       : {}),
   };
   if (data?.thumbnail instanceof File) {
@@ -654,11 +911,14 @@ export async function updateSecondarySection(id, data) {
   return next;
 }
 
-/**
- * Delete a secondary sub section.
- * @param {number} id
- */
 export async function removeSecondarySection(id) {
+  if (isOldAppId(id)) {
+    const parsed = parseOldAppId(id);
+    if (parsed?.level === "sub") {
+      await deleteOldAppSubSection(parsed.mainDocId, parsed.subDocId);
+      return true;
+    }
+  }
   const db = sectionsDb();
   await remove(dbRef(db, `${SECTIONS_ROOT}/secondary/${id}`));
   return true;
@@ -693,6 +953,27 @@ export async function listMyFiles({
       : []),
   ];
 
+  if (isOldAppConfigured()) {
+    const hostId = await getHostMainSectionId();
+    const shouldMergeOldApp =
+      main_section === undefined || main_section === "" || sameSectionId(main_section, hostId);
+    if (hostId != null && shouldMergeOldApp) {
+      const oldMains = await listOldAppMainSections();
+      for (const m of oldMains) {
+        const oldSubs = await listOldAppSubSections(m.id);
+        for (const s of oldSubs) {
+          const lessons = await listOldAppLessonsBySub(m.id, s.id);
+          for (const lesson of lessons) {
+            const asFile = adaptOldAppLessonAsFile(lesson, { mainDocId: m.id, subDocId: s.id });
+            if (String(asFile?.metadata?.content_type) !== "youtube") {
+              list.push(asFile);
+            }
+          }
+        }
+      }
+    }
+  }
+
   list = list.map((item) => {
     const createdAt =
       item?.metadata?.created_at || item?.createdAt || new Date().toISOString();
@@ -712,6 +993,14 @@ export async function listMyFiles({
     };
   });
 
+  // ملفات Shadow الناتجة عن رفع محتوى OldApp تُخفى من القائمة لأن العنصر
+  // الحقيقي يُدار من Firestore عبر oldapp:lesson:*.
+  list = list.filter((item) => {
+    const sub = String(item?.metadata?.subsection || "");
+    const sec = String(item?.metadata?.secondary_subsection || "");
+    return !(sub.startsWith("oldapp:main:") && sec.startsWith("oldapp:sub:"));
+  });
+
   if (search) {
     const q = String(search).toLowerCase();
     list = list.filter((item) => {
@@ -729,21 +1018,23 @@ export async function listMyFiles({
   }
   if (subsection !== undefined && subsection !== "") {
     list = list.filter(
-      (item) => Number(item?.metadata?.subsection) === Number(subsection),
+      (item) => sameSectionId(item?.metadata?.subsection, subsection),
     );
   }
   if (secondary_subsection !== undefined && secondary_subsection !== "") {
     list = list.filter(
       (item) =>
-        Number(item?.metadata?.secondary_subsection) ===
-        Number(secondary_subsection),
+        sameSectionId(item?.metadata?.secondary_subsection, secondary_subsection),
     );
   }
   if (main_section !== undefined && main_section !== "") {
     list = list.filter((item) => {
       const subId = item?.metadata?.subsection;
       const sub = subMap[String(subId)];
-      return Number(sub?.main_section) === Number(main_section);
+      return (
+        sameSectionId(sub?.main_section, main_section) ||
+        sameSectionId(item?.__oldappMainDocId, parseOldAppId(subId)?.mainDocId)
+      );
     });
   }
   if (content_type) {
@@ -833,8 +1124,68 @@ export async function completeFileUpload(fileId) {
   return res.json();
 }
 
+/**
+ * يحوّل سجل رفع Firebase (fileId) إلى درس حقيقي في OldApp lessons
+ * عند اختيار شجرة OldApp في شاشة رفع الملفات.
+ */
+export async function mirrorUploadedFileToOldAppLesson({
+  fileId,
+  subsectionId,
+  secondarySubsectionId,
+  fallbackMetadata = {},
+} = {}) {
+  if (!fileId) throw new Error("fileId مطلوب.");
+  const parsedSec = isOldAppId(secondarySubsectionId)
+    ? parseOldAppId(secondarySubsectionId)
+    : null;
+  const parsedSub = isOldAppId(subsectionId) ? parseOldAppId(subsectionId) : null;
+  const target =
+    parsedSec?.level === "sub"
+      ? parsedSec
+      : parsedSub?.level === "sub"
+        ? parsedSub
+        : null;
+  if (!target) return null;
+
+  const db = sectionsDb();
+  const primaryRef = dbRef(db, `${UPLOADS_ROOT}/${fileId}`);
+  const fallbackRef = dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${fileId}`);
+  const primarySnap = await get(primaryRef);
+  const fallbackSnap = await get(fallbackRef);
+  const snap = primarySnap.exists() ? primarySnap : fallbackSnap;
+  if (!snap.exists()) throw new Error("Uploaded file record not found.");
+  const row = snap.val() || {};
+  const metadata = { ...(row.metadata || {}), ...(fallbackMetadata || {}) };
+  const sourceUrl =
+    row.downloadUrl || row.file_url || row.sourceUrl || metadata.file_url || "";
+
+  const created = await createOldAppLesson({
+    mainDocId: target.mainDocId,
+    subDocId: target.subDocId,
+    title: metadata.title || row.filename || fileId,
+    description: metadata.description || "",
+    author: metadata.author || "",
+    contentType: metadata.content_type || "document",
+    sourceUrl,
+    thumbnail: metadata.thumbnail || null,
+  });
+  return { id: `oldapp:lesson:${created.id}` };
+}
+
 /** Update file metadata (PATCH). */
 export async function updateFile(fileId, data) {
+  const oldContent = parseOldAppContentId(fileId);
+  if (oldContent) {
+    await updateOldAppLesson(oldContent.lessonDocId, {
+      title: data?.metadata?.title,
+      description: data?.metadata?.description,
+      author: data?.metadata?.author,
+      contentType: data?.metadata?.content_type,
+      thumbnail: data?.metadata?.thumbnail,
+    });
+    return { id: fileId };
+  }
+
   const db = sectionsDb();
   const primaryRef = dbRef(db, `${UPLOADS_ROOT}/${fileId}`);
   const fallbackRef = dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${fileId}`);
@@ -859,6 +1210,12 @@ export async function updateFile(fileId, data) {
 
 /** Delete a file. */
 export async function removeFile(fileId) {
+  const oldContent = parseOldAppContentId(fileId);
+  if (oldContent) {
+    await deleteOldAppLesson(oldContent.lessonDocId);
+    return true;
+  }
+
   const db = sectionsDb();
   const primaryRef = dbRef(db, `${UPLOADS_ROOT}/${fileId}`);
   const fallbackRef = dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${fileId}`);

@@ -128,6 +128,11 @@
 		fetchItems();
 	}
 
+	function handleFilterChange() {
+		currentPage = 1;
+		fetchItems();
+	}
+
 	function goToPage(p) {
 		if (p < 1 || p > totalPages) return;
 		currentPage = p;
@@ -184,13 +189,13 @@
 					title: createForm.title,
 					description: createForm.description || undefined,
 					author: createForm.author || undefined,
-					subsection: Number(createForm.subsection),
+					subsection: String(createForm.subsection),
 					content_type: 'youtube',
 					is_listed: createForm.is_listed
 				}
 			};
 			if (createForm.secondary_subsection) {
-				payload.metadata.secondary_subsection = Number(createForm.secondary_subsection);
+				payload.metadata.secondary_subsection = String(createForm.secondary_subsection);
 			}
 			if (createThumbnail) payload.thumbnail = createThumbnail;
 

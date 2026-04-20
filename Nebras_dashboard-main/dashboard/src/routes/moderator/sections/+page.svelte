@@ -16,6 +16,11 @@
 	import { notifySectionCreated } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
 
+	// ملاحظة تكامل OldApp:
+	//   هذا الملفّ لا يعرف شيئًا عن OldApp. كل التوجيه الشفّاف (قراءة/كتابة
+	//   على Firestore الثانوي) يتمّ داخل `$lib/api/moderator.js` — الواجهة
+	//   تبقى نفسها والمستخدم لا يرى أيّ مربّعات ربط يدويّة.
+
 	// ─── Level & Parent State ───────────────────────────
 	let activeLevel = $state('main');
 	let filterMainSection = $state('');
@@ -36,7 +41,13 @@
 
 	// Create modal
 	let showCreateModal = $state(false);
-	let createForm = $state({ name: '', order_index: 0, main_section: '', sub_section: '', is_listed: true, archive_id: '' });
+	let createForm = $state({
+		name: '',
+		order_index: 0,
+		main_section: '',
+		sub_section: '',
+		is_listed: true
+	});
 	let createThumbnail = $state(null);       // File object
 	let createThumbnailPreview = $state('');   // data URL for preview
 	let createFormError = $state('');
@@ -45,7 +56,11 @@
 	// Edit modal
 	let showEditModal = $state(false);
 	let editingItem = $state(null);
-	let editForm = $state({ name: '', order_index: 0, is_listed: true, archive_id: '' });
+	let editForm = $state({
+		name: '',
+		order_index: 0,
+		is_listed: true
+	});
 	let editThumbnail = $state(null);         // File object (null = no change)
 	let editThumbnailPreview = $state('');     // data URL or existing URL
 	let editFormError = $state('');
@@ -189,6 +204,11 @@
 		}, 400);
 	}
 
+	function handleFilterChange() {
+		currentPage = 1;
+		fetchItems();
+	}
+
 	function goToPage(page) {
 		if (page < 1 || page > totalPages) return;
 		currentPage = page;
@@ -205,13 +225,18 @@
 	// ─── Create ─────────────────────────────────────────
 
 	function openCreateModal() {
-		createForm = { name: '', order_index: 0, main_section: '', sub_section: '', is_listed: true, archive_id: '' };
+		createForm = {
+			name: '',
+			order_index: 0,
+			main_section: '',
+			sub_section: '',
+			is_listed: true
+		};
 		createThumbnail = null;
 		createThumbnailPreview = '';
 		createFormError = '';
 		showCreateModal = true;
 
-		// Pre-load parent options for create form
 		if (activeLevel === 'sub') {
 			if (mainSectionsList.length === 0) fetchMainSectionsOptions();
 		} else if (activeLevel === 'secondary') {
@@ -236,7 +261,6 @@
 	}
 
 	function handleCreateMainSectionChange() {
-		// When creating secondary, changing the main section filter refreshes sub section options
 		createForm.sub_section = '';
 		if (createForm.main_section) {
 			fetchSubSectionsOptions(createForm.main_section);
@@ -257,7 +281,6 @@
 					name: createForm.name,
 					order_index: createForm.order_index || 0,
 					is_listed: createForm.is_listed,
-					archive_id: createForm.archive_id,
 					thumbnail: createThumbnail || undefined
 				});
 				notifyInfo = { level: 'main', name: createForm.name, parentName: '', sectionId: created?.id, parentId: '' };
@@ -269,9 +292,8 @@
 				}
 				const created = await createSubSection({
 					name: createForm.name,
-					main_section: Number(createForm.main_section),
+					main_section: createForm.main_section,
 					is_listed: createForm.is_listed,
-					archive_id: createForm.archive_id,
 					thumbnail: createThumbnail || undefined
 				});
 				const parent = mainSectionsList.find((m) => String(m.id) === String(createForm.main_section))?.name || '';
@@ -284,9 +306,8 @@
 				}
 				const created = await createSecondarySection({
 					name: createForm.name,
-					sub_section: Number(createForm.sub_section),
+					sub_section: createForm.sub_section,
 					is_listed: createForm.is_listed,
-					archive_id: createForm.archive_id,
 					thumbnail: createThumbnail || undefined
 				});
 				const parent = subSectionsList.find((s) => String(s.id) === String(createForm.sub_section))?.name || '';
@@ -312,8 +333,7 @@
 		editForm = {
 			name: item.name,
 			order_index: item.order_index ?? 0,
-			is_listed: item.is_listed ?? true,
-			archive_id: item.archive_id ?? ''
+			is_listed: item.is_listed ?? true
 		};
 		editThumbnail = null;
 		editThumbnailPreview = item.thumbnail || '';
@@ -591,14 +611,6 @@
 										Sub: {getSubSectionName(item.sub_section)}
 									</span>
 								{/if}
-								{#if item.archive_id}
-									<span class="meta-item meta-archive" title="Internet Archive collection: {item.archive_id}">
-										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="meta-icon">
-											<path d="M3 7h18M3 12h18M3 17h18" />
-										</svg>
-										Archive: <code dir="ltr" style="font-family: monospace; margin-inline-start: 4px;">{item.archive_id}</code>
-									</span>
-								{/if}
 							</div>
 
 							<div class="card-footer">
@@ -696,12 +708,6 @@
 							<span class="detail-value">{getSubSectionName(detailItem.sub_section)}</span>
 						</div>
 					{/if}
-					{#if detailItem.archive_id}
-						<div class="detail-row">
-							<span class="detail-label">Archive Collection</span>
-							<span class="detail-value" dir="ltr" style="font-family: monospace;">{detailItem.archive_id}</span>
-						</div>
-					{/if}
 					<div class="detail-row">
 						<span class="detail-label">Created At</span>
 						<span class="detail-value">{formatDate(detailItem.created_at)}</span>
@@ -754,7 +760,13 @@
 				{#if activeLevel === 'sub'}
 					<div class="form-group">
 						<label for="create-main-section" class="form-label">{t('sections.parent_main')} *</label>
-						<select id="create-main-section" bind:value={createForm.main_section} class="form-input" required>
+						<select
+							id="create-main-section"
+							bind:value={createForm.main_section}
+							class="form-input"
+							required
+							onchange={handleCreateMainSectionChange}
+						>
 							<option value="">{t('common.select')}</option>
 							{#each mainSectionsList as ms}
 								<option value={ms.id}>{ms.name}</option>
@@ -778,7 +790,12 @@
 					</div>
 					<div class="form-group">
 						<label for="create-sub-section" class="form-label">{t('sections.parent_sub')} *</label>
-						<select id="create-sub-section" bind:value={createForm.sub_section} class="form-input" required>
+						<select
+							id="create-sub-section"
+							bind:value={createForm.sub_section}
+							class="form-input"
+							required
+						>
 							<option value="">{t('common.select')}</option>
 							{#each subSectionsList as ss}
 								<option value={ss.id}>{ss.name}</option>
@@ -794,25 +811,6 @@
 						<span class="toggle-slider"></span>
 						<span class="toggle-label">{t('common.is_listed')}</span>
 					</label>
-				</div>
-
-				<!-- Internet Archive collection identifier (optional) -->
-				<div class="form-group">
-					<label for="create-archive-id" class="form-label">Internet Archive — Collection ID</label>
-					<input
-						type="text"
-						id="create-archive-id"
-						bind:value={createForm.archive_id}
-						class="form-input"
-						placeholder="e.g. librivoxaudio, opensource_movies, quranmajeed"
-						dir="ltr"
-						autocomplete="off"
-						spellcheck="false"
-					/>
-					<span class="form-hint">
-						Optional. If set, content from this Internet Archive collection will appear below the local content in the app.
-						Example: <code>librivoxaudio</code>. Leave blank to show local content only.
-					</span>
 				</div>
 
 				<!-- Thumbnail upload -->
@@ -890,24 +888,6 @@
 						<span class="toggle-slider"></span>
 						<span class="toggle-label">{t('common.is_listed')}</span>
 					</label>
-				</div>
-
-				<!-- Internet Archive collection identifier (optional) -->
-				<div class="form-group">
-					<label for="edit-archive-id" class="form-label">Internet Archive — Collection ID</label>
-					<input
-						type="text"
-						id="edit-archive-id"
-						bind:value={editForm.archive_id}
-						class="form-input"
-						placeholder="e.g. librivoxaudio, opensource_movies, quranmajeed"
-						dir="ltr"
-						autocomplete="off"
-						spellcheck="false"
-					/>
-					<span class="form-hint">
-						Optional. Leave blank to disable Internet Archive augmentation for this section.
-					</span>
 				</div>
 
 				<!-- Thumbnail upload -->
@@ -1295,11 +1275,6 @@
 		opacity: 0.8;
 	}
 
-	.meta-archive {
-		color: #fbbf24;
-		opacity: 0.9;
-	}
-
 	.meta-icon {
 		width: 14px;
 		height: 14px;
@@ -1496,6 +1471,8 @@
 		justify-content: center;
 		z-index: 100;
 		padding: 1rem;
+		overflow-y: auto;
+		overscroll-behavior: contain;
 	}
 
 	.modal {
@@ -1505,6 +1482,11 @@
 		border: 1px solid var(--color-surface-700);
 		border-radius: 16px;
 		box-shadow: var(--shadow-elevated);
+		display: flex;
+		flex-direction: column;
+		max-height: calc(100vh - 2rem);
+		max-height: calc(100dvh - 2rem);
+		overflow: hidden;
 	}
 
 	.modal-sm {
@@ -1521,6 +1503,7 @@
 		justify-content: space-between;
 		padding: 1.25rem 1.5rem;
 		border-bottom: 1px solid var(--color-surface-700);
+		flex-shrink: 0;
 	}
 
 	.modal-title {
@@ -1558,10 +1541,25 @@
 	}
 
 	.modal-form {
-		padding: 1.25rem 1.5rem;
+		padding: 1.25rem 1.5rem 1rem;
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
+		overflow-y: auto;
+		flex: 1 1 auto;
+		min-height: 0;
+	}
+
+	/* زر الحفظ يثبت أسفل النموذج ولا يختفي عند التمرير لأنّ `.modal-form`
+	   نفسه قابل للتمرير ومحتواه كلّه — بما فيه `.modal-actions` — ينتقل
+	   معه. نجعل الأزرار sticky في أسفل النموذج لضمان ظهورها دائمًا. */
+	.modal-form :global(.modal-actions) {
+		position: sticky;
+		bottom: -1rem;
+		background: var(--color-surface-800);
+		margin: 0 -1.5rem -1rem;
+		padding: 0.75rem 1.5rem;
+		border-top: 1px solid var(--color-surface-700);
 	}
 
 	.form-group {
@@ -1626,7 +1624,10 @@
 
 	/* Detail modal */
 	.detail-content {
-		padding: 1.5rem;
+		padding: 1.5rem 1.5rem 2rem;
+		overflow-y: auto;
+		flex: 1 1 auto;
+		min-height: 0;
 	}
 
 	.detail-thumbnail {

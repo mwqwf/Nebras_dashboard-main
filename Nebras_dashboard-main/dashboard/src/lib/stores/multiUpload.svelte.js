@@ -15,6 +15,7 @@
 
 import { createFileUploader, mimeToContentType } from '$lib/utils/fileUpload.js';
 import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
+import { mirrorUploadedFileToOldAppLesson } from '$lib/api/moderator.js';
 
 /** @typedef {'queued'|'uploading'|'completed'|'failed'} QueueStatus */
 
@@ -238,12 +239,12 @@ async function uploadOne(itemId) {
 		title: startSnapshot.form.title,
 		description: startSnapshot.form.description || undefined,
 		author: startSnapshot.form.author || undefined,
-		subsection: Number(startSnapshot.form.subsection),
+		subsection: String(startSnapshot.form.subsection),
 		content_type: contentType,
 		is_listed: startSnapshot.form.is_listed
 	};
 	if (startSnapshot.form.secondary_subsection) {
-		metadata.secondary_subsection = Number(startSnapshot.form.secondary_subsection);
+		metadata.secondary_subsection = String(startSnapshot.form.secondary_subsection);
 	}
 
 	const uploader = createFileUploader(startSnapshot.file, metadata, startSnapshot.thumbnail, {
@@ -264,6 +265,14 @@ async function uploadOne(itemId) {
 
 	try {
 		const result = await uploader.start();
+		if (String(startSnapshot.form?.secondary_subsection || '').startsWith('oldapp:sub:')) {
+			await mirrorUploadedFileToOldAppLesson({
+				fileId: result?.id,
+				subsectionId: startSnapshot.form?.subsection,
+				secondarySubsectionId: startSnapshot.form?.secondary_subsection,
+				fallbackMetadata: metadata
+			});
+		}
 		if (multiState.queue.some((it) => it.id === itemId)) {
 			updateItem(itemId, { status: 'completed', progress: 100, error: '' });
 			// إشعار FCM بعد نجاح كل بند — لا يُعطَّل الطابور إن فشل.
