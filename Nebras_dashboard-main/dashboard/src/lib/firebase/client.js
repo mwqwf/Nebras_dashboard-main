@@ -135,6 +135,55 @@ export function getOldAppFirestore() {
 	return getFirestore(application);
 }
 
+/**
+ * ─── MshcatApp (Secondary Firebase Project) ────────────────────────────
+ * مشروع `mshcat-fkdl` يُهيَّأ كتطبيق ثانوي ثالث باسم `MshcatApp` بجانب
+ * OldApp. نستعمله للقراءة والكتابة في مجموعتَي `categories` و `books`
+ * حين يختار المشرف مصدر البيانات = Mshcat عند إنشاء قسم رئيسيّ أو يختار
+ * قسمًا أبًا من شجرة Mshcat.
+ *
+ * القيم تُقرأ من `VITE_MSHCAT_*`. إن لم تُضبط نُرجع `undefined` بهدوء
+ * وتُخفى خيارات Mshcat من الواجهة تلقائيًّا.
+ */
+const MSHCAT_APP_NAME = 'MshcatApp';
+const mshcatConfig = {
+	apiKey: import.meta.env.VITE_MSHCAT_API_KEY,
+	authDomain: import.meta.env.VITE_MSHCAT_AUTH_DOMAIN,
+	projectId: import.meta.env.VITE_MSHCAT_PROJECT_ID,
+	storageBucket: import.meta.env.VITE_MSHCAT_STORAGE_BUCKET,
+	messagingSenderId: import.meta.env.VITE_MSHCAT_MESSAGING_SENDER_ID,
+	appId: import.meta.env.VITE_MSHCAT_APP_ID
+};
+
+/** @type {import('firebase/app').FirebaseApp | undefined} */
+let mshcatApp;
+
+/** @returns {import('firebase/app').FirebaseApp | undefined} */
+export function getMshcatFirebaseApp() {
+	if (!browser) return undefined;
+	if (!mshcatConfig.apiKey || !mshcatConfig.projectId) {
+		if (import.meta.env.DEV) {
+			console.warn(
+				'[Mshcat] أضف متغيرات VITE_MSHCAT_* في .env لتفعيل الكتابة في قاعدة بيانات Mshcat'
+			);
+		}
+		return undefined;
+	}
+	if (!mshcatApp) {
+		const existing = getApps().find((a) => a.name === MSHCAT_APP_NAME);
+		mshcatApp = existing ?? initializeApp(mshcatConfig, MSHCAT_APP_NAME);
+		if (!mshcatApp) mshcatApp = getApp(MSHCAT_APP_NAME);
+	}
+	return mshcatApp;
+}
+
+/** Firestore من مشروع Mshcat — قراءة/كتابة عبر SDK العميل. */
+export function getMshcatFirestore() {
+	const application = getMshcatFirebaseApp();
+	if (!application) return undefined;
+	return getFirestore(application);
+}
+
 /** تهيئة Analytics عندما يدعمها المتصفح */
 export async function initFirebase() {
 	const application = getFirebaseApp();

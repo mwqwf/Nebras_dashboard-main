@@ -1,6 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
-	import { listMyFiles, removeFile, updateFile, listMyMainSections, listMySubSections, listMySecondarySections, mirrorUploadedFileToOldAppLesson } from '$lib/api/moderator.js';
+	import { listMyFiles, removeFile, updateFile, listMyMainSections, listMySubSections, listMySecondarySections, mirrorUploadedFileToOldAppLesson, mirrorUploadedFileToMshcatBook } from '$lib/api/moderator.js';
 	import { createFileUploader, createResumeUploader, formatFileSize, mimeToContentType } from '$lib/utils/fileUpload.js';
 	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
@@ -158,7 +158,16 @@
 
 		try {
 			const result = await uploader.start();
-			if (String(uploadForm.secondary_subsection || '').startsWith('oldapp:sub:')) {
+			const selSub = String(uploadForm.subsection || '');
+			const selSec = String(uploadForm.secondary_subsection || '');
+			if (selSub.startsWith('mshcat:') || selSec.startsWith('mshcat:')) {
+				await mirrorUploadedFileToMshcatBook({
+					fileId: result?.id,
+					subsectionId: uploadForm.subsection,
+					secondarySubsectionId: uploadForm.secondary_subsection,
+					fallbackMetadata: metadata
+				});
+			} else if (selSec.startsWith('oldapp:sub:')) {
 				await mirrorUploadedFileToOldAppLesson({
 					fileId: result?.id,
 					subsectionId: uploadForm.subsection,
