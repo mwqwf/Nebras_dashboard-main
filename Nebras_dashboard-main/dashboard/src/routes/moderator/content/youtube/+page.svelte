@@ -4,7 +4,6 @@
   Create with: video_url, metadata (title, description, subsection, secondary_subsection), thumbnail.
 -->
 <script>
-	import { onMount } from 'svelte';
 	import {
 		listMyYoutubeVideos, createYoutubeVideo, updateYoutubeVideo, removeYoutubeVideo,
 		listMyMainSections, listMySubSections, listMySecondarySections
@@ -20,7 +19,8 @@
 	let filterMainSection = $state('');
 	let filterSubSection = $state('');
 	let filterIsListed = $state('');
-	let isLoading = $state(true);
+	let isLoading = $state(false);
+	let hasSearched = $state(false);
 	let error = $state('');
 
 	// Dropdown options
@@ -58,25 +58,22 @@
 
 	const PAGE_SIZE = 10;
 	let totalPages = $derived(Math.ceil(totalCount / PAGE_SIZE));
-	let searchTimeout;
-
-	// ─── Lifecycle ──────────────────────────────────────
-	onMount(() => {
-		fetchItems();
-		fetchMainSectionsOptions();
-	});
 
 	// ─── Fetch ──────────────────────────────────────────
 	async function fetchItems() {
-		isLoading = true;
-		error = '';
+		const q = String(searchQuery || '').trim();
+		if (!q) {
+			items = []; totalCount = 0; hasSearched = false; isLoading = false; return;
+		}
+		isLoading = true; error = ''; hasSearched = true;
 		try {
 			const data = await listMyYoutubeVideos({
 				search: searchQuery,
 				main_section: filterMainSection || undefined,
 				subsection: filterSubSection || undefined,
 				metadata__is_listed: filterIsListed === '' ? undefined : filterIsListed === 'true',
-				page: currentPage
+				page: currentPage,
+				requireSearch: true
 			});
 			items = data.results;
 			totalCount = data.count;
@@ -110,33 +107,32 @@
 	}
 
 	// ─── Filter handlers ────────────────────────────────
-	function handleSearch() {
-		clearTimeout(searchTimeout);
-		searchTimeout = setTimeout(() => { currentPage = 1; fetchItems(); }, 400);
-	}
+	function handleSearchInput() { /* لا جلب على الكتابة — يُنتظر Enter أو زر البحث */ }
+	function handleSearchKey(e) { if (e.key === 'Enter') { e.preventDefault(); submitSearch(); } }
+	function submitSearch() { currentPage = 1; fetchItems(); }
 
 	function handleMainFilterChange() {
 		currentPage = 1;
 		filterSubSection = '';
 		if (filterMainSection) fetchSubOptions(filterMainSection, 'filter');
 		else subSectionsList = [];
-		fetchItems();
+		if (hasSearched) fetchItems();
 	}
 
 	function handleSubFilterChange() {
 		currentPage = 1;
-		fetchItems();
+		if (hasSearched) fetchItems();
 	}
 
 	function handleFilterChange() {
 		currentPage = 1;
-		fetchItems();
+		if (hasSearched) fetchItems();
 	}
 
 	function goToPage(p) {
 		if (p < 1 || p > totalPages) return;
 		currentPage = p;
-		fetchItems();
+		if (hasSearched) fetchItems();
 	}
 
 	// ─── Create ─────────────────────────────────────────
@@ -216,7 +212,7 @@
 				sourceUrl: createForm.video_url
 			});
 			showCreateModal = false;
-			fetchItems();
+			if (hasSearched) fetchItems();
 		} catch (err) { createFormError = parseFormError(err.message); }
 		finally { createFormLoading = false; }
 	}
@@ -258,7 +254,7 @@
 			if (editThumbnail) payload.thumbnail = editThumbnail;
 			await updateYoutubeVideo(editingItem.id, payload);
 			showEditModal = false;
-			fetchItems();
+			if (hasSearched) fetchItems();
 		} catch (err) { editFormError = parseFormError(err.message); }
 		finally { editFormLoading = false; }
 	}
@@ -272,7 +268,7 @@
 			await removeYoutubeVideo(deletingItem.id);
 			showDeleteModal = false;
 			deletingItem = null;
-			fetchItems();
+			if (hasSearched) fetchItems();
 		} catch (err) { error = err.message; showDeleteModal = false; }
 		finally { deleteLoading = false; }
 	}
@@ -340,9 +336,13 @@
 	<div class="toolbar">
 		<div class="search-box">
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-			<input type="text" placeholder={t('content.search_videos')} bind:value={searchQuery} oninput={handleSearch} class="search-input" />
+			<input type="text" placeholder={t('content.search_videos')} bind:value={searchQuery} oninput={handleSearchInput} onkeydown={handleSearchKey} class="search-input" />
 		</div>
-		<select class="filter-select" bind:value={filterMainSection} onchange={handleMainFilterChange}>
+		<button type="button" class="btn btn-primary btn-search" onclick={submitSearch} disabled={!String(searchQuery || '').trim()}>
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+			بحث
+		</button>
+		<select class="filter-select" bind:value={filterMainSection} onchange={handleMainFilterChange} onfocus={() => { if (mainSectionsList.length === 0) fetchMainSectionsOptions(); }}>
 			<option value="">{t('content.all_main_sections')}</option>
 			{#each mainSectionsList as ms}<option value={ms.id}>{ms.name}</option>{/each}
 		</select>
@@ -366,14 +366,16 @@
 	<div class="content-container">
 		{#if isLoading}
 			<div class="state-box"><div class="spinner"></div><span>{t('common.loading')}</span></div>
+		{:else if !hasSearched}
+			<div class="state-box empty-state">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" /></svg>
+				<p class="empty-title">الرجاء استخدام مربع البحث للعثور على المحتوى المراد تعديله</p>
+				<p class="empty-hint">اكتب كلمة ثم اضغط Enter أو زرّ «بحث». لا يتمّ تحميل أيّ بيانات قبل ذلك حفاظًا على الأداء.</p>
+			</div>
 		{:else if items.length === 0}
 			<div class="state-box empty-state">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon"><path d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round" /></svg>
-				<p>{t('content.no_youtube_yet')}</p>
-				<button class="btn btn-primary btn-sm" onclick={openCreateModal}>
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><path d="M12 5v14m-7-7h14" /></svg>
-					{t('content.add_first_video')}
-				</button>
+				<p>لا توجد نتائج مطابقة — جرّب كلمة بحث أخرى</p>
 			</div>
 		{:else}
 			<div class="content-grid">
@@ -694,6 +696,10 @@
 	.state-box { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 3rem; gap: 0.75rem; color: var(--color-surface-500); font-size: 0.875rem; }
 	.empty-state { padding: 4rem 2rem; }
 	.empty-icon { width: 48px; height: 48px; color: var(--color-surface-600); }
+	.empty-title { font-size: 1.05rem; font-weight: 600; color: var(--color-surface-100); text-align: center; max-width: 560px; margin: 0.25rem 0 0; line-height: 1.6; }
+	.empty-hint { font-size: 0.9rem; color: var(--color-surface-400); text-align: center; max-width: 560px; margin: 0; line-height: 1.7; }
+	.btn-search { display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap; }
+	.btn-search:disabled { opacity: 0.5; cursor: not-allowed; }
 	.spinner { width: 24px; height: 24px; border: 3px solid var(--color-surface-700); border-top-color: var(--color-primary-500); border-radius: 50%; animation: spin 0.6s linear infinite; }
 
 	/* Grid */

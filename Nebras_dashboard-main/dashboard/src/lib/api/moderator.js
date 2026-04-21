@@ -72,6 +72,26 @@ import {
 // ─── Helpers ────────────────────────────────────────────
 
 /**
+ * بوابة البحث الإلزاميّة — ترفض جلب آلاف المستندات على مجرّد فتح الصفحة.
+ *
+ * الاستعمال: تُمرَّر `{ requireSearch: true, search }` من الصفحات الإداريّة
+ * (sections/files/youtube). إن كان `search` فارغًا أو أقصر من الحدّ الأدنى
+ * فإنّ الدالة تعيد `true` (يعني: أرجِع قائمة فارغة فورًا وتجنّب الجلب).
+ * الاستدعاءات الداخليّة (من النوافذ المنبثقة مثلًا) تتركها على false
+ * لأنّها محدودة العدد ومربوطة بفعل صريح من المستخدم.
+ */
+const MIN_SEARCH_LEN = 1;
+function shouldSkipListing({ requireSearch, search } = {}) {
+  if (!requireSearch) return false;
+  const q = String(search || "").trim();
+  return q.length < MIN_SEARCH_LEN;
+}
+
+function emptyPage() {
+  return { results: [], count: 0, page: 1, page_size: 0, has_next: false };
+}
+
+/**
  * Build a FormData object from a plain/nested object.
  * Supports nested objects via dot notation: { metadata: { title: 'x' } } → 'metadata.title' = 'x'
  * Skips undefined/null values. Handles File objects natively.
@@ -204,7 +224,9 @@ export async function listMyYoutubeVideos({
   is_listed,
   metadata__is_listed,
   page = 1,
+  requireSearch = false,
 } = {}) {
+  if (shouldSkipListing({ requireSearch, search })) return emptyPage();
   const db = sectionsDb();
   const ytSnap = await get(dbRef(db, `${CONTENT_ROOT}/youtube`));
   const subSnap = await get(dbRef(db, `${SECTIONS_ROOT}/sub`));
@@ -684,7 +706,8 @@ function applySectionFilters(
  * (mshcat:main:*) بجانب أقسام Nebras — تطابق 1:1 دون هبوط رتبة.
  * @param {Object} params - { search?, page? }
  */
-export async function listMyMainSections({ search = "", page = 1 } = {}) {
+export async function listMyMainSections({ search = "", page = 1, requireSearch = false } = {}) {
+  if (shouldSkipListing({ requireSearch, search })) return emptyPage();
   const all = await readLevel("main");
   let merged = all;
   if (isMshcatConfigured()) {
@@ -848,7 +871,9 @@ export async function listMySubSections({
   main_section,
   search = "",
   page = 1,
+  requireSearch = false,
 } = {}) {
+  if (shouldSkipListing({ requireSearch, search })) return emptyPage();
   // حالة Mshcat: إن كان الأب المحدّد قسمًا رئيسيًّا من Mshcat نعرض أقسامه
   // الفرعيّة حصرًا من مشروع Mshcat (لا خلط مع Nebras).
   if (isMshcatId(main_section)) {
@@ -1089,7 +1114,9 @@ export async function listMySecondarySections({
   sub_section,
   search = "",
   page = 1,
+  requireSearch = false,
 } = {}) {
+  if (shouldSkipListing({ requireSearch, search })) return emptyPage();
   // Mshcat: الأب قسم فرعي من Mshcat (mshcat:sub:*) → ثانويات الأطفال مباشرة.
   if (isMshcatId(sub_section)) {
     const parsed = parseMshcatId(sub_section);
@@ -1366,7 +1393,9 @@ export async function listMyFiles({
   is_listed,
   metadata__is_listed,
   page = 1,
+  requireSearch = false,
 } = {}) {
+  if (shouldSkipListing({ requireSearch, search })) return emptyPage();
   const db = sectionsDb();
   const uploadsSnap = await get(dbRef(db, UPLOADS_ROOT));
   const uploadsFallbackSnap = await get(dbRef(db, UPLOADS_FALLBACK_ROOT));

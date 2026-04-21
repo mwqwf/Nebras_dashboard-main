@@ -1,9 +1,10 @@
 <script>
-	import { onMount } from 'svelte';
 	import { listMyFiles, removeFile, updateFile, listMyMainSections, listMySubSections, listMySecondarySections, mirrorUploadedFileToOldAppLesson, mirrorUploadedFileToMshcatBook } from '$lib/api/moderator.js';
 	import { createFileUploader, createResumeUploader, formatFileSize, mimeToContentType } from '$lib/utils/fileUpload.js';
 	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
+
+	// سياسة الجلب: لا تحميل تلقائيّ — الشاشة تبقى فارغة حتّى يبحث المستخدم.
 
 	// List state
 	let items = $state([]);
@@ -13,7 +14,8 @@
 	let filterMainSection = $state('');
 	let filterContentType = $state('');
 	let filterIsListed = $state('');
-	let isLoading = $state(true);
+	let isLoading = $state(false);
+	let hasSearched = $state(false);
 	let error = $state('');
 
 	let mainSectionsList = $state([]);
@@ -62,19 +64,21 @@
 
 	const PAGE_SIZE = 10;
 	let totalPages = $derived(Math.ceil(totalCount / PAGE_SIZE));
-	let searchTimeout;
-
-	onMount(() => { fetchItems(); fetchMainOptions(); });
 
 	async function fetchItems() {
-		isLoading = true; error = '';
+		const q = String(searchQuery || '').trim();
+		if (!q) {
+			items = []; totalCount = 0; hasSearched = false; isLoading = false; return;
+		}
+		isLoading = true; error = ''; hasSearched = true;
 		try {
 			const data = await listMyFiles({
-				search: searchQuery,
+				search: q,
 				main_section: filterMainSection || undefined,
 				content_type: filterContentType || undefined,
 				metadata__is_listed: filterIsListed === '' ? undefined : filterIsListed === 'true',
-				page: currentPage
+				page: currentPage,
+				requireSearch: true
 			});
 			items = data.results; totalCount = data.count;
 		} catch (err) { error = err.message; }
@@ -95,9 +99,11 @@
 		catch { uploadSecondaryOptions = []; }
 	}
 
-	function handleSearch() { clearTimeout(searchTimeout); searchTimeout = setTimeout(() => { currentPage = 1; fetchItems(); }, 400); }
-	function handleFilterChange() { currentPage = 1; fetchItems(); }
-	function goToPage(p) { if (p < 1 || p > totalPages) return; currentPage = p; fetchItems(); }
+	function handleSearchInput() { /* لا جلب على الكتابة — يُنتظر Enter أو زر البحث */ }
+	function handleSearchKey(e) { if (e.key === 'Enter') { e.preventDefault(); submitSearch(); } }
+	function submitSearch() { currentPage = 1; fetchItems(); }
+	function handleFilterChange() { currentPage = 1; if (hasSearched) fetchItems(); }
+	function goToPage(p) { if (p < 1 || p > totalPages) return; currentPage = p; if (hasSearched) fetchItems(); }
 
 	// ─── Upload Modal ───────────────────────────────────
 	function openUploadModal() {
@@ -190,14 +196,14 @@
 				subSectionName: subName,
 				secondarySectionName: secName
 			});
-			setTimeout(() => { showUploadModal = false; fetchItems(); }, 800);
+			setTimeout(() => { showUploadModal = false; if (hasSearched) fetchItems(); }, 800);
 		} catch { /* error already handled via onError */ }
 	}
 
 	function cancelUpload() {
 		if (currentUploader) currentUploader.abort();
 		showUploadModal = false;
-		fetchItems();
+		if (hasSearched) fetchItems();
 	}
 
 	// ─── Edit ───────────────────────────────────────────
@@ -213,7 +219,7 @@
 			await updateFile(editingItem.id, {
 				metadata: { title: editForm.title, description: editForm.description || undefined, author: editForm.author || undefined, is_listed: editForm.is_listed }
 			});
-			showEditModal = false; fetchItems();
+			showEditModal = false; if (hasSearched) fetchItems();
 		} catch (err) { editFormError = err.message; }
 		finally { editFormLoading = false; }
 	}
@@ -222,7 +228,7 @@
 	function openDeleteModal(item) { deletingItem = item; showDeleteModal = true; }
 	async function handleDelete() {
 		deleteLoading = true;
-		try { await removeFile(deletingItem.id); showDeleteModal = false; deletingItem = null; fetchItems(); }
+		try { await removeFile(deletingItem.id); showDeleteModal = false; deletingItem = null; if (hasSearched) fetchItems(); }
 		catch (err) { error = err.message; showDeleteModal = false; }
 		finally { deleteLoading = false; }
 	}
@@ -271,14 +277,14 @@
 
 		try {
 			await uploader.start();
-			setTimeout(() => { showResumeModal = false; fetchItems(); }, 800);
+			setTimeout(() => { showResumeModal = false; if (hasSearched) fetchItems(); }, 800);
 		} catch { /* handled via onError */ }
 	}
 
 	function cancelResume() {
 		if (currentResumeUploader) currentResumeUploader.abort();
 		showResumeModal = false;
-		fetchItems();
+		if (hasSearched) fetchItems();
 	}
 	function formatDate(d) { if (!d) return '—'; return new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }); }
 
@@ -314,15 +320,19 @@
 	<div class="toolbar">
 		<div class="search-box">
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-			<input type="text" placeholder={t('content.search_files')} bind:value={searchQuery} oninput={handleSearch} class="search-input" />
+			<input type="text" placeholder={t('content.search_files')} bind:value={searchQuery} oninput={handleSearchInput} onkeydown={handleSearchKey} class="search-input" />
 		</div>
+		<button type="button" class="btn btn-primary btn-search" onclick={submitSearch} disabled={!String(searchQuery || '').trim()}>
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+			بحث
+		</button>
 		<select class="filter-select" bind:value={filterContentType} onchange={handleFilterChange}>
 			<option value="">{t('content.all_types')}</option>
 			<option value="video">{t('content.video')}</option>
 			<option value="audio">{t('content.audio')}</option>
 			<option value="document">{t('content.document')}</option>
 		</select>
-		<select class="filter-select" bind:value={filterMainSection} onchange={handleFilterChange}>
+		<select class="filter-select" bind:value={filterMainSection} onchange={handleFilterChange} onfocus={() => { if (mainSectionsList.length === 0) fetchMainOptions(); }}>
 			<option value="">{t('content.all_sections')}</option>
 			{#each mainSectionsList as ms}<option value={ms.id}>{ms.name}</option>{/each}
 		</select>
@@ -339,11 +349,16 @@
 	<div class="content-container">
 		{#if isLoading}
 			<div class="state-box"><div class="spinner"></div><span>{t('common.loading')}</span></div>
+		{:else if !hasSearched}
+			<div class="state-box empty-state">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" /></svg>
+				<p class="empty-title">الرجاء استخدام مربع البحث للعثور على الملفات المراد تعديلها</p>
+				<p class="empty-hint">اكتب كلمة ثم اضغط Enter أو زرّ «بحث». لا يتمّ تحميل أيّ بيانات قبل ذلك حفاظًا على الأداء.</p>
+			</div>
 		{:else if items.length === 0}
 			<div class="state-box empty-state">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" stroke-linecap="round" stroke-linejoin="round" /></svg>
-				<p>{t('content.no_files_uploaded')}</p>
-				<button class="btn btn-primary btn-sm" onclick={openUploadModal}>{t('content.upload_first_file')}</button>
+				<p>لا توجد نتائج مطابقة — جرّب كلمة بحث أخرى</p>
 			</div>
 		{:else}
 			<div class="file-list">
@@ -414,7 +429,7 @@
 					</div>
 					{#if uploadFormError}<div class="alert alert-error" style="margin-top:0.75rem">{uploadFormError}</div>{/if}
 					{#if uploadStatus === 'completed'}
-						<button class="btn btn-primary" style="margin-top:1rem;align-self:center" onclick={() => { showUploadModal = false; fetchItems(); }}>{t('common.done')}</button>
+						<button class="btn btn-primary" style="margin-top:1rem;align-self:center" onclick={() => { showUploadModal = false; if (hasSearched) fetchItems(); }}>{t('common.done')}</button>
 					{:else if uploadStatus === 'failed'}
 						<div class="modal-actions" style="margin-top:1rem">
 							<button class="btn btn-secondary" onclick={cancelUpload}>{t('common.close')}</button>
@@ -581,7 +596,7 @@
 					</div>
 					{#if resumeError}<div class="alert alert-error" style="margin-top:0.75rem">{resumeError}</div>{/if}
 					{#if resumeStatus === 'completed'}
-						<button class="btn btn-primary" style="margin-top:1rem;align-self:center" onclick={() => { showResumeModal = false; fetchItems(); }}>{t('common.done')}</button>
+						<button class="btn btn-primary" style="margin-top:1rem;align-self:center" onclick={() => { showResumeModal = false; if (hasSearched) fetchItems(); }}>{t('common.done')}</button>
 					{:else if resumeStatus === 'failed'}
 						<div class="modal-actions" style="margin-top:1rem">
 							<button class="btn btn-secondary" onclick={cancelResume}>{t('common.close')}</button>
@@ -689,6 +704,11 @@
 	.state-box { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 3rem; gap: 0.75rem; color: var(--color-surface-500); font-size: 0.875rem; }
 	.empty-state { padding: 4rem 2rem; }
 	.empty-icon { width: 48px; height: 48px; color: var(--color-surface-600); }
+	.empty-title { font-size: 1.05rem; font-weight: 600; color: var(--color-surface-800); text-align: center; max-width: 560px; margin: 0.25rem 0 0; line-height: 1.6; }
+	.empty-hint { font-size: 0.9rem; color: var(--color-surface-600); text-align: center; max-width: 560px; margin: 0; line-height: 1.7; }
+	.btn-search { display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap; }
+	.btn-search:disabled { opacity: 0.5; cursor: not-allowed; }
+	.btn-search .btn-icon { width: 16px; height: 16px; }
 	.spinner { width: 24px; height: 24px; border: 3px solid var(--color-surface-700); border-top-color: var(--color-primary-500); border-radius: 50%; animation: spin 0.6s linear infinite; }
 
 	/* File list */

@@ -7,7 +7,6 @@
 -->
 
 <script>
-	import { onMount } from 'svelte';
 	import {
 		listMyMainSections, createMainSection, updateMainSection, removeMainSection,
 		listMySubSections, createSubSection, updateSubSection, removeSubSection,
@@ -24,13 +23,19 @@
 	//   هذا الملفّ لا يعرف شيئًا عن OldApp. كل التوجيه الشفّاف (قراءة/كتابة
 	//   على Firestore الثانوي) يتمّ داخل `$lib/api/moderator.js` — الواجهة
 	//   تبقى نفسها والمستخدم لا يرى أيّ مربّعات ربط يدويّة.
+	//
+	// سياسة الجلب (Search-Driven On-Demand Fetching):
+	//   لا يتمّ جلب أيّ بيانات عند فتح الصفحة أو عند تغيير الفلاتر. الشاشة
+	//   تبقى فارغة حتّى يكتب المستخدم كلمة بحث ويضغط Enter أو زرّ البحث.
+	//   الفلاتر الاختياريّة (رئيسي/فرعي/مدرج) تُعدّل الاستعلام التالي
+	//   فقط — لا تُطلق جلبًا بنفسها.
 
 	// ─── Level & Parent State ───────────────────────────
 	let activeLevel = $state('main');
 	let filterMainSection = $state('');
 	let filterSubSection = $state('');
 
-	// Dropdown options (own sections)
+	// Dropdown options (own sections) — تُعبَّأ عند فتح النوافذ المنبثقة فقط.
 	let mainSectionsList = $state([]);
 	let subSectionsList = $state([]);
 
@@ -40,7 +45,8 @@
 	let currentPage = $state(1);
 	let searchQuery = $state('');
 	let filterIsListed = $state('');
-	let isLoading = $state(true);
+	let isLoading = $state(false);
+	let hasSearched = $state(false);
 	let error = $state('');
 
 	// Create modal
@@ -83,8 +89,6 @@
 	const PAGE_SIZE = 10;
 	let totalPages = $derived(Math.ceil(totalCount / PAGE_SIZE));
 
-	let searchTimeout;
-
 	// ─── Level info ─────────────────────────────────────
 	let pageTitle = $derived(
 		activeLevel === 'main' ? t('sections.main_sections') :
@@ -98,22 +102,32 @@
 		t('sections.desc')
 	);
 
-	// ─── Lifecycle ──────────────────────────────────────
-	onMount(() => {
-		fetchItems();
-		fetchMainSectionsOptions();
-	});
+	// ─── Fetch items (search-driven only) ───────────────
 
-	// ─── Fetch items ────────────────────────────────────
-
+	/**
+	 * الجلب لا يُشغَّل إلّا حين يكون هناك نصّ بحث فعلي. تمرَّر
+	 * `requireSearch: true` لطبقة الـAPI لضمان إرجاع قائمة فارغة من دون
+	 * لمس قاعدة البيانات إن كان النصّ فارغًا — هذا يحمي التطبيق من تعليق
+	 * الشاشات عند جلب آلاف المستندات دفعة واحدة.
+	 */
 	async function fetchItems() {
+		const q = String(searchQuery || '').trim();
+		if (!q) {
+			items = [];
+			totalCount = 0;
+			hasSearched = false;
+			isLoading = false;
+			return;
+		}
 		isLoading = true;
 		error = '';
+		hasSearched = true;
 		try {
 			let data;
 			const baseParams = {
-				search: searchQuery,
+				search: q,
 				page: currentPage,
+				requireSearch: true,
 				is_listed: filterIsListed === '' ? undefined : filterIsListed === 'true'
 			};
 
@@ -140,9 +154,11 @@
 		}
 	}
 
-	// ─── Fetch dropdown options ─────────────────────────
+	// ─── Fetch dropdown options (lazy, only when modal opens) ──
 
 	async function fetchMainSectionsOptions() {
+		// قائمة الآباء في النوافذ المنبثقة: نسمح للـ API بالجلب الكامل
+		// لأنّها محدودة العدد (~عشرات) وتُطلب بفعل صريح من المستخدم.
 		try {
 			const data = await listMyMainSections({ search: '', page: 1 });
 			mainSectionsList = data.results;
@@ -165,25 +181,21 @@
 	// ─── Level change ───────────────────────────────────
 
 	function handleLevelChange() {
-		// Reset filters & parent selections
+		// إعادة الضبط الكامل عند تبديل التبويب — تبقى الشاشة فارغة
+		// حتّى يعيد المستخدم البحث في المستوى الجديد.
 		searchQuery = '';
 		filterIsListed = '';
 		filterMainSection = '';
 		filterSubSection = '';
 		currentPage = 1;
 		items = [];
-
-		if (activeLevel === 'sub') {
-			if (mainSectionsList.length === 0) fetchMainSectionsOptions();
-		} else if (activeLevel === 'secondary') {
-			if (mainSectionsList.length === 0) fetchMainSectionsOptions();
-			fetchSubSectionsOptions('');
-		}
-
-		fetchItems();
+		totalCount = 0;
+		hasSearched = false;
+		error = '';
 	}
 
-	// ─── Parent filter changes ──────────────────────────
+	// ─── Parent filter changes — modifiers only, no fetch ──
+	// الفلاتر مجرّد مُعدِّلات للاستعلام التالي؛ لا تُطلق جلبًا بنفسها.
 
 	function handleMainSectionFilterChange() {
 		currentPage = 1;
@@ -191,33 +203,43 @@
 			filterSubSection = '';
 			fetchSubSectionsOptions(filterMainSection || '');
 		}
-		fetchItems();
+		if (hasSearched) fetchItems();
 	}
 
 	function handleSubSectionFilterChange() {
 		currentPage = 1;
-		fetchItems();
+		if (hasSearched) fetchItems();
 	}
 
-	// ─── Filters ────────────────────────────────────────
+	// ─── Search trigger ─────────────────────────────────
+	// البحث يُشغَّل فقط بالضغط على Enter أو زرّ البحث. لا نستخدم
+	// debounce على كلّ حرف لأنّ ذلك يُعيد إنتاج نفس مشكلة الضغط على
+	// السيرفر. أبقينا الاسم حفاظًا على توافق الأحداث الحاليّة.
 
-	function handleSearch() {
-		clearTimeout(searchTimeout);
-		searchTimeout = setTimeout(() => {
-			currentPage = 1;
-			fetchItems();
-		}, 400);
+	function handleSearchInput() { /* no-op: يُنتظر Enter أو زر البحث */ }
+
+	function handleSearchKey(e) {
+		if (e.key === 'Enter') {
+			e.preventDefault();
+			submitSearch();
+		}
+	}
+
+	function submitSearch() {
+		currentPage = 1;
+		fetchItems();
 	}
 
 	function handleFilterChange() {
 		currentPage = 1;
-		fetchItems();
+		// الفلتر لا يُطلق جلبًا — ينتظر البحث.
+		if (hasSearched) fetchItems();
 	}
 
 	function goToPage(page) {
 		if (page < 1 || page > totalPages) return;
 		currentPage = page;
-		fetchItems();
+		if (hasSearched) fetchItems();
 	}
 
 	// ─── Detail ─────────────────────────────────────────
@@ -323,8 +345,10 @@
 			// إشعار FCM غير مُعطِّل.
 			if (notifyInfo) notifySectionCreated(notifyInfo);
 			showCreateModal = false;
-			fetchItems();
-			// Refresh options in case a new parent was created
+			// لا نُحدث قائمة الشاشة إلّا إن كان المستخدم قد بحث فعلًا —
+			// احترامًا لسياسة «لا بيانات بدون بحث».
+			if (hasSearched) fetchItems();
+			// نحدث خيارات الآباء في نافذة الإنشاء فقط (قد يكون أُنشئ أبٌ جديد).
 			fetchMainSectionsOptions();
 		} catch (err) {
 			createFormError = parseFormError(err.message);
@@ -378,7 +402,7 @@
 				await updateSecondarySection(editingItem.id, payload);
 			}
 			showEditModal = false;
-			fetchItems();
+			if (hasSearched) fetchItems();
 			// Refresh parent options in case name changed
 			if (activeLevel === 'main') fetchMainSectionsOptions();
 		} catch (err) {
@@ -407,7 +431,7 @@
 			}
 			showDeleteModal = false;
 			deletingItem = null;
-			fetchItems();
+			if (hasSearched) fetchItems();
 			// Refresh options
 			if (activeLevel === 'main') fetchMainSectionsOptions();
 		} catch (err) {
@@ -505,12 +529,18 @@
 				<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
 			</svg>
 			<input type="text" placeholder={t('sections.search')} bind:value={searchQuery}
-				oninput={handleSearch} class="search-input" id="search-sections" />
+				oninput={handleSearchInput} onkeydown={handleSearchKey} class="search-input" id="search-sections" />
 		</div>
+		<button type="button" class="btn btn-primary btn-search" onclick={submitSearch} disabled={!String(searchQuery || '').trim()}>
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon">
+				<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+			</svg>
+			بحث
+		</button>
 
 		<!-- Parent: Main Section dropdown (for sub & secondary levels) -->
 		{#if activeLevel === 'sub' || activeLevel === 'secondary'}
-			<select class="filter-select" bind:value={filterMainSection} onchange={handleMainSectionFilterChange}>
+			<select class="filter-select" bind:value={filterMainSection} onchange={handleMainSectionFilterChange} onfocus={() => { if (mainSectionsList.length === 0) fetchMainSectionsOptions(); }}>
 				<option value="">{t('sections.main_sections')} ({t('content.all_sections')})</option>
 				{#each mainSectionsList as ms}
 					<option value={ms.id}>{ms.name}</option>
@@ -551,18 +581,20 @@
 				<div class="spinner"></div>
 				<span>Loading sections...</span>
 			</div>
+		{:else if !hasSearched}
+			<div class="state-box empty-state">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon">
+					<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" />
+				</svg>
+				<p class="empty-title">الرجاء استخدام مربع البحث للعثور على الأقسام المراد تعديلها</p>
+				<p class="empty-hint">اكتب كلمة ثم اضغط Enter أو زرّ «بحث». لا يتمّ تحميل أيّ بيانات قبل ذلك حفاظًا على أداء النظام.</p>
+			</div>
 		{:else if items.length === 0}
 			<div class="state-box empty-state">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon">
 					<path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" stroke-linecap="round" stroke-linejoin="round" />
 				</svg>
-				<p>No sections found</p>
-				<button class="btn btn-primary btn-sm" onclick={openCreateModal}>
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon">
-						<path d="M12 5v14m-7-7h14" />
-					</svg>
-					Create your first {activeLevel === 'main' ? 'main' : activeLevel === 'sub' ? 'sub' : 'secondary'} section
-				</button>
+				<p>لا توجد نتائج مطابقة — جرّب كلمة بحث أخرى</p>
 			</div>
 		{:else}
 			<div class="sections-grid">
@@ -1185,6 +1217,26 @@
 		width: 48px;
 		height: 48px;
 		color: var(--color-surface-600);
+	}
+
+	.empty-title {
+		font-size: 0.95rem;
+		color: var(--color-surface-200);
+		font-weight: 600;
+		text-align: center;
+		max-width: 420px;
+	}
+
+	.empty-hint {
+		font-size: 0.8125rem;
+		color: var(--color-surface-500);
+		text-align: center;
+		max-width: 480px;
+		line-height: 1.5;
+	}
+
+	.btn-search {
+		white-space: nowrap;
 	}
 
 	.spinner {
