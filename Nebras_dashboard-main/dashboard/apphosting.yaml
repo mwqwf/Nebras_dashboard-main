@@ -2,44 +2,47 @@
 # Docs: https://firebase.google.com/docs/app-hosting/configure
 
 runConfig:
-  # Keep one idle instance so the admin dashboard stays warm (avoids the 3-5s
-  # Firebase-admin cold start when owners open the panel after a pause).
   minInstances: 0
   maxInstances: 2
   concurrency: 80
   cpu: 1
-  memoryMiB: 512
+  memoryMiB: 1024
 
-# Non-sensitive environment variables are configured through the App Hosting
-# console UI (they were entered during backend setup). Only secrets need to be
-# referenced here so the build + runtime can resolve them from Secret Manager.
+# ─────────────────────────────────────────────────────────────────────────────
+# NOTE on secrets:
+# The dashboard needs 5 runtime secrets to be fully functional:
+#   • NEBRAS_SERVICE_ACCOUNT_JSON  (Firebase Admin — Nebras)
+#   • MSHCAT_SERVICE_ACCOUNT_JSON  (Firebase Admin — Mshcat)
+#   • OLDAPP_SERVICE_ACCOUNT_JSON  (Firebase Admin — OldApp)
+#   • OWNER_CODE_SECRET            (OTP hashing salt)
+#   • SMTP_PASS                    (Gmail app password for OTP delivery)
 #
-# IMPORTANT: each secret listed below MUST be created in Google Secret Manager
-# first (either from the App Hosting "Add secret" button or via
-# `firebase apphosting:secrets:set <NAME>`). The service account running
-# App Hosting also needs `roles/secretmanager.secretAccessor`.
-env:
-  - variable: NEBRAS_SERVICE_ACCOUNT_JSON
-    secret: NEBRAS_SERVICE_ACCOUNT_JSON
-    availability:
-      - RUNTIME
-
-  - variable: MSHCAT_SERVICE_ACCOUNT_JSON
-    secret: MSHCAT_SERVICE_ACCOUNT_JSON
-    availability:
-      - RUNTIME
-
-  - variable: OLDAPP_SERVICE_ACCOUNT_JSON
-    secret: OLDAPP_SERVICE_ACCOUNT_JSON
-    availability:
-      - RUNTIME
-
-  - variable: OWNER_CODE_SECRET
-    secret: OWNER_CODE_SECRET
-    availability:
-      - RUNTIME
-
-  - variable: SMTP_PASS
-    secret: SMTP_PASS
-    availability:
-      - RUNTIME
+# Bindings for them are NOT declared here yet — App Hosting fails the build
+# fast if any referenced secret does not exist in Secret Manager. Add them in
+# this exact order after the first successful deploy:
+#
+#   firebase apphosting:secrets:set NEBRAS_SERVICE_ACCOUNT_JSON  --data-file=secrets/serviceAccountKey.json
+#   firebase apphosting:secrets:set MSHCAT_SERVICE_ACCOUNT_JSON  --data-file=secrets/mshcatServiceAccount.json
+#   firebase apphosting:secrets:set OLDAPP_SERVICE_ACCOUNT_JSON  --data-file=secrets/oldappServiceAccount.json
+#   firebase apphosting:secrets:set OWNER_CODE_SECRET
+#   firebase apphosting:secrets:set SMTP_PASS
+#
+# then uncomment the block below and redeploy.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# env:
+#   - variable: NEBRAS_SERVICE_ACCOUNT_JSON
+#     secret: NEBRAS_SERVICE_ACCOUNT_JSON
+#     availability: [RUNTIME]
+#   - variable: MSHCAT_SERVICE_ACCOUNT_JSON
+#     secret: MSHCAT_SERVICE_ACCOUNT_JSON
+#     availability: [RUNTIME]
+#   - variable: OLDAPP_SERVICE_ACCOUNT_JSON
+#     secret: OLDAPP_SERVICE_ACCOUNT_JSON
+#     availability: [RUNTIME]
+#   - variable: OWNER_CODE_SECRET
+#     secret: OWNER_CODE_SECRET
+#     availability: [RUNTIME]
+#   - variable: SMTP_PASS
+#     secret: SMTP_PASS
+#     availability: [RUNTIME]
