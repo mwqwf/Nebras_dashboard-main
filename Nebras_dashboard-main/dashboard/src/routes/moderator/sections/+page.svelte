@@ -10,11 +10,13 @@
 	import {
 		listMyMainSections, createMainSection, updateMainSection, removeMainSection,
 		listMySubSections, createSubSection, updateSubSection, removeSubSection,
-		listMySecondarySections, createSecondarySection, updateSecondarySection, removeSecondarySection
+		listMySecondarySections, createSecondarySection, updateSecondarySection, removeSecondarySection,
+		getLastPartialFailures
 	} from '$lib/api/moderator.js';
 	import { notifySectionCreated } from '$lib/utils/notifyEvents.js';
 	import { isMshcatConfigured } from '$lib/api/mshcatBrowse.js';
 	import { t } from '$lib/i18n/store.svelte.js';
+	import { tokenize, highlightMatches } from '$lib/utils/search.js';
 
 	// هل Mshcat مُهيَّأ؟ لو لا، نخفي خيار المصدر من الواجهة.
 	const mshcatAvailable = isMshcatConfigured();
@@ -102,26 +104,38 @@
 		t('sections.desc')
 	);
 
-	// ─── Fetch items (search-driven only) ───────────────
+	// ─── Search tokens (for highlighting) ───────────────
+	let searchTokens = $state([]);
+
+	// Partial source failures (Mshcat/OldApp).
+	let partialFailures = $state([]);
+
+	// ─── Fetch items (search-driven + filter-driven) ────
 
 	/**
-	 * الجلب لا يُشغَّل إلّا حين يكون هناك نصّ بحث فعلي. تمرَّر
-	 * `requireSearch: true` لطبقة الـAPI لضمان إرجاع قائمة فارغة من دون
-	 * لمس قاعدة البيانات إن كان النصّ فارغًا — هذا يحمي التطبيق من تعليق
-	 * الشاشات عند جلب آلاف المستندات دفعة واحدة.
+	 * الجلب يُشغَّل عند وجود نصّ بحث ≥ 2 أحرف، **أو** عند وجود فلتر نشط
+	 * (قسم أب محدَّد، أو حالة إدراج). هذا يسمح للمستخدم بتصفّح قسم
+	 * معيَّن كاملاً بدون كتابة نصّ، مع إبقاء الحماية من جلب الشجرة كلّها
+	 * دون أيّ قيد.
 	 */
 	async function fetchItems() {
 		const q = String(searchQuery || '').trim();
-		if (!q) {
+		const hasActiveFilter =
+			filterIsListed !== '' ||
+			(activeLevel === 'sub' && !!filterMainSection) ||
+			(activeLevel === 'secondary' && (!!filterMainSection || !!filterSubSection));
+		if (!q && !hasActiveFilter) {
 			items = [];
 			totalCount = 0;
 			hasSearched = false;
 			isLoading = false;
+			searchTokens = [];
 			return;
 		}
 		isLoading = true;
 		error = '';
 		hasSearched = true;
+		searchTokens = tokenize(q);
 		try {
 			let data;
 			const baseParams = {
@@ -147,6 +161,7 @@
 
 			items = data.results;
 			totalCount = data.count;
+			partialFailures = getLastPartialFailures();
 		} catch (err) {
 			error = err.message;
 		} finally {
@@ -203,25 +218,26 @@
 			filterSubSection = '';
 			fetchSubSectionsOptions(filterMainSection || '');
 		}
-		if (hasSearched) fetchItems();
+		// الفلتر يُطلق الجلب مباشرة — لا حاجة لاشتراط بحث سابق.
+		fetchItems();
 	}
 
 	function handleSubSectionFilterChange() {
 		currentPage = 1;
-		if (hasSearched) fetchItems();
+		fetchItems();
 	}
 
 	// ─── Search trigger ─────────────────────────────────
-	// البحث يُشغَّل فقط بالضغط على Enter أو زرّ البحث. لا نستخدم
-	// debounce على كلّ حرف لأنّ ذلك يُعيد إنتاج نفس مشكلة الضغط على
-	// السيرفر. أبقينا الاسم حفاظًا على توافق الأحداث الحاليّة.
-
-	function handleSearchInput() { /* no-op: يُنتظر Enter أو زر البحث */ }
+	// البحث يُشغَّل بالضغط على Enter أو زرّ البحث. Escape يمسح الحقل.
+	// لا نستخدم debounce-auto-fetch على كلّ حرف حفاظًا على الأداء.
 
 	function handleSearchKey(e) {
 		if (e.key === 'Enter') {
 			e.preventDefault();
 			submitSearch();
+		} else if (e.key === 'Escape') {
+			e.preventDefault();
+			clearSearch();
 		}
 	}
 
@@ -230,10 +246,29 @@
 		fetchItems();
 	}
 
+	function clearSearch() {
+		searchQuery = '';
+		searchTokens = [];
+		// إن كان هناك فلتر نشط، أعد الجلب بدون نصّ. خلاف ذلك، فرِّغ الشاشة.
+		const hasActiveFilter =
+			filterIsListed !== '' ||
+			(activeLevel === 'sub' && !!filterMainSection) ||
+			(activeLevel === 'secondary' && (!!filterMainSection || !!filterSubSection));
+		if (hasActiveFilter) {
+			currentPage = 1;
+			fetchItems();
+		} else {
+			items = [];
+			totalCount = 0;
+			hasSearched = false;
+			error = '';
+		}
+	}
+
 	function handleFilterChange() {
 		currentPage = 1;
-		// الفلتر لا يُطلق جلبًا — ينتظر البحث.
-		if (hasSearched) fetchItems();
+		// الفلتر يُطلق الجلب مباشرة الآن.
+		fetchItems();
 	}
 
 	function goToPage(page) {
@@ -529,13 +564,18 @@
 				<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
 			</svg>
 			<input type="text" placeholder={t('sections.search')} bind:value={searchQuery}
-				oninput={handleSearchInput} onkeydown={handleSearchKey} class="search-input" id="search-sections" />
+				onkeydown={handleSearchKey} class="search-input" id="search-sections" />
+			{#if searchQuery}
+				<button type="button" class="search-clear" aria-label={t('common.search_clear')} title={t('common.search_clear')} onclick={clearSearch}>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18L18 6M6 6l12 12" /></svg>
+				</button>
+			{/if}
 		</div>
 		<button type="button" class="btn btn-primary btn-search" onclick={submitSearch} disabled={!String(searchQuery || '').trim()}>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon">
 				<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
 			</svg>
-			بحث
+			{t('common.search_btn')}
 		</button>
 
 		<!-- Parent: Main Section dropdown (for sub & secondary levels) -->
@@ -574,27 +614,38 @@
 		<div class="alert alert-error">{error}</div>
 	{/if}
 
+	<!-- Partial source failure banner -->
+	{#if partialFailures.length > 0}
+		<div class="alert alert-warning" style="margin-bottom:0.75rem">
+			{t('common.search_partial_warning')}
+			{#each partialFailures as f}
+				<span style="display:inline-block;margin:0 0.35rem">· {f.source}</span>
+			{/each}
+		</div>
+	{/if}
+
 	<!-- Sections Grid -->
 	<div class="sections-container">
 		{#if isLoading}
-			<div class="state-box">
-				<div class="spinner"></div>
-				<span>Loading sections...</span>
+			<div class="sections-grid skeleton-grid" aria-busy="true">
+				{#each Array(6) as _, i (i)}
+					<div class="skeleton-card"><div class="sk-thumb"></div><div class="sk-line"></div><div class="sk-line sk-short"></div></div>
+				{/each}
 			</div>
 		{:else if !hasSearched}
 			<div class="state-box empty-state">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon">
 					<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" />
 				</svg>
-				<p class="empty-title">الرجاء استخدام مربع البحث للعثور على الأقسام المراد تعديلها</p>
-				<p class="empty-hint">اكتب كلمة ثم اضغط Enter أو زرّ «بحث». لا يتمّ تحميل أيّ بيانات قبل ذلك حفاظًا على أداء النظام.</p>
+				<p class="empty-title">{t('common.search_empty_title')}</p>
+				<p class="empty-hint">{t('common.search_empty_hint')}</p>
 			</div>
 		{:else if items.length === 0}
 			<div class="state-box empty-state">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon">
 					<path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" stroke-linecap="round" stroke-linejoin="round" />
 				</svg>
-				<p>لا توجد نتائج مطابقة — جرّب كلمة بحث أخرى</p>
+				<p>{t('common.search_no_results')}</p>
 			</div>
 		{:else}
 			<div class="sections-grid">
@@ -620,7 +671,7 @@
 
 						<!-- Card body -->
 						<div class="card-body">
-							<h3 class="card-title">{item.name}</h3>
+							<h3 class="card-title">{@html highlightMatches(item.name, searchTokens)}</h3>
 
 							<div class="card-meta">
 								{#if item.order_index !== undefined}
@@ -1107,6 +1158,46 @@
 		gap: 0.75rem;
 		flex-wrap: wrap;
 	}
+
+	/* Highlight inside results */
+	:global(.hl) {
+		background: rgba(234, 179, 8, 0.32);
+		color: inherit;
+		padding: 0 0.125rem;
+		border-radius: 3px;
+	}
+
+	/* Clear button inside search box */
+	.search-clear {
+		background: none;
+		border: none;
+		color: var(--color-surface-400);
+		cursor: pointer;
+		padding: 0;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.search-clear:hover { color: var(--color-surface-100); }
+	.search-clear svg { width: 14px; height: 14px; }
+
+	/* Warning alert (partial source failure) */
+	.alert-warning {
+		padding: 0.6rem 0.85rem;
+		background: rgba(234, 179, 8, 0.12);
+		border: 1px solid rgba(234, 179, 8, 0.35);
+		color: #fde68a;
+		border-radius: 8px;
+		font-size: 0.85rem;
+	}
+
+	/* Skeleton loading cards */
+	.skeleton-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; padding: 0.5rem 0; }
+	.skeleton-card { background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 10px; padding: 0.75rem; }
+	.sk-thumb { height: 120px; border-radius: 8px; background: linear-gradient(90deg, var(--color-surface-700) 0%, var(--color-surface-800) 50%, var(--color-surface-700) 100%); background-size: 200% 100%; animation: sk-shimmer 1.4s infinite linear; }
+	.sk-line { height: 12px; margin-top: 0.75rem; border-radius: 6px; background: linear-gradient(90deg, var(--color-surface-700) 0%, var(--color-surface-800) 50%, var(--color-surface-700) 100%); background-size: 200% 100%; animation: sk-shimmer 1.4s infinite linear; }
+	.sk-short { width: 60%; }
+	@keyframes sk-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
 	.search-box {
 		display: flex;

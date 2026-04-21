@@ -1,8 +1,9 @@
 <script>
-	import { listMyFiles, removeFile, updateFile, listMyMainSections, listMySubSections, listMySecondarySections, mirrorUploadedFileToOldAppLesson, mirrorUploadedFileToMshcatBook } from '$lib/api/moderator.js';
+	import { listMyFiles, removeFile, updateFile, listMyMainSections, listMySubSections, listMySecondarySections, mirrorUploadedFileToOldAppLesson, mirrorUploadedFileToMshcatBook, getLastPartialFailures } from '$lib/api/moderator.js';
 	import { createFileUploader, createResumeUploader, formatFileSize, mimeToContentType } from '$lib/utils/fileUpload.js';
 	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
+	import { tokenize, highlightMatches } from '$lib/utils/search.js';
 
 	// سياسة الجلب: لا تحميل تلقائيّ — الشاشة تبقى فارغة حتّى يبحث المستخدم.
 
@@ -21,6 +22,8 @@
 	let mainSectionsList = $state([]);
 	let subSectionsList = $state([]);
 	let secondarySectionsList = $state([]);
+	let searchTokens = $state([]);
+	let partialFailures = $state([]);
 
 	// Upload modal
 	let showUploadModal = $state(false);
@@ -67,10 +70,11 @@
 
 	async function fetchItems() {
 		const q = String(searchQuery || '').trim();
-		if (!q) {
-			items = []; totalCount = 0; hasSearched = false; isLoading = false; return;
+		const hasActiveFilter = !!filterMainSection || !!filterContentType || filterIsListed !== '';
+		if (!q && !hasActiveFilter) {
+			items = []; totalCount = 0; hasSearched = false; isLoading = false; searchTokens = []; return;
 		}
-		isLoading = true; error = ''; hasSearched = true;
+		isLoading = true; error = ''; hasSearched = true; searchTokens = tokenize(q);
 		try {
 			const data = await listMyFiles({
 				search: q,
@@ -81,6 +85,7 @@
 				requireSearch: true
 			});
 			items = data.results; totalCount = data.count;
+			partialFailures = getLastPartialFailures();
 		} catch (err) { error = err.message; }
 		finally { isLoading = false; }
 	}
@@ -99,10 +104,19 @@
 		catch { uploadSecondaryOptions = []; }
 	}
 
-	function handleSearchInput() { /* لا جلب على الكتابة — يُنتظر Enter أو زر البحث */ }
-	function handleSearchKey(e) { if (e.key === 'Enter') { e.preventDefault(); submitSearch(); } }
+	function handleSearchKey(e) {
+		if (e.key === 'Enter') { e.preventDefault(); submitSearch(); }
+		else if (e.key === 'Escape') { e.preventDefault(); clearSearch(); }
+	}
 	function submitSearch() { currentPage = 1; fetchItems(); }
-	function handleFilterChange() { currentPage = 1; if (hasSearched) fetchItems(); }
+	function clearSearch() {
+		searchQuery = '';
+		searchTokens = [];
+		const hasActiveFilter = !!filterMainSection || !!filterContentType || filterIsListed !== '';
+		if (hasActiveFilter) { currentPage = 1; fetchItems(); }
+		else { items = []; totalCount = 0; hasSearched = false; error = ''; }
+	}
+	function handleFilterChange() { currentPage = 1; fetchItems(); }
 	function goToPage(p) { if (p < 1 || p > totalPages) return; currentPage = p; if (hasSearched) fetchItems(); }
 
 	// ─── Upload Modal ───────────────────────────────────
@@ -320,11 +334,16 @@
 	<div class="toolbar">
 		<div class="search-box">
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-			<input type="text" placeholder={t('content.search_files')} bind:value={searchQuery} oninput={handleSearchInput} onkeydown={handleSearchKey} class="search-input" />
+			<input type="text" placeholder={t('content.search_files')} bind:value={searchQuery} onkeydown={handleSearchKey} class="search-input" />
+			{#if searchQuery}
+				<button type="button" class="search-clear" aria-label={t('common.search_clear')} title={t('common.search_clear')} onclick={clearSearch}>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18L18 6M6 6l12 12" /></svg>
+				</button>
+			{/if}
 		</div>
 		<button type="button" class="btn btn-primary btn-search" onclick={submitSearch} disabled={!String(searchQuery || '').trim()}>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-			بحث
+			{t('common.search_btn')}
 		</button>
 		<select class="filter-select" bind:value={filterContentType} onchange={handleFilterChange}>
 			<option value="">{t('content.all_types')}</option>
@@ -346,19 +365,32 @@
 
 	{#if error}<div class="alert alert-error">{error}</div>{/if}
 
+	{#if partialFailures.length > 0}
+		<div class="alert alert-warning" style="margin-bottom:0.75rem">
+			{t('common.search_partial_warning')}
+			{#each partialFailures as f}
+				<span style="display:inline-block;margin:0 0.35rem">· {f.source}</span>
+			{/each}
+		</div>
+	{/if}
+
 	<div class="content-container">
 		{#if isLoading}
-			<div class="state-box"><div class="spinner"></div><span>{t('common.loading')}</span></div>
+			<div class="file-list skeleton-list" aria-busy="true">
+				{#each Array(6) as _, i (i)}
+					<div class="skeleton-row"><div class="sk-line"></div><div class="sk-line sk-short"></div></div>
+				{/each}
+			</div>
 		{:else if !hasSearched}
 			<div class="state-box empty-state">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" /></svg>
-				<p class="empty-title">الرجاء استخدام مربع البحث للعثور على الملفات المراد تعديلها</p>
-				<p class="empty-hint">اكتب كلمة ثم اضغط Enter أو زرّ «بحث». لا يتمّ تحميل أيّ بيانات قبل ذلك حفاظًا على الأداء.</p>
+				<p class="empty-title">{t('common.search_empty_title')}</p>
+				<p class="empty-hint">{t('common.search_empty_hint')}</p>
 			</div>
 		{:else if items.length === 0}
 			<div class="state-box empty-state">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" stroke-linecap="round" stroke-linejoin="round" /></svg>
-				<p>لا توجد نتائج مطابقة — جرّب كلمة بحث أخرى</p>
+				<p>{t('common.search_no_results')}</p>
 			</div>
 		{:else}
 			<div class="file-list">
@@ -368,7 +400,7 @@
 					<div class="file-row" class:file-row-pending={item.upload_status === 'pending'} onclick={() => handleRowClick(item)}>
 						<div class="file-icon">{contentTypeIcon(item.metadata?.content_type)}</div>
 						<div class="file-info">
-							<span class="file-name">{item.metadata?.title || item.filename || 'Untitled'}</span>
+							<span class="file-name">{@html highlightMatches(item.metadata?.title || item.filename || 'Untitled', searchTokens)}</span>
 							<span class="file-meta" style="color: {item.metadata?.is_listed === false ? 'var(--color-danger-400)' : 'inherit'};">
 								{item.metadata?.is_listed === false ? t('common.unlisted') : `${item.file_type} · ${formatFileSize(item.file_size)}`}
 							</span>
@@ -690,6 +722,16 @@
 	.tab:hover { color: var(--color-surface-200); }
 	.tab.active { color: var(--color-primary-400); border-bottom-color: var(--color-primary-500); }
 	.toolbar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+	:global(.hl) { background: rgba(234, 179, 8, 0.32); color: inherit; padding: 0 0.125rem; border-radius: 3px; }
+	.search-clear { background: none; border: none; color: var(--color-surface-400); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+	.search-clear:hover { color: var(--color-surface-100); }
+	.search-clear svg { width: 14px; height: 14px; }
+	.alert-warning { padding: 0.6rem 0.85rem; background: rgba(234, 179, 8, 0.12); border: 1px solid rgba(234, 179, 8, 0.35); color: #fde68a; border-radius: 8px; font-size: 0.85rem; }
+	.skeleton-list { display: flex; flex-direction: column; gap: 0.5rem; }
+	.skeleton-row { background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 10px; padding: 0.75rem 1rem; }
+	.sk-line { height: 12px; margin-top: 0.4rem; border-radius: 6px; background: linear-gradient(90deg, var(--color-surface-700) 0%, var(--color-surface-800) 50%, var(--color-surface-700) 100%); background-size: 200% 100%; animation: sk-shimmer 1.4s infinite linear; }
+	.sk-short { width: 60%; }
+	@keyframes sk-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 	.search-box { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 10px; flex: 1; max-width: 280px; }
 	.search-box:focus-within { border-color: var(--color-primary-600); }
 	.search-icon { width: 16px; height: 16px; color: var(--color-surface-500); flex-shrink: 0; }

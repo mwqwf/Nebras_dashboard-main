@@ -48,7 +48,18 @@ export const translations = {
             previous: 'Previous',
             next: 'Next',
             cannot_be_undone: 'This action cannot be undone.',
-            remove: 'Remove'
+            remove: 'Remove',
+            search_btn: 'Search',
+            search_clear: 'Clear',
+            search_empty_title: 'Use the search box to find items you want to manage',
+            search_empty_hint: 'Type a word and press Enter, or pick a filter. No data is loaded until then, for performance.',
+            search_no_results: 'No matching results — try a different keyword',
+            search_global_placeholder: 'Search everything…',
+            search_global_title: 'Global Search',
+            search_global_desc: 'Unified search across sections, files and videos (Nebras, Mshcat, OldApp).',
+            search_partial_warning: 'Partial data — some sources failed:',
+            search_source: 'Source',
+            results: 'Results'
         },
         profile: {
             title: 'My Profile',
@@ -356,7 +367,18 @@ export const translations = {
             previous: 'السابق',
             next: 'التالي',
             cannot_be_undone: 'هذا الإجراء لا يمكن التراجع عنه.',
-            remove: 'إزالة'
+            remove: 'إزالة',
+            search_btn: 'بحث',
+            search_clear: 'مسح',
+            search_empty_title: 'الرجاء استخدام مربّع البحث للعثور على العناصر',
+            search_empty_hint: 'اكتب كلمة واضغط Enter، أو اختر فلترًا. لا يتمّ تحميل أيّ بيانات قبل ذلك حفاظًا على الأداء.',
+            search_no_results: 'لا توجد نتائج مطابقة — جرّب كلمة بحث أخرى',
+            search_global_placeholder: 'ابحث في كلّ شيء…',
+            search_global_title: 'البحث الشامل',
+            search_global_desc: 'بحث موحَّد عبر الأقسام والملفّات والفيديوهات (Nebras وMshcat وOldApp).',
+            search_partial_warning: 'بيانات جزئيّة — فشل جلب بعض المصادر:',
+            search_source: 'المصدر',
+            results: 'النتائج'
         },
         profile: {
             title: 'ملفي الشخصي',

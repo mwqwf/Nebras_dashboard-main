@@ -6,10 +6,12 @@
 <script>
 	import {
 		listMyYoutubeVideos, createYoutubeVideo, updateYoutubeVideo, removeYoutubeVideo,
-		listMyMainSections, listMySubSections, listMySecondarySections
+		listMyMainSections, listMySubSections, listMySecondarySections,
+		getLastPartialFailures
 	} from '$lib/api/moderator.js';
 	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
+	import { tokenize, highlightMatches } from '$lib/utils/search.js';
 
 	// ─── State ──────────────────────────────────────────
 	let items = $state([]);
@@ -27,6 +29,8 @@
 	let mainSectionsList = $state([]);
 	let subSectionsList = $state([]);
 	let secondarySectionsList = $state([]);
+	let searchTokens = $state([]);
+	let partialFailures = $state([]);
 
 	// Create modal
 	let showCreateModal = $state(false);
@@ -62,13 +66,17 @@
 	// ─── Fetch ──────────────────────────────────────────
 	async function fetchItems() {
 		const q = String(searchQuery || '').trim();
-		if (!q) {
-			items = []; totalCount = 0; hasSearched = false; isLoading = false; return;
+		const hasActiveFilter = !!filterMainSection || !!filterSubSection || filterIsListed !== '';
+		if (!q && !hasActiveFilter) {
+			items = []; totalCount = 0; hasSearched = false; isLoading = false; searchTokens = []; return;
 		}
-		isLoading = true; error = ''; hasSearched = true;
+		isLoading = true; error = ''; hasSearched = true; searchTokens = tokenize(q);
 		try {
+			// إصلاح حاسم: نُمرّر `q` المُقلَّم بدل `searchQuery` الخام. كان
+			// تمرير `searchQuery` يرسل مسافات زائدة إلى المُطابِق، فيُفشل
+			// البحث على استفسارات بسيطة يلصقها المستخدم من الحافظة.
 			const data = await listMyYoutubeVideos({
-				search: searchQuery,
+				search: q,
 				main_section: filterMainSection || undefined,
 				subsection: filterSubSection || undefined,
 				metadata__is_listed: filterIsListed === '' ? undefined : filterIsListed === 'true',
@@ -77,6 +85,7 @@
 			});
 			items = data.results;
 			totalCount = data.count;
+			partialFailures = getLastPartialFailures();
 		} catch (err) { error = err.message; }
 		finally { isLoading = false; }
 	}
@@ -107,26 +116,35 @@
 	}
 
 	// ─── Filter handlers ────────────────────────────────
-	function handleSearchInput() { /* لا جلب على الكتابة — يُنتظر Enter أو زر البحث */ }
-	function handleSearchKey(e) { if (e.key === 'Enter') { e.preventDefault(); submitSearch(); } }
+	function handleSearchKey(e) {
+		if (e.key === 'Enter') { e.preventDefault(); submitSearch(); }
+		else if (e.key === 'Escape') { e.preventDefault(); clearSearch(); }
+	}
 	function submitSearch() { currentPage = 1; fetchItems(); }
+	function clearSearch() {
+		searchQuery = '';
+		searchTokens = [];
+		const hasActiveFilter = !!filterMainSection || !!filterSubSection || filterIsListed !== '';
+		if (hasActiveFilter) { currentPage = 1; fetchItems(); }
+		else { items = []; totalCount = 0; hasSearched = false; error = ''; }
+	}
 
 	function handleMainFilterChange() {
 		currentPage = 1;
 		filterSubSection = '';
 		if (filterMainSection) fetchSubOptions(filterMainSection, 'filter');
 		else subSectionsList = [];
-		if (hasSearched) fetchItems();
+		fetchItems();
 	}
 
 	function handleSubFilterChange() {
 		currentPage = 1;
-		if (hasSearched) fetchItems();
+		fetchItems();
 	}
 
 	function handleFilterChange() {
 		currentPage = 1;
-		if (hasSearched) fetchItems();
+		fetchItems();
 	}
 
 	function goToPage(p) {
@@ -336,11 +354,16 @@
 	<div class="toolbar">
 		<div class="search-box">
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-			<input type="text" placeholder={t('content.search_videos')} bind:value={searchQuery} oninput={handleSearchInput} onkeydown={handleSearchKey} class="search-input" />
+			<input type="text" placeholder={t('content.search_videos')} bind:value={searchQuery} onkeydown={handleSearchKey} class="search-input" />
+			{#if searchQuery}
+				<button type="button" class="search-clear" aria-label={t('common.search_clear')} title={t('common.search_clear')} onclick={clearSearch}>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18L18 6M6 6l12 12" /></svg>
+				</button>
+			{/if}
 		</div>
 		<button type="button" class="btn btn-primary btn-search" onclick={submitSearch} disabled={!String(searchQuery || '').trim()}>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-			بحث
+			{t('common.search_btn')}
 		</button>
 		<select class="filter-select" bind:value={filterMainSection} onchange={handleMainFilterChange} onfocus={() => { if (mainSectionsList.length === 0) fetchMainSectionsOptions(); }}>
 			<option value="">{t('content.all_main_sections')}</option>
@@ -362,20 +385,33 @@
 
 	{#if error}<div class="alert alert-error">{error}</div>{/if}
 
+	{#if partialFailures.length > 0}
+		<div class="alert alert-warning" style="margin-bottom:0.75rem">
+			{t('common.search_partial_warning')}
+			{#each partialFailures as f}
+				<span style="display:inline-block;margin:0 0.35rem">· {f.source}</span>
+			{/each}
+		</div>
+	{/if}
+
 	<!-- Content Grid -->
 	<div class="content-container">
 		{#if isLoading}
-			<div class="state-box"><div class="spinner"></div><span>{t('common.loading')}</span></div>
+			<div class="content-grid skeleton-grid" aria-busy="true">
+				{#each Array(6) as _, i (i)}
+					<div class="skeleton-card"><div class="sk-thumb"></div><div class="sk-line"></div><div class="sk-line sk-short"></div></div>
+				{/each}
+			</div>
 		{:else if !hasSearched}
 			<div class="state-box empty-state">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" /></svg>
-				<p class="empty-title">الرجاء استخدام مربع البحث للعثور على المحتوى المراد تعديله</p>
-				<p class="empty-hint">اكتب كلمة ثم اضغط Enter أو زرّ «بحث». لا يتمّ تحميل أيّ بيانات قبل ذلك حفاظًا على الأداء.</p>
+				<p class="empty-title">{t('common.search_empty_title')}</p>
+				<p class="empty-hint">{t('common.search_empty_hint')}</p>
 			</div>
 		{:else if items.length === 0}
 			<div class="state-box empty-state">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon"><path d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round" /></svg>
-				<p>لا توجد نتائج مطابقة — جرّب كلمة بحث أخرى</p>
+				<p>{t('common.search_no_results')}</p>
 			</div>
 		{:else}
 			<div class="content-grid">
@@ -397,9 +433,9 @@
 							<div class="type-badge">YouTube</div>
 						</div>
 						<div class="card-body">
-							<h3 class="card-title">{item.metadata?.title || 'Untitled'}</h3>
+							<h3 class="card-title">{@html highlightMatches(item.metadata?.title || 'Untitled', searchTokens)}</h3>
 							{#if item.metadata?.description}
-								<p class="card-desc">{item.metadata.description.slice(0, 80)}{item.metadata.description.length > 80 ? '...' : ''}</p>
+								<p class="card-desc">{@html highlightMatches(item.metadata.description.slice(0, 80) + (item.metadata.description.length > 80 ? '...' : ''), searchTokens)}</p>
 							{/if}
 							<div class="card-footer">
 								<span class="card-date">{formatDate(item.metadata?.created_at)}</span>
@@ -677,6 +713,17 @@
 
 	/* Toolbar */
 	.toolbar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+	:global(.hl) { background: rgba(234, 179, 8, 0.32); color: inherit; padding: 0 0.125rem; border-radius: 3px; }
+	.search-clear { background: none; border: none; color: var(--color-surface-400); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+	.search-clear:hover { color: var(--color-surface-100); }
+	.search-clear svg { width: 14px; height: 14px; }
+	.alert-warning { padding: 0.6rem 0.85rem; background: rgba(234, 179, 8, 0.12); border: 1px solid rgba(234, 179, 8, 0.35); color: #fde68a; border-radius: 8px; font-size: 0.85rem; }
+	.skeleton-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; padding: 0.5rem 0; }
+	.skeleton-card { background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 10px; padding: 0.75rem; }
+	.sk-thumb { height: 140px; border-radius: 8px; background: linear-gradient(90deg, var(--color-surface-700) 0%, var(--color-surface-800) 50%, var(--color-surface-700) 100%); background-size: 200% 100%; animation: sk-shimmer 1.4s infinite linear; }
+	.sk-line { height: 12px; margin-top: 0.75rem; border-radius: 6px; background: linear-gradient(90deg, var(--color-surface-700) 0%, var(--color-surface-800) 50%, var(--color-surface-700) 100%); background-size: 200% 100%; animation: sk-shimmer 1.4s infinite linear; }
+	.sk-short { width: 60%; }
+	@keyframes sk-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 	.search-box { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 10px; flex: 1; max-width: 280px; transition: border-color 0.2s; }
 	.search-box:focus-within { border-color: var(--color-primary-600); }
 	.search-icon { width: 16px; height: 16px; color: var(--color-surface-500); flex-shrink: 0; }

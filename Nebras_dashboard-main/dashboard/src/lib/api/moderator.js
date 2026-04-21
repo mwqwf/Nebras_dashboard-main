@@ -68,23 +68,65 @@ import {
   adaptMshcatBookAsFile,
   adaptMshcatBookAsYoutube,
 } from "$lib/api/mshcatBrowse.js";
+import {
+  tokenize,
+  matchesAllTokens,
+  filterAndRank,
+  createTtlCache,
+} from "$lib/utils/search.js";
 
 // ─── Helpers ────────────────────────────────────────────
 
 /**
  * بوابة البحث الإلزاميّة — ترفض جلب آلاف المستندات على مجرّد فتح الصفحة.
  *
- * الاستعمال: تُمرَّر `{ requireSearch: true, search }` من الصفحات الإداريّة
- * (sections/files/youtube). إن كان `search` فارغًا أو أقصر من الحدّ الأدنى
- * فإنّ الدالة تعيد `true` (يعني: أرجِع قائمة فارغة فورًا وتجنّب الجلب).
- * الاستدعاءات الداخليّة (من النوافذ المنبثقة مثلًا) تتركها على false
+ * الاستعمال: تُمرَّر `{ requireSearch: true, search, hasActiveFilter }`
+ * من الصفحات الإداريّة (sections/files/youtube).
+ *   - إن كان `search` فارغًا/أقصر من الحدّ الأدنى **و** لا يوجد فلتر نشط،
+ *     فإنّ الدالة تعيد `true` (يعني: أرجِع قائمة فارغة فورًا).
+ *   - إن كان هناك فلتر نشط (قسم محدَّد، نوع محتوى، …) فالبحث يُسمَح به
+ *     حتى بدون نصّ، لأنّ الفلتر نفسه يُقيّد حجم النتيجة.
+ * الاستدعاءات الداخليّة (من النوافذ المنبثقة) تتركها على false
  * لأنّها محدودة العدد ومربوطة بفعل صريح من المستخدم.
  */
-const MIN_SEARCH_LEN = 1;
-function shouldSkipListing({ requireSearch, search } = {}) {
+const MIN_SEARCH_LEN = 2;
+function shouldSkipListing({ requireSearch, search, hasActiveFilter } = {}) {
   if (!requireSearch) return false;
+  if (hasActiveFilter) return false;
   const q = String(search || "").trim();
   return q.length < MIN_SEARCH_LEN;
+}
+
+// ─── Memoization for external heavy merges ──────────────
+//
+// بعض استدعاءات المشاريع الثانويّة (Mshcat/OldApp) تقرأ شجرة كاملة من
+// الكتب أو الأقسام. تكرار البحث خلال ثوانٍ قليلة (مثلاً تصحيح كلمة)
+// يجب ألّا يُعيد نفس القراءات الشبكيّة. نستخدم TTL قصير (30s) لنضمن أن
+// البيانات تظلّ طازجة بعد أيّ عمليّة كتابة من المستخدم (إنشاء/تعديل/حذف).
+const EXTERNAL_TTL_MS = 30000;
+const externalCache = createTtlCache(EXTERNAL_TTL_MS);
+
+/** يُفرغ ذاكرة دمج المشاريع الثانويّة بعد أيّ عمليّة كتابة حاسمة. */
+function invalidateExternalCaches() {
+  externalCache.invalidate();
+}
+
+// Tracking partial source failures for UI awareness.
+// مخصَّص للاستخدام عبر `getLastPartialFailures()` من الصفحات.
+let _lastPartialFailures = [];
+function recordPartialFailure(source, err) {
+  _lastPartialFailures.push({ source, message: String(err?.message || err) });
+  if (import.meta.env.DEV) console.warn(`[moderator] ${source} failed:`, err);
+}
+function resetPartialFailures() {
+  _lastPartialFailures = [];
+}
+/**
+ * يُرجع أيّ فشل جزئي حدث أثناء آخر عمليّة جلب (Mshcat/OldApp).
+ * الواجهة تستطيع عرضه كـ toast تحذيري بدل أن يظنّ المشرف أنّ القائمة كاملة.
+ */
+export function getLastPartialFailures() {
+  return [..._lastPartialFailures];
 }
 
 function emptyPage() {
@@ -226,7 +268,14 @@ export async function listMyYoutubeVideos({
   page = 1,
   requireSearch = false,
 } = {}) {
-  if (shouldSkipListing({ requireSearch, search })) return emptyPage();
+  const hasActiveFilter =
+    (main_section !== undefined && main_section !== "") ||
+    (subsection !== undefined && subsection !== "") ||
+    (secondary_subsection !== undefined && secondary_subsection !== "") ||
+    metadata__is_listed !== undefined ||
+    is_listed !== undefined;
+  if (shouldSkipListing({ requireSearch, search, hasActiveFilter })) return emptyPage();
+  resetPartialFailures();
   const db = sectionsDb();
   const ytSnap = await get(dbRef(db, `${CONTENT_ROOT}/youtube`));
   const subSnap = await get(dbRef(db, `${SECTIONS_ROOT}/sub`));
@@ -235,33 +284,66 @@ export async function listMyYoutubeVideos({
   let list = ytSnap.exists() ? Object.values(ytSnap.val() || {}) : [];
 
   if (isOldAppConfigured()) {
-    const hostId = await getHostMainSectionId();
-    const shouldMergeOldApp =
-      main_section === undefined || main_section === "" || sameSectionId(main_section, hostId);
-    if (hostId != null && shouldMergeOldApp) {
-      const oldMains = await listOldAppMainSections();
-      for (const m of oldMains) {
-        const oldSubs = await listOldAppSubSections(m.id);
-        for (const s of oldSubs) {
-          const lessons = await listOldAppLessonsBySub(m.id, s.id);
-          for (const lesson of lessons) {
-            const asYoutube = adaptOldAppLessonAsYoutube(lesson, {
-              mainDocId: m.id,
-              subDocId: s.id,
-            });
-            if (String(asYoutube?.metadata?.content_type) === "youtube") {
-              list.push(asYoutube);
+    try {
+      const hostId = await getHostMainSectionId();
+      const shouldMergeOldApp =
+        main_section === undefined || main_section === "" || sameSectionId(main_section, hostId);
+      if (hostId != null && shouldMergeOldApp) {
+        // التحميل المتوازي: نقرأ جميع الأقسام الرئيسيّة ثمّ الفرعيّة ثمّ
+        // الدروس بالتوازي (Promise.all) بدل التسلسل الخطّي O(N*M*K).
+        const oldMains = await externalCache.get("oldapp:mains", () =>
+          listOldAppMainSections(),
+        );
+        const allLessons = await Promise.all(
+          oldMains.map(async (m) => {
+            try {
+              const oldSubs = await externalCache.get(
+                `oldapp:subs:${m.id}`,
+                () => listOldAppSubSections(m.id),
+              );
+              const lessonsBatches = await Promise.all(
+                oldSubs.map((s) =>
+                  externalCache
+                    .get(`oldapp:lessons:${m.id}:${s.id}`, () =>
+                      listOldAppLessonsBySub(m.id, s.id),
+                    )
+                    .then((lessons) =>
+                      lessons.map((lesson) => ({ lesson, mainDocId: m.id, subDocId: s.id })),
+                    )
+                    .catch((err) => {
+                      recordPartialFailure(`OldApp lessons ${m.id}/${s.id}`, err);
+                      return [];
+                    }),
+                ),
+              );
+              return lessonsBatches.flat();
+            } catch (err) {
+              recordPartialFailure(`OldApp subs ${m.id}`, err);
+              return [];
             }
+          }),
+        );
+        for (const entry of allLessons.flat()) {
+          const asYoutube = adaptOldAppLessonAsYoutube(entry.lesson, {
+            mainDocId: entry.mainDocId,
+            subDocId: entry.subDocId,
+          });
+          if (String(asYoutube?.metadata?.content_type) === "youtube") {
+            list.push(asYoutube);
           }
         }
       }
+    } catch (err) {
+      recordPartialFailure("OldApp youtube merge", err);
     }
   }
 
   // دمج فيديوهات Mshcat: كتب من `books` نوعها youtube.
   if (isMshcatConfigured()) {
     try {
-      const books = await listAllMshcatBooks();
+      const books = await externalCache.get("mshcat:books:all", () =>
+        listAllMshcatBooks(),
+      );
       for (const b of books) {
         const yt = adaptMshcatBookAsYoutube(b);
         const t = String(yt?.metadata?.content_type || "").toLowerCase();
@@ -271,26 +353,19 @@ export async function listMyYoutubeVideos({
         }
       }
     } catch (err) {
-      if (import.meta.env.DEV) {
-        console.warn("[moderator] Mshcat youtube merge failed:", err);
-      }
+      recordPartialFailure("Mshcat youtube merge", err);
     }
   }
 
-  if (search) {
-    const q = String(search).toLowerCase();
-    list = list.filter((item) => {
-      const title = String(item?.metadata?.title || "").toLowerCase();
-      const desc = String(item?.metadata?.description || "").toLowerCase();
-      const author = String(item?.metadata?.author || "").toLowerCase();
-      const url = String(item?.video_url || "").toLowerCase();
-      return (
-        title.includes(q) ||
-        desc.includes(q) ||
-        author.includes(q) ||
-        url.includes(q)
-      );
-    });
+  // AND search + relevance ranking (Arabic-normalized).
+  const tokens = tokenize(search);
+  if (tokens.length > 0) {
+    list = filterAndRank(list, tokens, (item) => [
+      item?.metadata?.title || "",
+      item?.metadata?.description || "",
+      item?.metadata?.author || "",
+      item?.video_url || "",
+    ]);
   }
   if (subsection !== undefined && subsection !== "") {
     list = list.filter(
@@ -698,13 +773,14 @@ function applySectionFilters(
   { search = "", is_listed, main_section, sub_section } = {},
 ) {
   let out = [...list];
-  if (search) {
-    const q = String(search).toLowerCase();
-    out = out.filter((x) =>
-      String(x.name || "")
-        .toLowerCase()
-        .includes(q),
-    );
+  // Arabic-aware AND matching + relevance ranking.
+  const tokens = tokenize(search);
+  if (tokens.length > 0) {
+    out = filterAndRank(out, tokens, (x) => [
+      x.name || "",
+      x.description || "",
+      x.id != null ? String(x.id) : "",
+    ]);
   }
   if (is_listed !== undefined) {
     out = out.filter((x) => Boolean(x.is_listed) === Boolean(is_listed));
@@ -719,15 +795,20 @@ function applySectionFilters(
   if (sub_section !== undefined && sub_section !== "" && sub_section !== null) {
     out = out.filter((x) => sameSectionId(x.sub_section, sub_section));
   }
-  out.sort((a, b) => {
-    const ao = Number(a.order_index ?? 0);
-    const bo = Number(b.order_index ?? 0);
-    if (ao !== bo) return ao - bo;
-    const an = Number(a.id);
-    const bn = Number(b.id);
-    if (Number.isFinite(an) && Number.isFinite(bn)) return bn - an;
-    return String(b.id || "").localeCompare(String(a.id || ""));
-  });
+  // إن لم يكن هناك بحث نفرز بالترتيب الأصلي (order_index ثم id). مع
+  // البحث، filterAndRank يُحافظ على ترتيب الصِلة (ما يجعل النتيجة الأهمّ
+  // في الأعلى).
+  if (tokens.length === 0) {
+    out.sort((a, b) => {
+      const ao = Number(a.order_index ?? 0);
+      const bo = Number(b.order_index ?? 0);
+      if (ao !== bo) return ao - bo;
+      const an = Number(a.id);
+      const bn = Number(b.id);
+      if (Number.isFinite(an) && Number.isFinite(bn)) return bn - an;
+      return String(b.id || "").localeCompare(String(a.id || ""));
+    });
+  }
   return out;
 }
 
@@ -1427,7 +1508,16 @@ export async function listMyFiles({
   page = 1,
   requireSearch = false,
 } = {}) {
-  if (shouldSkipListing({ requireSearch, search })) return emptyPage();
+  const hasActiveFilter =
+    (main_section !== undefined && main_section !== "") ||
+    (subsection !== undefined && subsection !== "") ||
+    (secondary_subsection !== undefined && secondary_subsection !== "") ||
+    (content_type !== undefined && content_type !== "") ||
+    (upload_type !== undefined && upload_type !== "") ||
+    metadata__is_listed !== undefined ||
+    is_listed !== undefined;
+  if (shouldSkipListing({ requireSearch, search, hasActiveFilter })) return emptyPage();
+  resetPartialFailures();
   const db = sectionsDb();
   const uploadsSnap = await get(dbRef(db, UPLOADS_ROOT));
   const uploadsFallbackSnap = await get(dbRef(db, UPLOADS_FALLBACK_ROOT));
@@ -1442,30 +1532,64 @@ export async function listMyFiles({
   ];
 
   if (isOldAppConfigured()) {
-    const hostId = await getHostMainSectionId();
-    const shouldMergeOldApp =
-      main_section === undefined || main_section === "" || sameSectionId(main_section, hostId);
-    if (hostId != null && shouldMergeOldApp) {
-      const oldMains = await listOldAppMainSections();
-      for (const m of oldMains) {
-        const oldSubs = await listOldAppSubSections(m.id);
-        for (const s of oldSubs) {
-          const lessons = await listOldAppLessonsBySub(m.id, s.id);
-          for (const lesson of lessons) {
-            const asFile = adaptOldAppLessonAsFile(lesson, { mainDocId: m.id, subDocId: s.id });
-            if (String(asFile?.metadata?.content_type) !== "youtube") {
-              list.push(asFile);
+    try {
+      const hostId = await getHostMainSectionId();
+      const shouldMergeOldApp =
+        main_section === undefined || main_section === "" || sameSectionId(main_section, hostId);
+      if (hostId != null && shouldMergeOldApp) {
+        const oldMains = await externalCache.get("oldapp:mains", () =>
+          listOldAppMainSections(),
+        );
+        const allLessons = await Promise.all(
+          oldMains.map(async (m) => {
+            try {
+              const oldSubs = await externalCache.get(
+                `oldapp:subs:${m.id}`,
+                () => listOldAppSubSections(m.id),
+              );
+              const batches = await Promise.all(
+                oldSubs.map((s) =>
+                  externalCache
+                    .get(`oldapp:lessons:${m.id}:${s.id}`, () =>
+                      listOldAppLessonsBySub(m.id, s.id),
+                    )
+                    .then((lessons) =>
+                      lessons.map((lesson) => ({ lesson, mainDocId: m.id, subDocId: s.id })),
+                    )
+                    .catch((err) => {
+                      recordPartialFailure(`OldApp lessons ${m.id}/${s.id}`, err);
+                      return [];
+                    }),
+                ),
+              );
+              return batches.flat();
+            } catch (err) {
+              recordPartialFailure(`OldApp subs ${m.id}`, err);
+              return [];
             }
+          }),
+        );
+        for (const entry of allLessons.flat()) {
+          const asFile = adaptOldAppLessonAsFile(entry.lesson, {
+            mainDocId: entry.mainDocId,
+            subDocId: entry.subDocId,
+          });
+          if (String(asFile?.metadata?.content_type) !== "youtube") {
+            list.push(asFile);
           }
         }
       }
+    } catch (err) {
+      recordPartialFailure("OldApp files merge", err);
     }
   }
 
   // دمج ملفات Mshcat (books غير يوتيوب).
   if (isMshcatConfigured()) {
     try {
-      const books = await listAllMshcatBooks();
+      const books = await externalCache.get("mshcat:books:all", () =>
+        listAllMshcatBooks(),
+      );
       for (const b of books) {
         const f = adaptMshcatBookAsFile(b);
         const t = String(f?.metadata?.content_type || "").toLowerCase();
@@ -1474,9 +1598,7 @@ export async function listMyFiles({
         if (!isYt) list.push(f);
       }
     } catch (err) {
-      if (import.meta.env.DEV) {
-        console.warn("[moderator] Mshcat files merge failed:", err);
-      }
+      recordPartialFailure("Mshcat files merge", err);
     }
   }
 
@@ -1512,20 +1634,15 @@ export async function listMyFiles({
     return !(sub.startsWith("oldapp:main:") && sec.startsWith("oldapp:sub:"));
   });
 
-  if (search) {
-    const q = String(search).toLowerCase();
-    list = list.filter((item) => {
-      const title = String(item?.metadata?.title || "").toLowerCase();
-      const desc = String(item?.metadata?.description || "").toLowerCase();
-      const author = String(item?.metadata?.author || "").toLowerCase();
-      const filenameVal = String(item?.filename || "").toLowerCase();
-      return (
-        title.includes(q) ||
-        desc.includes(q) ||
-        author.includes(q) ||
-        filenameVal.includes(q)
-      );
-    });
+  const fileTokens = tokenize(search);
+  if (fileTokens.length > 0) {
+    list = filterAndRank(list, fileTokens, (item) => [
+      item?.metadata?.title || "",
+      item?.metadata?.description || "",
+      item?.metadata?.author || "",
+      item?.filename || "",
+      item?.file_url || "",
+    ]);
   }
   if (subsection !== undefined && subsection !== "") {
     list = list.filter(
