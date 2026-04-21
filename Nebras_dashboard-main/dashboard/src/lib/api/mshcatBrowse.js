@@ -1,6 +1,14 @@
 /**
  * mshcatBrowse.js — CRUD لمشروع Mshcat Firestore (`mshcat-fkdl`).
  *
+ * استراتيجيّة Read/Write Split (Smart Router):
+ *   • القراءات (classify / list / fetch…) تبقى عبر Web SDK مباشرةً إلى
+ *     مشروع Mshcat — قواعد المشروع تسمح بالقراءة العامّة، والقراءة
+ *     المباشرة تُخفّف الحمل عن الخادم.
+ *   • الكتابات (create/update/delete) تمرّ حصرًا عبر `/api/mshcat/*`
+ *     (Admin SDK) لأنّ قواعد Mshcat لا تعترف بمديرين من Nebras، فنحتاج
+ *     Bearer Token يُحقَّق في `hooks.server.js` ثمّ يكتب بسلطة المسؤول.
+ *
  * **البنية الفعليّة** (تمّ التحقّق منها ببيانات حيّة 2026-04-20):
  *   Path-based Denormalized Flat Schema — لا Self-Referencing.
  *
@@ -21,17 +29,9 @@
  * أن يعرف أنّ الـ docId الداخلي هو في الحقيقة Token مسار مُشفَّر.
  */
 
-import {
-	collection,
-	doc,
-	getDoc,
-	getDocs,
-	addDoc,
-	updateDoc,
-	deleteDoc,
-	serverTimestamp
-} from 'firebase/firestore';
+import { collection, getDocs } from 'firebase/firestore';
 import { getMshcatFirestore } from '$lib/firebase/client.js';
+import { authedJson } from './_authedFetch.js';
 
 // ── Collections + Schema fields (real) ───────────────────────
 const CATEGORIES_COLLECTION = 'categories';
@@ -45,8 +45,8 @@ const BOOK_NAME_FIELD = 'bookName';
 const BOOK_URL_FIELD = 'bookUrl';
 const BOOK_CONTENT_TYPE_FIELD = 'contentType';
 const BOOK_IS_YOUTUBE_FIELD = 'isYouTube';
-const BOOK_IS_URL_CONTENT_FIELD = 'isUrlContent';
-const BOOK_SOURCE_FIELD = 'source';
+// NOTE: `isUrlContent` و `source` كانا يُستعملان في مسار الكتابة القديم؛
+// الآن الخادم (Admin SDK) يملؤهما، فلا حاجة لذكرهما هنا.
 
 // ── Arabic normalization (للمقارنات فقط؛ العرض يبقى بالاسم الأصليّ) ──
 function normalize(input) {
@@ -347,6 +347,15 @@ export async function listMshcatBooksForCategory(categoryPayload) {
 		.map(mapBookItem);
 }
 
+// ═════════════════════════════════════════════════════════════
+// ✍️  WRITE PATH — يمرّ حصرًا عبر /api/mshcat/* (Admin SDK)
+// ═════════════════════════════════════════════════════════════
+// ملاحظات مشتركة:
+//   - كلّ الدوال التالية لا تستعمل Firestore Web SDK للكتابة.
+//   - الخادم يطبّق التحقّق (hooks.server.js) + حدود Firestore (batch 500).
+//   - بعد النجاح نُبطل الكاش المحلّي لكي تُعيد القراءة القادمة الجلب طازجاً.
+//   - أيّ خطأ من authedJson يحمل `.status` + `.message` عربي جاهز لعرض Toast.
+
 // ── Category CRUD (Path-based) ───────────────────────────────
 
 /**
@@ -359,138 +368,53 @@ export async function listMshcatBooksForCategory(categoryPayload) {
  * بالصيغة `mshcat:sub:${created.id}` مثلًا.
  */
 export async function createMshcatCategory({ name, thumbnailUrl, parentDocId = '' } = {}) {
-	const db = getMshcatFirestore();
-	if (!db) throw new Error('Mshcat Firebase غير مُهيّأ.');
 	const trimmed = String(name || '').trim();
 	if (!trimmed) throw new Error('اسم القسم مطلوب.');
 
-	const parent = parentDocId ? decodePath(parentDocId) : null;
-	const parentLevel = parent ? levelFromPath(parent) : null;
+	/** @type {Record<string, unknown>} */
+	const body = { name: trimmed };
+	if (parentDocId) body.parentDocId = String(parentDocId);
+	if (thumbnailUrl) body.thumbnailUrl = thumbnailUrl;
 
-	const payload = { createdAt: serverTimestamp() };
-	let newPayloadId;
-
-	if (!parentDocId) {
-		payload[MAIN_FIELD] = trimmed;
-		newPayloadId = buildPathPayload([trimmed]);
-	} else if (parentLevel === 'main') {
-		payload[MAIN_FIELD] = parent.mainName;
-		payload[SUB_FIELD] = trimmed;
-		newPayloadId = buildPathPayload([parent.mainName, trimmed]);
-	} else if (parentLevel === 'sub') {
-		payload[MAIN_FIELD] = parent.mainName;
-		payload[SUB_FIELD] = parent.subName;
-		payload[SUB_SUB_FIELD] = trimmed;
-		newPayloadId = buildPathPayload([parent.mainName, parent.subName, trimmed]);
-	} else {
-		throw new Error('لا يمكن إنشاء قسم تحت مستوى ثانوي (العمق الأقصى: 3).');
-	}
-
-	if (thumbnailUrl) payload.image = thumbnailUrl;
-	await addDoc(collection(db, CATEGORIES_COLLECTION), payload);
+	const data = await authedJson('/api/mshcat/categories', {
+		method: 'POST',
+		body
+	});
 	invalidate();
-	return { id: newPayloadId };
+	return { id: String(data?.payloadId || data?.id || '') };
 }
 
 /**
- * يُعيد تسمية قسم (rename). يُحدّث جميع مستندات `categories` + `books`
- * التي تتطابق مع المسار الحالي، بتغيير الحقل المناسب فقط.
+ * يُعيد تسمية قسم (rename). الخادم يُحدِّث جميع مستندات `categories` + `books`
+ * التي تتطابق مع المسار الحالي، بتغيير الحقل المناسب فقط، في دفعات Firestore.
  *
- * ملاحظة: نقل القسم (move) غير مدعوم في هذا النوع من المخطّط لأنّه
- * يستلزم إعادة تسمية جماعيّة قد تتداخل مع أقسام أخرى — لم يطلبه المستخدم.
+ * ملاحظة: نقل القسم (move) غير مدعوم في هذا المخطّط — يُتجاهل parentDocId.
  */
 export async function updateMshcatCategory(
 	docId,
 	{ name, thumbnailUrl: _thumbnailUrl, parentDocId } = {}
 ) {
-	const db = getMshcatFirestore();
-	if (!db) throw new Error('Mshcat Firebase غير مُهيّأ.');
 	if (parentDocId !== undefined && import.meta.env.DEV) {
 		console.warn('[mshcat] تغيير الأب (move) غير مدعوم في هذا المخطّط.');
 	}
 	if (name === undefined) return;
 	const newName = String(name).trim();
 	if (!newName) throw new Error('اسم القسم مطلوب.');
+	if (!docId) return;
 
-	const path = decodePath(docId);
-	const level = levelFromPath(path);
-	if (!level) return;
-
-	const catsAll = await fetchAllCategoriesRaw({ force: true });
-	const booksAll = await fetchAllBooksRaw({ force: true });
-
-	const matches = (d) => {
-		const m = readMainName(d);
-		const s = readSubName(d);
-		const ss = readSubSubName(d);
-		if (normalize(m) !== normalize(path.mainName)) return false;
-		if (level === 'main') return true;
-		if (normalize(s) !== normalize(path.subName)) return false;
-		if (level === 'sub') return true;
-		return normalize(ss) === normalize(path.subSubName);
-	};
-
-	const fieldToUpdate =
-		level === 'main' ? MAIN_FIELD : level === 'sub' ? SUB_FIELD : SUB_SUB_FIELD;
-
-	for (const c of catsAll) {
-		if (!matches(c.data)) continue;
-		try {
-			await updateDoc(doc(db, CATEGORIES_COLLECTION, c.id), { [fieldToUpdate]: newName });
-		} catch (err) {
-			if (import.meta.env.DEV) console.warn('[mshcat] cat rename failed:', c.id, err);
-		}
-	}
-	for (const b of booksAll) {
-		if (!matches(b.data)) continue;
-		try {
-			await updateDoc(doc(db, BOOKS_COLLECTION, b.id), { [fieldToUpdate]: newName });
-		} catch (err) {
-			if (import.meta.env.DEV) console.warn('[mshcat] book path rename failed:', b.id, err);
-		}
-	}
+	await authedJson(`/api/mshcat/categories/${encodeURIComponent(String(docId))}`, {
+		method: 'PUT',
+		body: { name: newName }
+	});
 	invalidate();
 }
 
 /** يحذف قسمًا مع كلّ أحفاده ضمن نفس المسار + كلّ الكتب المنتمية إليه. */
 export async function deleteMshcatCategory(docId) {
-	const db = getMshcatFirestore();
-	if (!db) throw new Error('Mshcat Firebase غير مُهيّأ.');
-	const path = decodePath(docId);
-	const level = levelFromPath(path);
-	if (!level) return;
-
-	const catsAll = await fetchAllCategoriesRaw({ force: true });
-	const booksAll = await fetchAllBooksRaw({ force: true });
-
-	// الحذف يشمل هذا المستوى + كلّ ما تحته (لو أمكن).
-	const underPath = (d) => {
-		const m = readMainName(d);
-		const s = readSubName(d);
-		if (normalize(m) !== normalize(path.mainName)) return false;
-		if (level === 'main') return true;
-		if (normalize(s) !== normalize(path.subName)) return false;
-		if (level === 'sub') return true;
-		const ss = readSubSubName(d);
-		return normalize(ss) === normalize(path.subSubName);
-	};
-
-	for (const c of catsAll) {
-		if (!underPath(c.data)) continue;
-		try {
-			await deleteDoc(doc(db, CATEGORIES_COLLECTION, c.id));
-		} catch (err) {
-			if (import.meta.env.DEV) console.warn('[mshcat] cat delete failed:', c.id, err);
-		}
-	}
-	for (const b of booksAll) {
-		if (!underPath(b.data)) continue;
-		try {
-			await deleteDoc(doc(db, BOOKS_COLLECTION, b.id));
-		} catch (err) {
-			if (import.meta.env.DEV) console.warn('[mshcat] book delete failed:', b.id, err);
-		}
-	}
+	if (!docId) return;
+	await authedJson(`/api/mshcat/categories/${encodeURIComponent(String(docId))}`, {
+		method: 'DELETE'
+	});
 	invalidate();
 }
 
@@ -504,82 +428,56 @@ export async function createMshcatBook({
 	sourceUrl,
 	thumbnail
 } = {}) {
-	const db = getMshcatFirestore();
-	if (!db) throw new Error('Mshcat Firebase غير مُهيّأ.');
 	if (!categoryDocId) throw new Error('categoryDocId مطلوب لحفظ المحتوى في Mshcat.');
 
-	const path = decodePath(categoryDocId);
-	const trimmed = String(title || '').trim();
-	const typeLower = String(contentType || 'book').trim().toLowerCase();
-	const url = String(sourceUrl || '').trim();
-
-	const payload = {
-		[BOOK_NAME_FIELD]: trimmed,
-		[BOOK_URL_FIELD]: url,
-		[BOOK_CONTENT_TYPE_FIELD]: typeLower,
-		[BOOK_IS_YOUTUBE_FIELD]: typeLower === 'youtube',
-		[BOOK_IS_URL_CONTENT_FIELD]: !!url,
-		[BOOK_SOURCE_FIELD]: 'url',
-		createdAt: serverTimestamp(),
-		updatedAt: serverTimestamp()
+	/** @type {Record<string, unknown>} */
+	const body = {
+		categoryDocId: String(categoryDocId),
+		title: String(title || '').trim(),
+		contentType: String(contentType || 'book').trim().toLowerCase(),
+		sourceUrl: String(sourceUrl || '').trim()
 	};
-	if (path.mainName) payload[MAIN_FIELD] = path.mainName;
-	if (path.subName) payload[SUB_FIELD] = path.subName;
-	if (path.subSubName) payload[SUB_SUB_FIELD] = path.subSubName;
-	if (description) payload.description = String(description).trim();
-	if (author) payload.author = String(author).trim();
-	if (thumbnail) payload.thumbnail = String(thumbnail);
+	if (description !== undefined) body.description = String(description || '').trim();
+	if (author !== undefined) body.author = String(author || '').trim();
+	if (thumbnail !== undefined) body.thumbnail = thumbnail || null;
 
-	const ref = await addDoc(collection(db, BOOKS_COLLECTION), payload);
+	const data = await authedJson('/api/mshcat/books', {
+		method: 'POST',
+		body
+	});
 	invalidate();
-	return { id: ref.id, ...payload };
+
+	// نُعيد نفس الشكل التاريخيّ `{ id, ...payload }` الذي تتوقّعه moderator.js.
+	// الخادم يرجع `.book` جاهزةً بالحقول الحقيقيّة (mainCategory, bookName, ...).
+	const book = (data?.book && typeof data.book === 'object') ? data.book : {};
+	return { id: String(data?.id || book.id || ''), ...book };
 }
 
 export async function updateMshcatBook(bookDocId, patchData = {}) {
-	const db = getMshcatFirestore();
-	if (!db) throw new Error('Mshcat Firebase غير مُهيّأ.');
+	if (!bookDocId) throw new Error('معرّف الكتاب مطلوب.');
 
-	const patch = { updatedAt: serverTimestamp() };
-	if (patchData.title !== undefined) {
-		patch[BOOK_NAME_FIELD] = String(patchData.title || '').trim();
-	}
-	if (patchData.description !== undefined) {
-		patch.description = String(patchData.description || '').trim();
-	}
-	if (patchData.author !== undefined) {
-		patch.author = String(patchData.author || '').trim();
-	}
-	if (patchData.thumbnail !== undefined) {
-		patch.thumbnail = patchData.thumbnail || null;
-	}
-	if (patchData.sourceUrl !== undefined) {
-		const u = String(patchData.sourceUrl || '').trim();
-		patch[BOOK_URL_FIELD] = u;
-		patch[BOOK_IS_URL_CONTENT_FIELD] = !!u;
-	}
-	if (patchData.contentType !== undefined) {
-		const t = String(patchData.contentType || '').trim().toLowerCase();
-		patch[BOOK_CONTENT_TYPE_FIELD] = t;
-		patch[BOOK_IS_YOUTUBE_FIELD] = t === 'youtube';
-	}
-	if (patchData.categoryDocId !== undefined) {
-		const p = decodePath(patchData.categoryDocId);
-		patch[MAIN_FIELD] = p.mainName || '';
-		patch[SUB_FIELD] = p.subName || '';
-		patch[SUB_SUB_FIELD] = p.subSubName || '';
-	}
+	/** @type {Record<string, unknown>} */
+	const body = {};
+	if (patchData.title !== undefined) body.title = patchData.title;
+	if (patchData.description !== undefined) body.description = patchData.description;
+	if (patchData.author !== undefined) body.author = patchData.author;
+	if (patchData.thumbnail !== undefined) body.thumbnail = patchData.thumbnail;
+	if (patchData.sourceUrl !== undefined) body.sourceUrl = patchData.sourceUrl;
+	if (patchData.contentType !== undefined) body.contentType = patchData.contentType;
+	if (patchData.categoryDocId !== undefined) body.categoryDocId = patchData.categoryDocId;
 
-	const ref = doc(db, BOOKS_COLLECTION, bookDocId);
-	const snap = await getDoc(ref);
-	if (!snap.exists()) throw new Error('Mshcat book not found.');
-	await updateDoc(ref, patch);
+	await authedJson(`/api/mshcat/books/${encodeURIComponent(String(bookDocId))}`, {
+		method: 'PUT',
+		body
+	});
 	invalidate();
 }
 
 export async function deleteMshcatBook(bookDocId) {
-	const db = getMshcatFirestore();
-	if (!db) throw new Error('Mshcat Firebase غير مُهيّأ.');
-	await deleteDoc(doc(db, BOOKS_COLLECTION, bookDocId));
+	if (!bookDocId) throw new Error('معرّف الكتاب مطلوب.');
+	await authedJson(`/api/mshcat/books/${encodeURIComponent(String(bookDocId))}`, {
+		method: 'DELETE'
+	});
 	invalidate();
 }
 

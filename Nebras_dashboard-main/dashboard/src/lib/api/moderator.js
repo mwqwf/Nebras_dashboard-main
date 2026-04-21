@@ -18,12 +18,12 @@ import {
   getFirebaseStorage,
 } from "$lib/firebase/client.js";
 import { ref as dbRef, get, set, remove } from "firebase/database";
-import {
-  ref as storageRef,
-  uploadBytes,
-  getDownloadURL,
-  deleteObject,
-} from "firebase/storage";
+// ⚠️ الرفع لم يعد يستخدم Storage Web SDK مباشرة من هنا؛ نمرّ عبر smartUpload
+// الذي يوجِّه تلقائيًّا: Nebras → Web SDK، Mshcat/OldApp → /api/.../uploads.
+// نُبقي `ref` و `deleteObject` فقط لحذف كائنات التخزين الفعليّة في Nebras
+// (مسار `removeFile`) — وهي عمليّة حذف لا رفع.
+import { ref as storageRef, deleteObject } from "firebase/storage";
+import { smartUpload } from "$lib/api/smartUpload.js";
 import {
   isOldAppConfigured,
   isOldAppId,
@@ -586,15 +586,47 @@ function makeSectionId() {
   return Date.now() + Math.floor(Math.random() * 1000);
 }
 
+/**
+ * استنتاج وجهة الرفع (target) من قيمة `level` — الطريقة الأكثر ثباتًا
+ * للتوجيه الذكيّ دون أيّ تعديل في مواقع الاستدعاء.
+ *
+ * تقاليد التسمية الحاليّة في هذا الملفّ (ثابتة تاريخيًّا):
+ *   - "main" / "sub" / "secondary" / "youtube"              → Nebras
+ *   - "main-mshcat" / "sub-mshcat" / "secondary-mshcat" /
+ *     "youtube-mshcat"                                       → Mshcat
+ *   - "sub-oldapp" / "secondary-oldapp" / "youtube-oldapp"   → OldApp
+ */
+function resolveThumbnailTarget(level) {
+  const s = String(level || "").toLowerCase();
+  if (s.endsWith("-mshcat")) return "mshcat";
+  if (s.endsWith("-oldapp")) return "oldapp";
+  return "nebras";
+}
+
+/**
+ * الموجّه الذكيّ لرفع صورة مصغّرة لقسم/محتوى.
+ * - Nebras  → smartUpload يضع الملفّ في دلو Nebras مباشرةً (Web SDK).
+ * - Mshcat  → smartUpload يمرّر FormData إلى `/api/mshcat/uploads`.
+ * - OldApp  → smartUpload يمرّر FormData إلى `/api/oldapp/uploads`.
+ *
+ * أخطاء smartUpload تحمل `.status` و `.message` عربي جاهز للـ UI
+ * ونتركها تُمرَّر إلى الأعلى كما هي (شفافيّة الأخطاء).
+ *
+ * @param {string} level       — وصفة تُستخدم كمجلد داخل الدلو (مع target suffix).
+ * @param {string|number} sectionId
+ * @param {File} file
+ * @returns {Promise<string|undefined>} — download URL أو undefined إن لا ملف.
+ */
 async function uploadSectionThumbnail(level, sectionId, file) {
   if (!(file instanceof File)) return undefined;
-  const storage = sectionsStorage();
-  const path = `sections/${level}/${sectionId}/${Date.now()}_${file.name.replace(/[^\w.\-]/g, "_")}`;
-  const fileRef = storageRef(storage, path);
-  await uploadBytes(fileRef, file, {
-    contentType: file.type || "application/octet-stream",
-  });
-  return getDownloadURL(fileRef);
+  const target = resolveThumbnailTarget(level);
+  const folder = `sections/${level}/${sectionId}`;
+  const filename = `${Date.now()}_${String(file.name || "thumb").replace(
+    /[^\w.\-]/g,
+    "_",
+  )}`;
+  const result = await smartUpload({ file, target, folder, filename });
+  return result?.url || undefined;
 }
 
 async function readLevel(level) {

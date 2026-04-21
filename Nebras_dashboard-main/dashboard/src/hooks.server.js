@@ -34,7 +34,18 @@ import { json } from '@sveltejs/kit';
 import { getAdminDatabase, verifyIdToken } from '$lib/server/firebaseAdmin.js';
 import { isOwnerEmail } from '$lib/server/mailer.js';
 
-const PROTECTED_PREFIX = '/api/admin/';
+// قائمة البادئات المحميّة. أيّ طلب لمسار /api/* مطابق لأحد هذه البادئات
+// يُفحَص للهوية والصلاحيّة قبل تمريره. المسار /api/auth/* مقصود عمداً
+// خارج الحماية لأنّه يتكفّل بإنشاء الجلسة (OTP + verify-code) قبل أن
+// يكون لدى العميل توكن أصلاً.
+const PROTECTED_PREFIXES = ['/api/admin/', '/api/mshcat/', '/api/oldapp/'];
+
+function isProtectedPath(pathname) {
+	for (const p of PROTECTED_PREFIXES) {
+		if (pathname.startsWith(p)) return true;
+	}
+	return false;
+}
 
 function extractBearer(request) {
 	const header = request.headers.get('authorization') || request.headers.get('Authorization');
@@ -84,8 +95,11 @@ async function loadAuthorization(idToken) {
 export async function handle({ event, resolve }) {
 	const path = event.url.pathname;
 
-	// الجدار يعمل فقط على نقاط /api/admin/* الحسّاسة.
-	if (!path.startsWith(PROTECTED_PREFIX)) {
+	// الجدار يعمل على نقاط الـ API الحسّاسة فقط:
+	//   /api/admin/*   → إدارة المشرفين والإشعارات الإداريّة.
+	//   /api/mshcat/*  → كتابة Firestore لمشروع Mshcat عبر Admin SDK.
+	//   /api/oldapp/*  → كتابة Firestore لمشروع OldApp عبر Admin SDK.
+	if (!isProtectedPath(path)) {
 		return resolve(event);
 	}
 

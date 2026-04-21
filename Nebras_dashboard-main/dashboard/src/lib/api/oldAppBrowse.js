@@ -1,6 +1,12 @@
 /**
  * oldAppBrowse.js — Strict Flat Mapping لقاعدة OldApp Firestore.
  *
+ * استراتيجيّة Read/Write Split (Smart Router):
+ *   • القراءات (list / lookup / host-section) تبقى عبر Web SDK وRTDB —
+ *     قواعد OldApp تسمح بالقراءة العامّة، ولا جدوى من إضافة hop سيرفري.
+ *   • الكتابات (create/update/delete لأي مستوى) تمرّ حصراً عبر
+ *     `/api/oldapp/*` حيث Admin SDK + Bearer + جدار `hooks.server.js`.
+ *
  * الخريطة الصارمة:
  * - categories
  * - subcategories (where categoryId == mainId)
@@ -9,18 +15,13 @@
 
 import {
 	collection,
-	doc,
-	getDoc,
 	getDocs,
 	query,
-	where,
-	addDoc,
-	updateDoc,
-	deleteDoc,
-	serverTimestamp
+	where
 } from 'firebase/firestore';
 import { ref as dbRef, get as dbGet } from 'firebase/database';
 import { getOldAppFirestore, getFirebaseDatabase } from '$lib/firebase/client.js';
+import { authedJson } from './_authedFetch.js';
 
 const MAIN_COLLECTION = 'categories';
 const SUB_COLLECTION = 'subcategories';
@@ -164,6 +165,10 @@ function buildOldAppLessonId(lessonDocId) {
 	return `oldapp:lesson:${lessonDocId}`;
 }
 
+// ═════════════════════════════════════════════════════════════
+// 📖 READ PATH — Web SDK مباشرةً (يبقى كما هو)
+// ═════════════════════════════════════════════════════════════
+
 export async function listOldAppMainSections({ force = false } = {}) {
 	const db = getOldAppFirestore();
 	if (!db) return [];
@@ -187,86 +192,245 @@ export async function listOldAppSubSections(mainId, { force = false } = {}) {
 	return items;
 }
 
-export async function createOldAppMainSection({ name, thumbnailUrl }) {
+export async function listOldAppLessonsBySub(mainDocId, subDocId) {
 	const db = getOldAppFirestore();
-	if (!db) throw new Error('OldApp Firebase غير مُهيّأ.');
-	const payload = {
-		title: String(name || '').trim(),
-		image: thumbnailUrl || null,
-		created_at: serverTimestamp()
+	if (!db || !subDocId) return [];
+	const bySub = async (collName) => {
+		const snap = await getDocs(
+			query(collection(db, collName), where('subcategoryId', '==', String(subDocId)))
+		);
+		return snap.docs.map((d) => mapLessonDoc(d, collName));
 	};
-	const ref = await addDoc(collection(db, MAIN_COLLECTION), payload);
+	const [lessons, books] = await Promise.all([
+		bySub(LESSONS_COLLECTION),
+		bySub(BOOKS_COLLECTION)
+	]);
+	const seen = new Set();
+	return [...lessons, ...books].filter((x) => {
+		if (seen.has(x.id)) return false;
+		seen.add(x.id);
+		return true;
+	}).map((x) => ({ ...x, categoryId: String(mainDocId || x.categoryId || '') }));
+}
+
+// ═════════════════════════════════════════════════════════════
+// ✍️  WRITE PATH — يمرّ حصرًا عبر /api/oldapp/* (Admin SDK)
+// ═════════════════════════════════════════════════════════════
+// ملاحظات مشتركة:
+//   - لا نستعمل Firestore Web SDK للكتابة هنا إطلاقاً.
+//   - الخادم يتولّى التحقّق (hooks.server.js)، حدود Firestore (batch 500)،
+//     والحذف التسلسلي (cascade) عند الحاجة.
+//   - بعد النجاح نُبطل الكاش المحلّي ذا الصلة لضمان قراءة طازجة لاحقاً.
+//   - كلّ الأخطاء من authedJson تحمل `.status` + `.message` عربي جاهز للـ UI.
+
+// ── Main categories ──────────────────────────────────────────
+
+export async function createOldAppMainSection({ name, thumbnailUrl }) {
+	const trimmed = String(name || '').trim();
+	if (!trimmed) throw new Error('اسم القسم الرئيسي مطلوب.');
+
+	/** @type {Record<string, unknown>} */
+	const body = { name: trimmed };
+	if (thumbnailUrl !== undefined) body.thumbnailUrl = thumbnailUrl || null;
+
+	const data = await authedJson('/api/oldapp/categories', {
+		method: 'POST',
+		body
+	});
 	cache.mainSections = null;
+
+	const docId = String(data?.id || '');
 	return {
-		id: buildOldAppMainId(ref.id),
-		name: payload.title,
+		id: buildOldAppMainId(docId),
+		name: trimmed,
 		thumbnail: thumbnailUrl || null,
 		is_listed: true,
 		created_at: new Date().toISOString(),
-		__oldappMainDocId: ref.id
+		__oldappMainDocId: docId
 	};
 }
 
 export async function updateOldAppMainSection(mainDocId, { name, thumbnailUrl }) {
-	const db = getOldAppFirestore();
-	if (!db) throw new Error('OldApp Firebase غير مُهيّأ.');
-	const patch = {};
-	if (name !== undefined) patch.title = String(name).trim();
-	if (thumbnailUrl !== undefined) patch.image = thumbnailUrl || null;
-	if (!Object.keys(patch).length) return;
-	await updateDoc(doc(db, MAIN_COLLECTION, mainDocId), patch);
+	if (!mainDocId) throw new Error('mainDocId مطلوب.');
+
+	/** @type {Record<string, unknown>} */
+	const body = {};
+	if (name !== undefined) body.name = name;
+	if (thumbnailUrl !== undefined) body.thumbnailUrl = thumbnailUrl || null;
+	if (!Object.keys(body).length) return;
+
+	await authedJson(`/api/oldapp/categories/${encodeURIComponent(String(mainDocId))}`, {
+		method: 'PUT',
+		body
+	});
 	cache.mainSections = null;
 }
 
-export async function deleteOldAppMainSection(mainDocId) {
-	const db = getOldAppFirestore();
-	if (!db) throw new Error('OldApp Firebase غير مُهيّأ.');
-	await deleteDoc(doc(db, MAIN_COLLECTION, mainDocId));
+/**
+ * يحذف قسماً رئيسيّاً. يمرّر `cascade=1` إن أراد الاستدعاء الحذف التسلسلي
+ * (الأقسام الفرعيّة + الدروس/الكتب التابعة). الحفاظ على السلوك القديم
+ * الافتراضيّ (حذف مستند واحد فقط) = لا تمرير `cascade`.
+ *
+ * @param {string} mainDocId
+ * @param {{ cascade?: boolean }} [opts]
+ */
+export async function deleteOldAppMainSection(mainDocId, opts = {}) {
+	if (!mainDocId) throw new Error('mainDocId مطلوب.');
+	const searchParams = opts.cascade ? { cascade: '1' } : undefined;
+	await authedJson(`/api/oldapp/categories/${encodeURIComponent(String(mainDocId))}`, {
+		method: 'DELETE',
+		searchParams
+	});
 	cache.mainSections = null;
 	cache.subSectionsByMain.delete(mainDocId);
 }
+
+// ── Sub categories ───────────────────────────────────────────
 
 export async function createOldAppSubSection(mainDocId, { name, thumbnailUrl }) {
 	if (!mainDocId) throw new Error('mainDocId مطلوب لإنشاء قسم فرعي في OldApp.');
-	const db = getOldAppFirestore();
-	if (!db) throw new Error('OldApp Firebase غير مُهيّأ.');
-	const payload = {
-		title: String(name || '').trim(),
-		image: thumbnailUrl || null,
-		categoryId: String(mainDocId),
-		created_at: serverTimestamp()
-	};
-	const ref = await addDoc(collection(db, SUB_COLLECTION), payload);
+	const trimmed = String(name || '').trim();
+	if (!trimmed) throw new Error('اسم القسم الفرعي مطلوب.');
+
+	/** @type {Record<string, unknown>} */
+	const body = { name: trimmed, mainDocId: String(mainDocId) };
+	if (thumbnailUrl !== undefined) body.thumbnailUrl = thumbnailUrl || null;
+
+	const data = await authedJson('/api/oldapp/subcategories', {
+		method: 'POST',
+		body
+	});
 	cache.subSectionsByMain.delete(mainDocId);
+
+	const subDocId = String(data?.id || '');
 	return {
-		id: buildOldAppSubId(mainDocId, ref.id),
-		name: payload.title,
+		id: buildOldAppSubId(mainDocId, subDocId),
+		name: trimmed,
 		thumbnail: thumbnailUrl || null,
 		is_listed: true,
 		sub_section: buildOldAppMainId(mainDocId),
 		created_at: new Date().toISOString(),
 		__oldappMainDocId: mainDocId,
-		__oldappSubDocId: ref.id
+		__oldappSubDocId: subDocId
 	};
 }
 
 export async function updateOldAppSubSection(mainDocId, subDocId, { name, thumbnailUrl }) {
-	const db = getOldAppFirestore();
-	if (!db) throw new Error('OldApp Firebase غير مُهيّأ.');
-	const patch = {};
-	if (name !== undefined) patch.title = String(name).trim();
-	if (thumbnailUrl !== undefined) patch.image = thumbnailUrl || null;
-	if (!Object.keys(patch).length) return;
-	await updateDoc(doc(db, SUB_COLLECTION, subDocId), patch);
-	cache.subSectionsByMain.delete(mainDocId);
+	if (!subDocId) throw new Error('subDocId مطلوب.');
+
+	/** @type {Record<string, unknown>} */
+	const body = {};
+	if (name !== undefined) body.name = name;
+	if (thumbnailUrl !== undefined) body.thumbnailUrl = thumbnailUrl || null;
+	if (!Object.keys(body).length) return;
+
+	await authedJson(`/api/oldapp/subcategories/${encodeURIComponent(String(subDocId))}`, {
+		method: 'PUT',
+		body
+	});
+	if (mainDocId) cache.subSectionsByMain.delete(mainDocId);
 }
 
-export async function deleteOldAppSubSection(mainDocId, subDocId) {
-	const db = getOldAppFirestore();
-	if (!db) throw new Error('OldApp Firebase غير مُهيّأ.');
-	await deleteDoc(doc(db, SUB_COLLECTION, subDocId));
-	cache.subSectionsByMain.delete(mainDocId);
+/**
+ * يحذف قسماً فرعيّاً. `cascade=true` لحذف كلّ دروسه وكتبه معه.
+ *
+ * @param {string} mainDocId
+ * @param {string} subDocId
+ * @param {{ cascade?: boolean }} [opts]
+ */
+export async function deleteOldAppSubSection(mainDocId, subDocId, opts = {}) {
+	if (!subDocId) throw new Error('subDocId مطلوب.');
+	const searchParams = opts.cascade ? { cascade: '1' } : undefined;
+	await authedJson(`/api/oldapp/subcategories/${encodeURIComponent(String(subDocId))}`, {
+		method: 'DELETE',
+		searchParams
+	});
+	if (mainDocId) cache.subSectionsByMain.delete(mainDocId);
 }
+
+// ── Lessons / Books (content) ────────────────────────────────
+
+export async function createOldAppLesson({
+	subDocId,
+	mainDocId,
+	title,
+	description,
+	author,
+	contentType,
+	sourceUrl,
+	thumbnail
+}) {
+	if (!subDocId) throw new Error('subDocId مطلوب لحفظ المحتوى.');
+
+	const normalizedType = String(contentType || 'document').trim().toLowerCase();
+	const url = String(sourceUrl || '').trim();
+
+	/** @type {Record<string, unknown>} */
+	const body = {
+		subDocId: String(subDocId),
+		mainDocId: String(mainDocId || ''),
+		title: String(title || '').trim(),
+		contentType: normalizedType,
+		sourceUrl: url
+	};
+	if (description !== undefined) body.description = description;
+	if (author !== undefined) body.author = author;
+	if (thumbnail !== undefined) body.thumbnail = thumbnail || null;
+
+	const data = await authedJson('/api/oldapp/lessons', {
+		method: 'POST',
+		body
+	});
+
+	// نُعيد الشكل التاريخيّ `{ id, ...payload }` الذي تتوقّعه moderator.js.
+	// الخادم لا يعيد كامل الحمولة، فنُعيد بناءها من المدخلات (created_at
+	// يُترك null لأنّ القيمة الحقيقيّة تُضاف على الخادم).
+	const id = String(data?.id || '');
+	return {
+		id,
+		title: body.title,
+		description: body.description ?? null,
+		author: body.author ?? null,
+		content_type: normalizedType,
+		url: url || null,
+		image: thumbnail ?? null,
+		categoryId: String(mainDocId || ''),
+		subcategoryId: String(subDocId),
+		created_at: null
+	};
+}
+
+export async function updateOldAppLesson(lessonDocId, patchData = {}) {
+	if (!lessonDocId) throw new Error('معرّف الدرس/الكتاب مطلوب.');
+
+	/** @type {Record<string, unknown>} */
+	const body = {};
+	if (patchData.title !== undefined) body.title = patchData.title;
+	if (patchData.description !== undefined) body.description = patchData.description;
+	if (patchData.author !== undefined) body.author = patchData.author;
+	if (patchData.thumbnail !== undefined) body.thumbnail = patchData.thumbnail;
+	if (patchData.sourceUrl !== undefined) body.sourceUrl = patchData.sourceUrl;
+	if (patchData.contentType !== undefined) body.contentType = patchData.contentType;
+	if (patchData.categoryId !== undefined) body.categoryId = patchData.categoryId;
+	if (patchData.subcategoryId !== undefined) body.subcategoryId = patchData.subcategoryId;
+	if (!Object.keys(body).length) return;
+
+	await authedJson(`/api/oldapp/lessons/${encodeURIComponent(String(lessonDocId))}`, {
+		method: 'PUT',
+		body
+	});
+}
+
+export async function deleteOldAppLesson(lessonDocId) {
+	if (!lessonDocId) throw new Error('معرّف الدرس/الكتاب مطلوب.');
+	await authedJson(`/api/oldapp/lessons/${encodeURIComponent(String(lessonDocId))}`, {
+		method: 'DELETE'
+	});
+}
+
+// ═════════════════════════════════════════════════════════════
+// 🎭 Adapters (تحويل عناصر OldApp إلى شكل Nebras-compatible)
+// ═════════════════════════════════════════════════════════════
 
 export function adaptOldAppMainAsSub(item, hostMainId) {
 	return {
@@ -291,87 +455,6 @@ export function adaptOldAppSubAsSecondary(item, parentMainDocId) {
 		__oldappMainDocId: parentMainDocId,
 		__oldappSubDocId: item.id
 	};
-}
-
-export async function listOldAppLessonsBySub(mainDocId, subDocId) {
-	const db = getOldAppFirestore();
-	if (!db || !subDocId) return [];
-	const bySub = async (collName) => {
-		const snap = await getDocs(
-			query(collection(db, collName), where('subcategoryId', '==', String(subDocId)))
-		);
-		return snap.docs.map((d) => mapLessonDoc(d, collName));
-	};
-	const [lessons, books] = await Promise.all([
-		bySub(LESSONS_COLLECTION),
-		bySub(BOOKS_COLLECTION)
-	]);
-	const seen = new Set();
-	return [...lessons, ...books].filter((x) => {
-		if (seen.has(x.id)) return false;
-		seen.add(x.id);
-		return true;
-	}).map((x) => ({ ...x, categoryId: String(mainDocId || x.categoryId || '') }));
-}
-
-export async function createOldAppLesson({
-	subDocId,
-	mainDocId,
-	title,
-	description,
-	author,
-	contentType,
-	sourceUrl,
-	thumbnail
-}) {
-	const db = getOldAppFirestore();
-	if (!db) throw new Error('OldApp Firebase غير مُهيّأ.');
-	if (!subDocId) throw new Error('subDocId مطلوب لحفظ المحتوى.');
-	const payload = {
-		title: String(title || '').trim(),
-		description: String(description || '').trim() || null,
-		author: String(author || '').trim() || null,
-		content_type: String(contentType || 'document').trim().toLowerCase(),
-		url: String(sourceUrl || '').trim() || null,
-		image: thumbnail || null,
-		categoryId: String(mainDocId || ''),
-		subcategoryId: String(subDocId),
-		created_at: serverTimestamp()
-	};
-	const ref = await addDoc(collection(db, LESSONS_COLLECTION), payload);
-	return { id: ref.id, ...payload };
-}
-
-export async function updateOldAppLesson(lessonDocId, patchData = {}) {
-	const db = getOldAppFirestore();
-	if (!db) throw new Error('OldApp Firebase غير مُهيّأ.');
-	const patch = {};
-	if (patchData.title !== undefined) patch.title = String(patchData.title || '').trim();
-	if (patchData.description !== undefined) patch.description = String(patchData.description || '').trim();
-	if (patchData.author !== undefined) patch.author = String(patchData.author || '').trim();
-	if (patchData.thumbnail !== undefined) patch.image = patchData.thumbnail || null;
-	if (patchData.sourceUrl !== undefined) patch.url = String(patchData.sourceUrl || '').trim();
-	if (patchData.contentType !== undefined) patch.content_type = String(patchData.contentType || '').trim().toLowerCase();
-	if (!Object.keys(patch).length) return;
-	const lessonRef = doc(db, LESSONS_COLLECTION, lessonDocId);
-	const lessonSnap = await getDoc(lessonRef);
-	if (lessonSnap.exists()) {
-		await updateDoc(lessonRef, patch);
-		return;
-	}
-	await updateDoc(doc(db, BOOKS_COLLECTION, lessonDocId), patch);
-}
-
-export async function deleteOldAppLesson(lessonDocId) {
-	const db = getOldAppFirestore();
-	if (!db) throw new Error('OldApp Firebase غير مُهيّأ.');
-	const lessonRef = doc(db, LESSONS_COLLECTION, lessonDocId);
-	const lessonSnap = await getDoc(lessonRef);
-	if (lessonSnap.exists()) {
-		await deleteDoc(lessonRef);
-		return;
-	}
-	await deleteDoc(doc(db, BOOKS_COLLECTION, lessonDocId));
 }
 
 export function adaptOldAppLessonAsFile(item, { mainDocId, subDocId }) {
