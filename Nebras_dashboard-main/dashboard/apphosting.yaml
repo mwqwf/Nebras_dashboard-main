@@ -8,41 +8,14 @@ runConfig:
   cpu: 1
   memoryMiB: 1024
 
-# ─────────────────────────────────────────────────────────────────────────────
-# NOTE on secrets:
-# The dashboard needs 5 runtime secrets to be fully functional:
-#   • NEBRAS_SERVICE_ACCOUNT_JSON  (Firebase Admin — Nebras)
-#   • MSHCAT_SERVICE_ACCOUNT_JSON  (Firebase Admin — Mshcat)
-#   • OLDAPP_SERVICE_ACCOUNT_JSON  (Firebase Admin — OldApp)
-#   • OWNER_CODE_SECRET            (OTP hashing salt)
-#   • SMTP_PASS                    (Gmail app password for OTP delivery)
-#
-# Bindings for them are NOT declared here yet — App Hosting fails the build
-# fast if any referenced secret does not exist in Secret Manager. Add them in
-# this exact order after the first successful deploy:
-#
-#   firebase apphosting:secrets:set NEBRAS_SERVICE_ACCOUNT_JSON  --data-file=secrets/serviceAccountKey.json
-#   firebase apphosting:secrets:set MSHCAT_SERVICE_ACCOUNT_JSON  --data-file=secrets/mshcatServiceAccount.json
-#   firebase apphosting:secrets:set OLDAPP_SERVICE_ACCOUNT_JSON  --data-file=secrets/oldappServiceAccount.json
-#   firebase apphosting:secrets:set OWNER_CODE_SECRET
-#   firebase apphosting:secrets:set SMTP_PASS
-#
-# then uncomment the block below and redeploy.
-# ─────────────────────────────────────────────────────────────────────────────
-#
-# env:
-#   - variable: NEBRAS_SERVICE_ACCOUNT_JSON
-#     secret: NEBRAS_SERVICE_ACCOUNT_JSON
-#     availability: [RUNTIME]
-#   - variable: MSHCAT_SERVICE_ACCOUNT_JSON
-#     secret: MSHCAT_SERVICE_ACCOUNT_JSON
-#     availability: [RUNTIME]
-#   - variable: OLDAPP_SERVICE_ACCOUNT_JSON
-#     secret: OLDAPP_SERVICE_ACCOUNT_JSON
-#     availability: [RUNTIME]
-#   - variable: OWNER_CODE_SECRET
-#     secret: OWNER_CODE_SECRET
-#     availability: [RUNTIME]
-#   - variable: SMTP_PASS
-#     secret: SMTP_PASS
-#     availability: [RUNTIME]
+env:
+  - variable: OWNER_CODE_SECRET
+    secret: OWNER_CODE_SECRET
+  - variable: SMTP_PASS
+    secret: SMTP_PASS
+  - variable: NEBRAS_SERVICE_ACCOUNT_JSON
+    secret: NEBRAS_SERVICE_ACCOUNT_JSON
+  - variable: MSHCAT_SERVICE_ACCOUNT_JSON
+    secret: MSHCAT_SERVICE_ACCOUNT_JSON
+  - variable: OLDAPP_SERVICE_ACCOUNT_JSON
+    secret: OLDAPP_SERVICE_ACCOUNT_JSON
