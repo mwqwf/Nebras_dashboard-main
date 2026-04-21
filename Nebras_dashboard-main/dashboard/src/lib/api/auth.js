@@ -23,6 +23,8 @@ import {
 	setAuthorized,
 	setNeedsOwnerCode,
 	setLoading,
+	setRole,
+	setBlocked,
 	clearAuth
 } from '$lib/stores/auth.svelte.js';
 
@@ -66,17 +68,20 @@ async function postJson(path, body) {
 
 /**
  * استدعاء واحد للتحقّق من حالة المستخدم الحاليّة (مستخدم Google صالح
- * + مُدرَج في قائمة المصرّح لهم).
+ * + مُدرَج في قائمة المصرّح لهم + غير محظور).
  *
- * يُحدِّث store تلقائياً ويُرجِع النتيجة المختصرة.
+ * يُحدِّث store تلقائياً ويُرجِع النتيجة المختصرة. في حال كان السجلّ
+ * يحمل isBlocked:true يقوم بتسجيل خروج إجباري فوراً ويعيد حالة محظور.
  *
- * @returns {Promise<{ signedIn: boolean, authorized: boolean, needsOwnerCode: boolean }>}
+ * @returns {Promise<{ signedIn: boolean, authorized: boolean, needsOwnerCode: boolean, blocked?: boolean, role?: 'owner'|'supervisor'|null }>}
  */
 export async function checkCurrentAuth() {
 	const idToken = await fetchIdToken(false);
 	if (!idToken) {
 		setAuthorized(false);
 		setNeedsOwnerCode(false);
+		setRole(null);
+		setBlocked(false);
 		return { signedIn: false, authorized: false, needsOwnerCode: false };
 	}
 
@@ -84,17 +89,50 @@ export async function checkCurrentAuth() {
 	if (!ok || !data) {
 		setAuthorized(false);
 		setNeedsOwnerCode(false);
+		setRole(null);
+		setBlocked(false);
 		return { signedIn: true, authorized: false, needsOwnerCode: false };
 	}
 
+	// تم الحظر من قِبل الإدارة ⇒ تسجيل خروج إجباري فوري.
+	if (data.blocked) {
+		setAuthorized(false);
+		setNeedsOwnerCode(false);
+		setRole(null);
+		setBlocked(true);
+		try {
+			const auth = getFirebaseAuth();
+			if (auth) await firebaseSignOut(auth);
+		} catch (err) {
+			console.warn('[auth] forced signOut failed:', err);
+		}
+		return {
+			signedIn: false,
+			authorized: false,
+			needsOwnerCode: false,
+			blocked: true,
+			role: null
+		};
+	}
+
 	if (data.authorized) {
+		const role = data?.user?.role === 'owner' ? 'owner' : 'supervisor';
 		setAuthorized(true);
 		setNeedsOwnerCode(false);
-		return { signedIn: true, authorized: true, needsOwnerCode: false };
+		setRole(role);
+		setBlocked(false);
+		return {
+			signedIn: true,
+			authorized: true,
+			needsOwnerCode: false,
+			role
+		};
 	}
 
 	setAuthorized(false);
 	setNeedsOwnerCode(Boolean(data.needsOwnerCode));
+	setRole(null);
+	setBlocked(false);
 	return { signedIn: true, authorized: false, needsOwnerCode: Boolean(data.needsOwnerCode) };
 }
 
@@ -182,8 +220,11 @@ export async function verifyOwnerCode(code) {
 		return { ok: false, reason: data?.reason || data?.error || `http_${status}` };
 	}
 	if (data?.ok) {
+		const role = data?.user?.role === 'owner' ? 'owner' : 'supervisor';
 		setAuthorized(true);
 		setNeedsOwnerCode(false);
+		setRole(role);
+		setBlocked(false);
 		return { ok: true };
 	}
 	return { ok: false, reason: data?.reason || 'unknown' };

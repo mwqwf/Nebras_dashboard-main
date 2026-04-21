@@ -48,6 +48,8 @@ function saveToStorage(key, value) {
  *   authorized: boolean,
  *   isLoading: boolean,
  *   needsOwnerCode: boolean,
+ *   role: 'owner'|'supervisor'|null,
+ *   isBlocked: boolean,
  *   viewMode: 'admin'|'moderator'
  * }} */
 let authState = $state({
@@ -55,6 +57,8 @@ let authState = $state({
 	authorized: false,
 	isLoading: true,
 	needsOwnerCode: false,
+	role: null,
+	isBlocked: false,
 	viewMode: loadFromStorage('nebras_view_mode', 'admin')
 });
 
@@ -70,6 +74,14 @@ export function setAuthorized(value) {
 
 export function setNeedsOwnerCode(value) {
 	authState.needsOwnerCode = Boolean(value);
+}
+
+export function setRole(role) {
+	authState.role = role === 'owner' || role === 'supervisor' ? role : null;
+}
+
+export function setBlocked(value) {
+	authState.isBlocked = Boolean(value);
 }
 
 export function setLoading(loading) {
@@ -91,6 +103,8 @@ export function clearAuth() {
 	authState.user = null;
 	authState.authorized = false;
 	authState.needsOwnerCode = false;
+	authState.role = null;
+	authState.isBlocked = false;
 }
 
 export function getAuthState() {

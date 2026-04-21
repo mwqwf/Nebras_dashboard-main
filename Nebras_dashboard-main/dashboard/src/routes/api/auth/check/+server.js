@@ -17,10 +17,17 @@
  * Body: { idToken: string }
  *
  * Responses:
- *   200 { authorized: true,  user: { uid, email, displayName, photoURL, role } }
+ *   200 { authorized: true,  user: { uid, email, displayName, photoURL, role, isBlocked } }
+ *   200 { authorized: false, blocked: true,  user: {...} }        // supervisor موقوف
  *   200 { authorized: false, needsOwnerCode: true, user: {...} }
  *   401 { error: 'invalid_token' }
  *   500 { error: 'server_error' }
+ *
+ * ملاحظات ترقية الصلاحيّات (Owner vs Supervisor):
+ *   • أيّ سجلّ قديم بدور 'admin' يُهاجَر تلقائيّاً إلى 'supervisor' بشكل idempotent.
+ *   • أيّ سجلّ بلا حقل isBlocked يُضاف له isBlocked:false (Backfill آمن).
+ *   • حساب المالك (OWNER_EMAIL) يُثبَّت دوماً على role:'owner' و isBlocked:false
+ *     (لا يمكن قَفل المالك على نفسه).
  */
 
 import { json } from '@sveltejs/kit';
@@ -64,19 +71,20 @@ export async function POST({ request }) {
 		// نتحقّق من هوية المالك عبر البريد الذي رجع من Google (decoded.email)
 		// بعد التحقّق من ID token، فلا يمكن تزويره من المتصفّح. إذا تطابق،
 		// نضمن وجود السجلّ في قاعدة البيانات (idempotent) ثم نعيده authorized.
+		// المالك لا يمكن حظره على نفسه — نُصلح isBlocked إلى false دائماً.
 		if (isOwnerEmail(email)) {
 			const now = Date.now();
 			if (snap.exists()) {
+				const val = snap.val() || {};
 				const patch = { lastSignedInAt: now };
-				// إن كان السجلّ موجوداً بدور سابق، نرفعه إلى owner مرّةً فقط.
-				if (snap.val()?.role !== 'owner') {
-					patch.role = 'owner';
-				}
+				if (val.role !== 'owner') patch.role = 'owner';
+				if (val.isBlocked !== false) patch.isBlocked = false;
 				await userRef.update(patch).catch(() => {});
 			} else {
 				await userRef.set({
 					...userInfo,
 					role: 'owner',
+					isBlocked: false,
 					createdAt: now,
 					lastSignedInAt: now,
 					createdVia: 'owner_bypass'
@@ -84,19 +92,45 @@ export async function POST({ request }) {
 			}
 			return json({
 				authorized: true,
-				user: { ...userInfo, role: 'owner' }
+				user: { ...userInfo, role: 'owner', isBlocked: false }
 			});
 		}
 
 		// ─── 2) مستخدم مُعتمَد مسبقاً ───────────────────────────────────
 		if (snap.exists()) {
-			await userRef
-				.child('lastSignedInAt')
-				.set(Date.now())
-				.catch(() => {});
+			const val = snap.val() || {};
+
+			// Backfill/Migration idempotent:
+			//   - الدور القديم 'admin' يُرقَّى إلى 'supervisor'.
+			//   - isBlocked يُضاف إن كان ناقصاً (للسجلّات القديمة فقط).
+			const migration = {};
+			if (val.role === 'admin') migration.role = 'supervisor';
+			if (typeof val.isBlocked !== 'boolean') migration.isBlocked = false;
+
+			const effectiveRole = migration.role || val.role || 'supervisor';
+			const effectiveBlocked =
+				typeof val.isBlocked === 'boolean' ? val.isBlocked : false;
+
+			// حظر → نرفض وننبّه العميل ليُجبِر تسجيل الخروج.
+			if (effectiveBlocked === true) {
+				// نطبّق الـ migration فقط (إن وُجد) دون تحديث lastSignedInAt لأنّه
+				// لم يُسمَح له فعليّاً بالدخول.
+				if (Object.keys(migration).length > 0) {
+					await userRef.update(migration).catch(() => {});
+				}
+				return json({
+					authorized: false,
+					blocked: true,
+					user: { ...userInfo, role: effectiveRole, isBlocked: true }
+				});
+			}
+
+			const patch = { lastSignedInAt: Date.now(), ...migration };
+			await userRef.update(patch).catch(() => {});
+
 			return json({
 				authorized: true,
-				user: { ...userInfo, role: snap.val()?.role || 'admin' }
+				user: { ...userInfo, role: effectiveRole, isBlocked: false }
 			});
 		}
 

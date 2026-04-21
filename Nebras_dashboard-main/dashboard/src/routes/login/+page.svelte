@@ -12,8 +12,9 @@
 -->
 
 <script>
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { getAuthState } from '$lib/stores/auth.svelte.js';
 	import {
 		signInWithGoogle,
@@ -25,6 +26,15 @@
 	import { getLanguage, toggleLanguage, t, getDir } from '$lib/i18n/store.svelte.js';
 
 	const authState = getAuthState();
+
+	// رسالة تعليق الوصول (عند قدوم المستخدم بعد طرده من الجدار).
+	let blockedNotice = $state('');
+	onMount(() => {
+		const params = page.url?.searchParams;
+		if (params?.get('blocked') === '1') {
+			blockedNotice = 'تم تعليق وصولك من قبل الإدارة';
+		}
+	});
 
 	/** @type {'welcome'|'signin'|'owner_code'} */
 	let step = $state('welcome');
@@ -223,6 +233,16 @@
 	</button>
 
 	<div class="card">
+		{#if blockedNotice}
+			<div class="blocked-banner" role="alert">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+					<circle cx="12" cy="12" r="10" />
+					<line x1="15" y1="9" x2="9" y2="15" />
+					<line x1="9" y1="9" x2="15" y2="15" />
+				</svg>
+				<span>{blockedNotice}</span>
+			</div>
+		{/if}
 		{#if step === 'welcome'}
 			<div class="logo-wrap">
 				<div class="logo">
@@ -414,6 +434,25 @@
 		box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
 		backdrop-filter: blur(10px);
 		color: var(--color-surface-100, #f3f4f6);
+	}
+
+	.blocked-banner {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.75rem 1rem;
+		margin-bottom: 1rem;
+		border-radius: 10px;
+		background: rgba(244, 63, 94, 0.1);
+		border: 1px solid rgba(244, 63, 94, 0.28);
+		color: #fecaca;
+		font-size: 0.8125rem;
+		font-weight: 500;
+	}
+	.blocked-banner svg {
+		width: 18px;
+		height: 18px;
+		flex-shrink: 0;
 	}
 
 	.logo-wrap {

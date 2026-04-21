@@ -37,6 +37,12 @@
 
 		const currentPath = page.url?.pathname || '/';
 
+		// محظور (تم تعليق وصوله) → دائماً /login?blocked=1.
+		if (authState.isBlocked) {
+			if (currentPath !== '/login') goto('/login?blocked=1');
+			return;
+		}
+
 		// مستخدم غير موقّع → /login (إن لم يكن هناك أصلاً).
 		if (!authState.user) {
 			if (!isPublicPath(currentPath)) goto('/login');

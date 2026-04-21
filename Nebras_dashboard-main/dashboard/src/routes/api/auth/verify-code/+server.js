@@ -56,14 +56,16 @@ export async function POST({ request }) {
 			.ref(`dashboard_users/${uid}`)
 			.set({
 				...userInfo,
-				role: 'admin',
+				role: 'supervisor',
+				isBlocked: false,
 				createdAt: now,
-				lastSignedInAt: now
+				lastSignedInAt: now,
+				createdVia: 'otp_approval'
 			});
 	} catch (err) {
 		console.error('[api/auth/verify-code] failed to write user:', err);
 		return json({ error: 'server_error', message: err?.message || 'unknown' }, { status: 500 });
 	}
 
-	return json({ ok: true, user: userInfo });
+	return json({ ok: true, user: { ...userInfo, role: 'supervisor', isBlocked: false } });
 }
