@@ -2,8 +2,15 @@ rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
     match /{allPaths=**} {
+      // القراءة مفتوحة لمستخدمي تطبيق الموبايل (يقرؤون بدون مصادقة).
       allow read: if true;
-      allow write: if false;
+
+      // الكتابة مقصورة على جلسات Firebase Auth فقط. لوحة التحكم تُسجّل
+      // دخولها بـ Google عبر firebase/auth فيُرفَع request.auth، بينما
+      // تطبيق الموبايل يستخدم google_sign_in الأصلي بدون firebase_auth
+      // فيبقى request.auth == null ويُمنَع من الكتابة. الـ Admin SDK على
+      // السيرفر يتجاوز القواعد بطبيعته فلا يتأثر.
+      allow write: if request.auth != null;
     }
   }
 }
