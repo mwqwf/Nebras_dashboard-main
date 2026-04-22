@@ -191,6 +191,30 @@ async function commitInChunks(db, operations) {
 	}
 }
 
+/**
+ * يبني استعلامات Firestore مستهدفة على مستوى المسار فقط — لا نسحب أبداً
+ * الكولكشن كاملاً. نُرجع لكلٍّ من categories و books مرجع استعلام مُقيَّد
+ * بحقول (mainCategory / subCategory / subSubCategory) حسب المستوى.
+ */
+function buildPathScopedQueries(db, path, level) {
+	let cats = db
+		.collection(CATEGORIES_COLLECTION)
+		.where(MAIN_FIELD, '==', path.mainName);
+	let books = db
+		.collection(BOOKS_COLLECTION)
+		.where(MAIN_FIELD, '==', path.mainName);
+
+	if (level === 'sub' || level === 'sec') {
+		cats = cats.where(SUB_FIELD, '==', path.subName);
+		books = books.where(SUB_FIELD, '==', path.subName);
+	}
+	if (level === 'sec') {
+		cats = cats.where(SUB_SUB_FIELD, '==', path.subSubName);
+		books = books.where(SUB_SUB_FIELD, '==', path.subSubName);
+	}
+	return { cats, books };
+}
+
 // ─────────────────────────────────────────────────────────────────
 // معالجات الكتب (Books)
 // ─────────────────────────────────────────────────────────────────
@@ -440,10 +464,11 @@ async function handleRenameCategory(event, payload) {
 
 	try {
 		const db = getMshcatFirestoreAdmin();
-		const [catsSnap, booksSnap] = await Promise.all([
-			db.collection(CATEGORIES_COLLECTION).get(),
-			db.collection(BOOKS_COLLECTION).get()
-		]);
+
+		// Direct Path Reference: نطلب فقط الوثائق المنتمية للمسار المستهدَف
+		// عبر where(...) — لا get() شامل على المجموعات بعد اليوم.
+		const { cats, books } = buildPathScopedQueries(db, path, level);
+		const [catsSnap, booksSnap] = await Promise.all([cats.get(), books.get()]);
 
 		/** @type {Array<(b: FirebaseFirestore.WriteBatch) => void>} */
 		const ops = [];
@@ -451,6 +476,8 @@ async function handleRenameCategory(event, payload) {
 		let bookHits = 0;
 
 		for (const d of catsSnap.docs) {
+			// matches() يبقى كفحصٍ تطبيعيٍّ ثانوي يتعامل مع تبايُنات
+			// قديمة في الكتابة (تشكيل، همزات، تطويل) لم تُعالَج بـ where.
 			if (!matches(d.data())) continue;
 			const ref = d.ref;
 			ops.push((batch) => batch.update(ref, { [fieldToUpdate]: newName }));
@@ -520,10 +547,11 @@ async function handleDeleteCategory(event, payload) {
 
 	try {
 		const db = getMshcatFirestoreAdmin();
-		const [catsSnap, booksSnap] = await Promise.all([
-			db.collection(CATEGORIES_COLLECTION).get(),
-			db.collection(BOOKS_COLLECTION).get()
-		]);
+
+		// نفس فكرة Rename: استهدف وثائق المسار فقط عبر where(...)، ثم
+		// underPath() كفحص تطبيعيٍّ نهائي قبل الحذف في دُفعات 450.
+		const { cats, books } = buildPathScopedQueries(db, path, level);
+		const [catsSnap, booksSnap] = await Promise.all([cats.get(), books.get()]);
 
 		/** @type {Array<(b: FirebaseFirestore.WriteBatch) => void>} */
 		const ops = [];
