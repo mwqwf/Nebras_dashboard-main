@@ -70,6 +70,10 @@ web_modules/
 .env.*
 !.env.example
 
+# Secret dumps (never commit)
+*SERVICE_ACCOUNT*.txt
+VERCEL_ENV_PASTE.txt
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

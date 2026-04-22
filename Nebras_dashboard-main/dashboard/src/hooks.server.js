@@ -38,7 +38,7 @@ import { isOwnerEmail } from '$lib/server/mailer.js';
 // يُفحَص للهوية والصلاحيّة قبل تمريره. المسار /api/auth/* مقصود عمداً
 // خارج الحماية لأنّه يتكفّل بإنشاء الجلسة (OTP + verify-code) قبل أن
 // يكون لدى العميل توكن أصلاً.
-const PROTECTED_PREFIXES = ['/api/admin/', '/api/mshcat/', '/api/oldapp/'];
+const PROTECTED_PREFIXES = ['/api/admin/', '/api/mshcat/', '/api/oldapp/', '/api/notify/'];
 
 function isProtectedPath(pathname) {
 	for (const p of PROTECTED_PREFIXES) {
@@ -99,6 +99,7 @@ export async function handle({ event, resolve }) {
 	//   /api/admin/*   → إدارة المشرفين والإشعارات الإداريّة.
 	//   /api/mshcat/*  → كتابة Firestore لمشروع Mshcat عبر Admin SDK.
 	//   /api/oldapp/*  → كتابة Firestore لمشروع OldApp عبر Admin SDK.
+	//   /api/notify/*  → إرسال إشعارات FCM (يجب أن تكون محمية أيضاً).
 	if (!isProtectedPath(path)) {
 		return resolve(event);
 	}

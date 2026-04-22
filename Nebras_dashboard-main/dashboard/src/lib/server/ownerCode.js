@@ -28,11 +28,13 @@ const MIN_REQUEST_INTERVAL_MS = 60 * 1000;
 const MAX_ATTEMPTS = 5;
 
 function getSecret() {
-	return (
-		env.OWNER_CODE_SECRET ||
-		process.env.OWNER_CODE_SECRET ||
-		'dev_only_owner_code_secret__replace_in_production'
-	);
+	const secret = (env.OWNER_CODE_SECRET || process.env.OWNER_CODE_SECRET || '').trim();
+	if (!secret) {
+		throw new Error(
+			'OWNER_CODE_SECRET is required and must be configured in environment variables.'
+		);
+	}
+	return secret;
 }
 
 function hashCode(code, salt) {
