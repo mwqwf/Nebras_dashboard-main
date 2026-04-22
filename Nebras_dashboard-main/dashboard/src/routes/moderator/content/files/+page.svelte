@@ -1,4 +1,7 @@
 <script>
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { listMyFiles, removeFile, updateFile, listMyMainSections, listMySubSections, listMySecondarySections, mirrorUploadedFileToOldAppLesson, mirrorUploadedFileToMshcatBook, getLastPartialFailures } from '$lib/api/moderator.js';
 	import { createFileUploader, createResumeUploader, formatFileSize, mimeToContentType } from '$lib/utils/fileUpload.js';
 	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
@@ -43,7 +46,13 @@
 	// Edit modal
 	let showEditModal = $state(false);
 	let editingItem = $state(null);
-	let editForm = $state({ title: '', description: '', author: '', is_listed: true });
+	let editForm = $state({ title: '', description: '', author: '', main_section: '', subsection: '', secondary_subsection: '', is_listed: true });
+	let editFile = $state(null);
+	let editThumbnail = $state(null);
+	let editThumbnailPreview = $state('');
+	let editSubOptions = $state([]);
+	let editSecondaryOptions = $state([]);
+	let editHierarchySnapshot = $state({ main_section: '', subsection: '', secondary_subsection: '' });
 	let editFormError = $state('');
 	let editFormLoading = $state(false);
 
@@ -64,6 +73,19 @@
 	let resumeProgress = $state(0);
 	let resumeError = $state('');
 	let currentResumeUploader = $state(null);
+
+	function consumeModalIntent() {
+		const params = page.url?.searchParams;
+		const modal = params?.get('modal');
+		const id = params?.get('id');
+		if (!modal || !id) return false;
+		const item = items.find((entry) => String(entry.id) === String(id));
+		if (!item) return false;
+		if (modal === 'edit') openEditModal(item);
+		if (modal === 'delete') openDeleteModal(item);
+		goto(page.url.pathname, { replaceState: true, noScroll: true, keepFocus: true });
+		return true;
+	}
 
 	const PAGE_SIZE = 10;
 	let totalPages = $derived(Math.ceil(totalCount / PAGE_SIZE));
@@ -221,17 +243,92 @@
 	}
 
 	// ─── Edit ───────────────────────────────────────────
-	function openEditModal(item) {
+	async function openEditModal(item) {
 		editingItem = item;
-		editForm = { title: item.metadata?.title || '', description: item.metadata?.description || '', author: item.metadata?.author || '', is_listed: item.metadata?.is_listed ?? true };
+		let inferredMain = item.metadata?.main_section || item.main_section || '';
+		if (mainSectionsList.length === 0) await fetchMainOptions();
+		const allSubs = await listMySubSections({ page: 1 });
+		const currentSub = (allSubs.results || []).find((s) => String(s.id) === String(item.metadata?.subsection || ''));
+		if (!inferredMain && currentSub?.main_section) inferredMain = currentSub.main_section;
+		editSubOptions = inferredMain
+			? (await listMySubSections({ main_section: inferredMain, page: 1 })).results || []
+			: allSubs.results || [];
+		editSecondaryOptions = item.metadata?.subsection
+			? (await listMySecondarySections({ sub_section: item.metadata.subsection, page: 1 })).results || []
+			: [];
+		editForm = {
+			title: item.metadata?.title || '',
+			description: item.metadata?.description || '',
+			author: item.metadata?.author || '',
+			main_section: inferredMain || '',
+			subsection: item.metadata?.subsection || '',
+			secondary_subsection: item.metadata?.secondary_subsection || '',
+			is_listed: item.metadata?.is_listed ?? true
+		};
+		editFile = null;
+		editThumbnail = null;
+		editThumbnailPreview = item.metadata?.thumbnail || '';
+		editHierarchySnapshot = {
+			main_section: inferredMain || '',
+			subsection: item.metadata?.subsection || '',
+			secondary_subsection: item.metadata?.secondary_subsection || ''
+		};
 		editFormError = '';
 		showEditModal = true;
 	}
+
+	async function handleEditMainChange() {
+		editForm.subsection = '';
+		editForm.secondary_subsection = '';
+		editSecondaryOptions = [];
+		editSubOptions = editForm.main_section
+			? (await listMySubSections({ main_section: editForm.main_section, page: 1 })).results || []
+			: [];
+	}
+
+	async function handleEditSubChange() {
+		editForm.secondary_subsection = '';
+		editSecondaryOptions = editForm.subsection
+			? (await listMySecondarySections({ sub_section: editForm.subsection, page: 1 })).results || []
+			: [];
+	}
+
+	function handleEditFileSelect(e) {
+		const f = e.target.files?.[0];
+		if (f) editFile = f;
+	}
+
+	function handleEditThumbnailChange(e) {
+		const f = e.target.files?.[0];
+		if (!f) return;
+		editThumbnail = f;
+		const r = new FileReader();
+		r.onload = (ev) => { editThumbnailPreview = ev.target.result; };
+		r.readAsDataURL(f);
+	}
+
 	async function handleEdit() {
 		editFormError = ''; editFormLoading = true;
 		try {
+			const metadata = {
+				title: editForm.title,
+				description: editForm.description || undefined,
+				author: editForm.author || undefined,
+				is_listed: editForm.is_listed
+			};
+			if (String(editForm.main_section || '') !== String(editHierarchySnapshot.main_section || '')) {
+				metadata.main_section = editForm.main_section || undefined;
+			}
+			if (String(editForm.subsection || '') !== String(editHierarchySnapshot.subsection || '')) {
+				metadata.subsection = editForm.subsection || undefined;
+			}
+			if (String(editForm.secondary_subsection || '') !== String(editHierarchySnapshot.secondary_subsection || '')) {
+				metadata.secondary_subsection = editForm.secondary_subsection || undefined;
+			}
 			await updateFile(editingItem.id, {
-				metadata: { title: editForm.title, description: editForm.description || undefined, author: editForm.author || undefined, is_listed: editForm.is_listed }
+				metadata,
+				...(editFile ? { file: editFile } : {}),
+				...(editThumbnail ? { thumbnail: editThumbnail } : {})
 			});
 			showEditModal = false; if (hasSearched) fetchItems();
 		} catch (err) { editFormError = err.message; }
@@ -313,6 +410,15 @@
 		if (ct === 'audio') return '🎵';
 		return '📄';
 	}
+
+	onMount(async () => {
+		const q = String(page.url?.searchParams.get('q') || '').trim();
+		if (!q) return;
+		searchQuery = q;
+		currentPage = 1;
+		await fetchItems();
+		consumeModalIntent();
+	});
 </script>
 
 <svelte:head><title>{t('content.title')} — Nebras</title></svelte:head>
@@ -332,19 +438,15 @@
 	</div>
 
 	<div class="toolbar">
-		<div class="search-box">
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-			<input type="text" placeholder={t('content.search_files')} bind:value={searchQuery} onkeydown={handleSearchKey} class="search-input" />
-			{#if searchQuery}
+		{#if searchQuery}
+			<div class="active-query-chip" title={searchQuery}>
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+				<span class="active-query-text">{searchQuery}</span>
 				<button type="button" class="search-clear" aria-label={t('common.search_clear')} title={t('common.search_clear')} onclick={clearSearch}>
 					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18L18 6M6 6l12 12" /></svg>
 				</button>
-			{/if}
-		</div>
-		<button type="button" class="btn btn-primary btn-search" onclick={submitSearch} disabled={!String(searchQuery || '').trim()}>
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-			{t('common.search_btn')}
-		</button>
+			</div>
+		{/if}
 		<select class="filter-select" bind:value={filterContentType} onchange={handleFilterChange}>
 			<option value="">{t('content.all_types')}</option>
 			<option value="video">{t('content.video')}</option>
@@ -385,7 +487,10 @@
 			<div class="state-box empty-state">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="empty-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" /></svg>
 				<p class="empty-title">{t('common.search_empty_title')}</p>
-				<p class="empty-hint">{t('common.search_empty_hint')}</p>
+				<p class="empty-hint">{t('common.search_use_header')}</p>
+				<button type="button" class="btn btn-secondary" style="margin-top:0.75rem" onclick={() => { const el = document.getElementById('search-input'); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } }}>
+					{t('common.search_open_global')}
+				</button>
 			</div>
 		{:else if items.length === 0}
 			<div class="state-box empty-state">
@@ -696,6 +801,69 @@
 					<label for="edit-author" class="form-label">{t('content.author')}</label>
 					<input type="text" id="edit-author" bind:value={editForm.author} class="form-input" placeholder="e.g. John Doe..." />
 				</div>
+				<div class="form-group">
+					<label for="edit-main-section" class="form-label">{t('sections.main_section')}</label>
+					<select id="edit-main-section" bind:value={editForm.main_section} class="form-select" onchange={handleEditMainChange}>
+						<option value="">{t('common.none') || 'None'}</option>
+						{#each mainSectionsList as section}
+							<option value={section.id}>{section.name}</option>
+						{/each}
+					</select>
+				</div>
+				<div class="form-group">
+					<label for="edit-sub-section" class="form-label">{t('sections.sub_section')}</label>
+					<select id="edit-sub-section" bind:value={editForm.subsection} class="form-select" onchange={handleEditSubChange}>
+						<option value="">{t('common.none') || 'None'}</option>
+						{#each editSubOptions as section}
+							<option value={section.id}>{section.name}</option>
+						{/each}
+					</select>
+				</div>
+				<div class="form-group">
+					<label for="edit-secondary-section" class="form-label">{t('sections.secondary_section') || 'Secondary Section'}</label>
+					<select id="edit-secondary-section" bind:value={editForm.secondary_subsection} class="form-select">
+						<option value="">{t('common.none') || 'None'}</option>
+						{#each editSecondaryOptions as section}
+							<option value={section.id}>{section.name}</option>
+						{/each}
+					</select>
+				</div>
+				<div class="form-group">
+					<span class="form-label">{t('content.file')}</span>
+					{#if editFile}
+						<div class="selected-file">
+							<span class="selected-file-name">{editFile.name}</span>
+							<span class="selected-file-size">{formatFileSize(editFile.size)}</span>
+							<button type="button" class="selected-file-remove" onclick={() => { editFile = null; }}>×</button>
+						</div>
+					{:else}
+						<label class="upload-zone" for="edit-file">
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="upload-icon"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" stroke-linecap="round" stroke-linejoin="round" /></svg>
+							<span>{t('content.select_file') || 'Select replacement file'}</span>
+						</label>
+						<input type="file" id="edit-file" class="file-input-hidden" onchange={handleEditFileSelect} />
+					{/if}
+				</div>
+				<div class="form-group">
+					<span class="form-label">{t('content.thumbnail')}</span>
+					{#if editThumbnailPreview}
+						<div class="upload-preview">
+							<img src={editThumbnailPreview} alt="Preview" class="preview-img" />
+							<button type="button" class="preview-remove" onclick={() => { editThumbnail = null; editThumbnailPreview = ''; }} title={t('common.remove')}>
+								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12" stroke-linecap="round" stroke-linejoin="round" /></svg>
+							</button>
+							<label class="change-thumbnail-btn" for="edit-thumb">{t('content.change_image')}</label>
+							<input type="file" id="edit-thumb" accept="image/*" class="file-input-hidden" onchange={handleEditThumbnailChange} />
+						</div>
+					{:else}
+						<label class="upload-zone" for="edit-thumb-new">
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="upload-icon"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" stroke-linecap="round" stroke-linejoin="round" /></svg>
+							<span>{t('content.upload_thumb')}</span>
+							<span class="upload-hint">PNG, JPG, WebP</span>
+						</label>
+						<input type="file" id="edit-thumb-new" accept="image/*" class="file-input-hidden" onchange={handleEditThumbnailChange} />
+					{/if}
+				</div>
 				<div class="form-group" style="margin-top: 1.5rem; margin-bottom: 0.5rem;">
 					<label class="toggle-switch">
 						<input type="checkbox" id="edit-listed" bind:checked={editForm.is_listed} class="toggle-input" />
@@ -732,11 +900,9 @@
 	.sk-line { height: 12px; margin-top: 0.4rem; border-radius: 6px; background: linear-gradient(90deg, var(--color-surface-700) 0%, var(--color-surface-800) 50%, var(--color-surface-700) 100%); background-size: 200% 100%; animation: sk-shimmer 1.4s infinite linear; }
 	.sk-short { width: 60%; }
 	@keyframes sk-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-	.search-box { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 10px; flex: 1; max-width: 280px; }
-	.search-box:focus-within { border-color: var(--color-primary-600); }
 	.search-icon { width: 16px; height: 16px; color: var(--color-surface-500); flex-shrink: 0; }
-	.search-input { flex: 1; background: none; border: none; outline: none; color: var(--color-surface-100); font-size: 0.8125rem; font-family: inherit; }
-	.search-input::placeholder { color: var(--color-surface-500); }
+	.active-query-chip { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.7rem; background: rgba(5,150,105,0.08); border: 1px solid var(--color-primary-700); border-radius: 999px; color: var(--color-primary-400); font-size: 0.78rem; max-width: 280px; }
+	.active-query-text { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.filter-select { padding: 0.5rem 0.75rem; background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 10px; color: var(--color-surface-300); font-size: 0.8125rem; font-family: inherit; outline: none; cursor: pointer; }
 	.filter-select option { background: var(--color-surface-800); color: var(--color-surface-100); }
 	.count-badge { padding: 0.375rem 0.75rem; background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 100px; font-size: 0.75rem; color: var(--color-surface-400); font-weight: 500; margin-left: auto; }
@@ -748,9 +914,6 @@
 	.empty-icon { width: 48px; height: 48px; color: var(--color-surface-600); }
 	.empty-title { font-size: 1.05rem; font-weight: 600; color: var(--color-surface-800); text-align: center; max-width: 560px; margin: 0.25rem 0 0; line-height: 1.6; }
 	.empty-hint { font-size: 0.9rem; color: var(--color-surface-600); text-align: center; max-width: 560px; margin: 0; line-height: 1.7; }
-	.btn-search { display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap; }
-	.btn-search:disabled { opacity: 0.5; cursor: not-allowed; }
-	.btn-search .btn-icon { width: 16px; height: 16px; }
 	.spinner { width: 24px; height: 24px; border: 3px solid var(--color-surface-700); border-top-color: var(--color-primary-500); border-radius: 50%; animation: spin 0.6s linear infinite; }
 
 	/* File list */
@@ -871,7 +1034,7 @@
 
 	@media (max-width: 640px) {
 		.toolbar { flex-direction: column; align-items: stretch; }
-		.search-box, .filter-select { max-width: 100%; width: 100%; }
+		.filter-select, .active-query-chip { max-width: 100%; width: 100%; }
 		.count-badge { margin-left: 0; align-self: flex-start; }
 		
 		.file-row { flex-wrap: wrap; gap: 0.5rem; }

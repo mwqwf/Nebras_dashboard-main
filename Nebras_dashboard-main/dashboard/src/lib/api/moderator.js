@@ -160,6 +160,78 @@ function buildFormData(data, fd = new FormData(), prefix = "") {
   return fd;
 }
 
+function hasOwn(obj, key) {
+  return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function asTrimmedString(value) {
+  return String(value ?? "").trim();
+}
+
+function mergeContentMetadataPreservingHierarchy(
+  currentMeta = {},
+  incomingMeta = {},
+) {
+  const next = { ...currentMeta };
+
+  if (hasOwn(incomingMeta, "title")) next.title = asTrimmedString(incomingMeta.title);
+  if (hasOwn(incomingMeta, "description")) {
+    next.description = asTrimmedString(incomingMeta.description);
+  }
+  if (hasOwn(incomingMeta, "author")) next.author = asTrimmedString(incomingMeta.author);
+  if (hasOwn(incomingMeta, "is_listed")) {
+    next.is_listed = Boolean(incomingMeta.is_listed);
+  }
+  if (hasOwn(incomingMeta, "content_type")) {
+    next.content_type = asTrimmedString(incomingMeta.content_type);
+  }
+
+  // لا نغيّر القسم/المسار إلا إذا أرسله المستخدم صراحةً.
+  if (hasOwn(incomingMeta, "main_section")) next.main_section = incomingMeta.main_section || null;
+  if (hasOwn(incomingMeta, "subsection")) next.subsection = incomingMeta.subsection || null;
+  if (hasOwn(incomingMeta, "secondary_subsection")) {
+    next.secondary_subsection = incomingMeta.secondary_subsection || null;
+  }
+
+  return next;
+}
+
+function uniqStrings(values) {
+  return [...new Set(
+    (values || [])
+      .filter(Boolean)
+      .map((x) => String(x).trim())
+      .filter(Boolean),
+  )];
+}
+
+function collectAssetUrls(row) {
+  return uniqStrings([
+    row?.thumbnail,
+    row?.image,
+    row?.imageUrl,
+    row?.thumbnailUrl,
+    row?.metadata?.thumbnail,
+    row?.file_url,
+    row?.audio_url,
+    row?.video_url,
+    row?.downloadUrl,
+    row?.sourceUrl,
+    row?.url,
+  ]);
+}
+
+async function deleteStorageUrlsByValue(urls = []) {
+  const storage = sectionsStorage();
+  for (const url of uniqStrings(urls)) {
+    try {
+      await deleteObject(storageRef(storage, url));
+    } catch {
+      // لا نوقف الحذف الجذري بسبب ملف مفقود.
+    }
+  }
+}
+
 // ─── YouTube Videos ─────────────────────────────────────
 
 const CONTENT_ROOT = "content_unified";
@@ -543,47 +615,51 @@ export async function createYoutubeVideo(data) {
 export async function updateYoutubeVideo(id, data) {
   const mshBook = parseMshcatBookId(id);
   if (mshBook) {
-    let thumbnailUrl;
+    const patch = { contentType: "youtube" };
+    if (hasOwn(data, "video_url")) patch.sourceUrl = asTrimmedString(data.video_url);
+    if (hasOwn(data?.metadata || {}, "title")) patch.title = asTrimmedString(data.metadata.title);
+    if (hasOwn(data?.metadata || {}, "description")) {
+      patch.description = asTrimmedString(data.metadata.description);
+    }
+    if (hasOwn(data?.metadata || {}, "author")) patch.author = asTrimmedString(data.metadata.author);
     if (data?.thumbnail instanceof File) {
-      thumbnailUrl = await uploadSectionThumbnail(
+      patch.thumbnail = await uploadSectionThumbnail(
         "youtube-mshcat",
         mshBook.bookDocId,
         data.thumbnail,
       );
     }
-    // إن تغيّر الأب (subsection/secondary_subsection) انقل الارتباط عبر categoryId.
-    const subId = data?.metadata?.subsection;
-    const secId = data?.metadata?.secondary_subsection;
-    const target = detectMshcatContentTarget({
-      subsectionId: subId,
-      secondarySubsectionId: secId,
-    });
-    await updateMshcatBook(mshBook.bookDocId, {
-      title: data?.metadata?.title,
-      description: data?.metadata?.description,
-      author: data?.metadata?.author,
-      sourceUrl: data?.video_url,
-      contentType: "youtube",
-      ...(thumbnailUrl !== undefined ? { thumbnail: thumbnailUrl } : {}),
-      ...(target?.docId ? { categoryDocId: target.docId } : {}),
-    });
+    const wantsMove =
+      hasOwn(data?.metadata || {}, "subsection") ||
+      hasOwn(data?.metadata || {}, "secondary_subsection");
+    if (wantsMove) {
+      const target = detectMshcatContentTarget({
+        subsectionId: data?.metadata?.subsection,
+        secondarySubsectionId: data?.metadata?.secondary_subsection,
+      });
+      if (target?.docId) patch.categoryDocId = target.docId;
+    }
+    await updateMshcatBook(mshBook.bookDocId, patch);
     return { id };
   }
 
   const oldContent = parseOldAppContentId(id);
   if (oldContent) {
-    let thumbnailUrl;
-    if (data?.thumbnail instanceof File) {
-      thumbnailUrl = await uploadSectionThumbnail("youtube-oldapp", oldContent.lessonDocId, data.thumbnail);
+    const patch = { contentType: "youtube" };
+    if (hasOwn(data, "video_url")) patch.sourceUrl = asTrimmedString(data.video_url);
+    if (hasOwn(data?.metadata || {}, "title")) patch.title = asTrimmedString(data.metadata.title);
+    if (hasOwn(data?.metadata || {}, "description")) {
+      patch.description = asTrimmedString(data.metadata.description);
     }
-    await updateOldAppLesson(oldContent.lessonDocId, {
-      title: data?.metadata?.title,
-      description: data?.metadata?.description,
-      author: data?.metadata?.author,
-      sourceUrl: data?.video_url,
-      contentType: "youtube",
-      ...(thumbnailUrl !== undefined ? { thumbnail: thumbnailUrl } : {}),
-    });
+    if (hasOwn(data?.metadata || {}, "author")) patch.author = asTrimmedString(data.metadata.author);
+    if (data?.thumbnail instanceof File) {
+      patch.thumbnail = await uploadSectionThumbnail(
+        "youtube-oldapp",
+        oldContent.lessonDocId,
+        data.thumbnail,
+      );
+    }
+    await updateOldAppLesson(oldContent.lessonDocId, patch);
     return { id };
   }
 
@@ -592,10 +668,10 @@ export async function updateYoutubeVideo(id, data) {
   const snap = await get(itemRef);
   if (!snap.exists()) throw new Error("Video not found");
   const current = snap.val();
-  const nextMetadata = {
-    ...(current.metadata || {}),
-    ...(data?.metadata || {}),
-  };
+  const nextMetadata = mergeContentMetadataPreservingHierarchy(
+    current.metadata || {},
+    data?.metadata || {},
+  );
   let nextThumbnail = nextMetadata.thumbnail ?? current?.thumbnail ?? null;
   if (data?.thumbnail instanceof File) {
     nextThumbnail = await uploadSectionThumbnail("youtube", id, data.thumbnail);
@@ -637,7 +713,11 @@ export async function removeYoutubeVideo(id) {
     return true;
   }
   const db = sectionsDb();
-  await remove(dbRef(db, `${CONTENT_ROOT}/youtube/${id}`));
+  const itemRef = dbRef(db, `${CONTENT_ROOT}/youtube/${id}`);
+  const snap = await get(itemRef);
+  if (!snap.exists()) return true;
+  await deleteStorageUrlsByValue(collectAssetUrls(snap.val() || {}));
+  await remove(itemRef);
   return true;
 }
 
@@ -766,6 +846,143 @@ function detectMshcatContentTarget({ subsectionId, secondarySubsectionId }) {
 function parseMshcatBookId(id) {
   const parsed = parseMshcatId(id);
   return parsed?.level === "book" ? { bookDocId: parsed.docId } : null;
+}
+
+function buildSearchAction(kind, id, query = "") {
+  const q = String(query || "").trim();
+  const withQuery = (base) => ({ ...base, ...(q ? { q } : {}) });
+
+  switch (kind) {
+    case "main":
+    case "sub":
+    case "secondary":
+      return {
+        edit: {
+          route: "/moderator/sections",
+          query: withQuery({ level: kind, modal: "edit", id: String(id) }),
+        },
+        delete: {
+          route: "/moderator/sections",
+          query: withQuery({ level: kind, modal: "delete", id: String(id) }),
+        },
+      };
+    case "file":
+      return {
+        edit: {
+          route: "/moderator/content/files",
+          query: withQuery({ modal: "edit", id: String(id) }),
+        },
+        delete: {
+          route: "/moderator/content/files",
+          query: withQuery({ modal: "delete", id: String(id) }),
+        },
+      };
+    case "youtube":
+      return {
+        edit: {
+          route: "/moderator/content/youtube",
+          query: withQuery({ modal: "edit", id: String(id) }),
+        },
+        delete: {
+          route: "/moderator/content/youtube",
+          query: withQuery({ modal: "delete", id: String(id) }),
+        },
+      };
+    default:
+      return {};
+  }
+}
+
+function toSearchHit(kind, item, query = "") {
+  if (kind === "main" || kind === "sub" || kind === "secondary") {
+    return {
+      id: String(item.id),
+      kind,
+      title: item.name || "",
+      description: item.description || "",
+      thumbnail: item.thumbnail || null,
+      is_listed: item.is_listed ?? true,
+      raw: item,
+      actions: buildSearchAction(kind, item.id, query),
+    };
+  }
+
+  if (kind === "file") {
+    return {
+      id: String(item.id),
+      kind,
+      title: item?.metadata?.title || item?.filename || "",
+      description: item?.metadata?.description || "",
+      thumbnail: item?.metadata?.thumbnail || null,
+      content_type: item?.metadata?.content_type || item?.file_type || "file",
+      raw: item,
+      actions: buildSearchAction("file", item.id, query),
+    };
+  }
+
+  return {
+    id: String(item.id),
+    kind: "youtube",
+    title: item?.metadata?.title || "",
+    description: item?.metadata?.description || "",
+    thumbnail: item?.metadata?.thumbnail || null,
+    content_type: "youtube",
+    raw: item,
+    actions: buildSearchAction("youtube", item.id, query),
+  };
+}
+
+export async function searchDashboardUnified({
+  query,
+  requireSearch = true,
+} = {}) {
+  const q = String(query || "").trim();
+
+  if (!q || q.length < MIN_SEARCH_LEN) {
+    return {
+      query: q,
+      groups: {
+        mainSections: [],
+        subSections: [],
+        secondarySections: [],
+        content: [],
+      },
+      all: [],
+      partialFailures: [],
+    };
+  }
+
+  resetPartialFailures();
+
+  const [mains, subs, secondaries, files, videos] = await Promise.all([
+    listMyMainSections({ search: q, page: 1, requireSearch }),
+    listMySubSections({ search: q, page: 1, requireSearch }),
+    listMySecondarySections({ search: q, page: 1, requireSearch }),
+    listMyFiles({ search: q, page: 1, requireSearch }),
+    listMyYoutubeVideos({ search: q, page: 1, requireSearch }),
+  ]);
+
+  const mainHits = (mains.results || []).map((item) => toSearchHit("main", item, q));
+  const subHits = (subs.results || []).map((item) => toSearchHit("sub", item, q));
+  const secondaryHits = (secondaries.results || []).map((item) =>
+    toSearchHit("secondary", item, q),
+  );
+  const fileHits = (files.results || []).map((item) => toSearchHit("file", item, q));
+  const videoHits = (videos.results || []).map((item) =>
+    toSearchHit("youtube", item, q),
+  );
+
+  return {
+    query: q,
+    groups: {
+      mainSections: mainHits,
+      subSections: subHits,
+      secondarySections: secondaryHits,
+      content: [...fileHits, ...videoHits],
+    },
+    all: [...mainHits, ...subHits, ...secondaryHits, ...fileHits, ...videoHits],
+    partialFailures: getLastPartialFailures(),
+  };
 }
 
 function applySectionFilters(
@@ -924,6 +1141,9 @@ export async function updateMainSection(id, data) {
   const current = snap.val();
   const patch = {
     ...(data?.name !== undefined ? { name: String(data.name).trim() } : {}),
+    ...(data?.description !== undefined
+      ? { description: String(data.description || "").trim() }
+      : {}),
     ...(data?.order_index !== undefined
       ? { order_index: Number(data.order_index || 0) }
       : {}),
@@ -953,20 +1173,61 @@ export async function removeMainSection(id) {
   }
 
   const db = sectionsDb();
+  const mainSnap = await get(dbRef(db, `${SECTIONS_ROOT}/main/${id}`));
+  const mainRow = mainSnap.exists() ? mainSnap.val() || {} : null;
   const subItems = await readLevel("sub");
   const secItems = await readLevel("secondary");
-  const subToDelete = subItems
-    .filter((s) => Number(s.main_section) === Number(id))
-    .map((s) => s.id);
+  const filePrimary = await get(dbRef(db, `${UPLOADS_ROOT}`));
+  const fileFallback = await get(dbRef(db, `${UPLOADS_FALLBACK_ROOT}`));
+  const youtubeSnap = await get(dbRef(db, `${CONTENT_ROOT}/youtube`));
+  const fileRows = [
+    ...(filePrimary.exists() ? Object.values(filePrimary.val() || {}) : []),
+    ...(fileFallback.exists() ? Object.values(fileFallback.val() || {}) : []),
+  ];
+  const videos = youtubeSnap.exists() ? Object.values(youtubeSnap.val() || {}) : [];
+  const subRows = subItems.filter((s) => sameSectionId(s.main_section, id));
+  const subIds = subRows.map((s) => s.id);
+  const secondaryRows = secItems.filter((sec) =>
+    subIds.some((subId) => sameSectionId(sec.sub_section, subId)),
+  );
+  const secondaryIds = secondaryRows.map((sec) => sec.id);
+  const fileRowsToDelete = fileRows.filter((row) => {
+    const subMatch = subIds.some((subId) => sameSectionId(row?.metadata?.subsection, subId));
+    const secMatch = secondaryIds.some((secId) =>
+      sameSectionId(row?.metadata?.secondary_subsection, secId),
+    );
+    return subMatch || secMatch;
+  });
+  const videosToDelete = videos.filter((row) => {
+    const subMatch = subIds.some((subId) => sameSectionId(row?.metadata?.subsection, subId));
+    const secMatch = secondaryIds.some((secId) =>
+      sameSectionId(row?.metadata?.secondary_subsection, secId),
+    );
+    return subMatch || secMatch;
+  });
+  await deleteStorageUrlsByValue([
+    ...collectAssetUrls(mainRow),
+    ...subRows.flatMap(collectAssetUrls),
+    ...secondaryRows.flatMap(collectAssetUrls),
+    ...fileRowsToDelete.flatMap(collectAssetUrls),
+    ...videosToDelete.flatMap(collectAssetUrls),
+  ]);
+  await Promise.all(
+    fileRowsToDelete.flatMap((row) => [
+      remove(dbRef(db, `${UPLOADS_ROOT}/${row.fileId || row.id}`)),
+      remove(dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${row.fileId || row.id}`)),
+    ]),
+  );
+  await Promise.all(
+    videosToDelete.map((row) => remove(dbRef(db, `${CONTENT_ROOT}/youtube/${row.id}`))),
+  );
+  for (const sec of secondaryRows) {
+    await remove(dbRef(db, `${SECTIONS_ROOT}/secondary/${sec.id}`));
+  }
+  for (const sub of subRows) {
+    await remove(dbRef(db, `${SECTIONS_ROOT}/sub/${sub.id}`));
+  }
   await remove(dbRef(db, `${SECTIONS_ROOT}/main/${id}`));
-  for (const sid of subToDelete) {
-    await remove(dbRef(db, `${SECTIONS_ROOT}/sub/${sid}`));
-  }
-  for (const sec of secItems) {
-    if (subToDelete.includes(sec.sub_section)) {
-      await remove(dbRef(db, `${SECTIONS_ROOT}/secondary/${sec.id}`));
-    }
-  }
   return true;
 }
 
@@ -1173,10 +1434,16 @@ export async function updateSubSection(id, data) {
   const current = snap.val();
   const patch = {
     ...(data?.name !== undefined ? { name: String(data.name).trim() } : {}),
+    ...(data?.description !== undefined
+      ? { description: String(data.description || "").trim() }
+      : {}),
     ...(data?.is_listed !== undefined
       ? { is_listed: Boolean(data.is_listed) }
       : {}),
   };
+  if (hasOwn(data, "main_section")) {
+    patch.main_section = data.main_section || null;
+  }
   if (data?.thumbnail instanceof File) {
     patch.thumbnail = await uploadSectionThumbnail("sub", id, data.thumbnail);
   }
@@ -1200,18 +1467,57 @@ export async function removeSubSection(id) {
   if (isOldAppId(id)) {
     const parsed = parseOldAppId(id);
     if (parsed?.level === "main") {
-      await deleteOldAppMainSection(parsed.mainDocId);
+      await deleteOldAppMainSection(parsed.mainDocId, { cascade: true });
       return true;
     }
   }
   const db = sectionsDb();
+  const subSnap = await get(dbRef(db, `${SECTIONS_ROOT}/sub/${id}`));
+  const subRow = subSnap.exists() ? subSnap.val() || {} : null;
   const secItems = await readLevel("secondary");
-  await remove(dbRef(db, `${SECTIONS_ROOT}/sub/${id}`));
-  for (const sec of secItems) {
-    if (sameSectionId(sec.sub_section, id)) {
-      await remove(dbRef(db, `${SECTIONS_ROOT}/secondary/${sec.id}`));
-    }
+  const secondaryRows = secItems.filter((sec) => sameSectionId(sec.sub_section, id));
+  const secondaryIds = secondaryRows.map((sec) => sec.id);
+  const filePrimary = await get(dbRef(db, `${UPLOADS_ROOT}`));
+  const fileFallback = await get(dbRef(db, `${UPLOADS_FALLBACK_ROOT}`));
+  const youtubeSnap = await get(dbRef(db, `${CONTENT_ROOT}/youtube`));
+  const fileRows = [
+    ...(filePrimary.exists() ? Object.values(filePrimary.val() || {}) : []),
+    ...(fileFallback.exists() ? Object.values(fileFallback.val() || {}) : []),
+  ];
+  const videos = youtubeSnap.exists() ? Object.values(youtubeSnap.val() || {}) : [];
+  const fileRowsToDelete = fileRows.filter((row) => {
+    const subMatch = sameSectionId(row?.metadata?.subsection, id);
+    const secMatch = secondaryIds.some((secId) =>
+      sameSectionId(row?.metadata?.secondary_subsection, secId),
+    );
+    return subMatch || secMatch;
+  });
+  const videosToDelete = videos.filter((row) => {
+    const subMatch = sameSectionId(row?.metadata?.subsection, id);
+    const secMatch = secondaryIds.some((secId) =>
+      sameSectionId(row?.metadata?.secondary_subsection, secId),
+    );
+    return subMatch || secMatch;
+  });
+  await deleteStorageUrlsByValue([
+    ...collectAssetUrls(subRow),
+    ...secondaryRows.flatMap(collectAssetUrls),
+    ...fileRowsToDelete.flatMap(collectAssetUrls),
+    ...videosToDelete.flatMap(collectAssetUrls),
+  ]);
+  await Promise.all(
+    fileRowsToDelete.flatMap((row) => [
+      remove(dbRef(db, `${UPLOADS_ROOT}/${row.fileId || row.id}`)),
+      remove(dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${row.fileId || row.id}`)),
+    ]),
+  );
+  await Promise.all(
+    videosToDelete.map((row) => remove(dbRef(db, `${CONTENT_ROOT}/youtube/${row.id}`))),
+  );
+  for (const sec of secondaryRows) {
+    await remove(dbRef(db, `${SECTIONS_ROOT}/secondary/${sec.id}`));
   }
+  await remove(dbRef(db, `${SECTIONS_ROOT}/sub/${id}`));
   return true;
 }
 
@@ -1455,10 +1761,16 @@ export async function updateSecondarySection(id, data) {
   const current = snap.val();
   const patch = {
     ...(data?.name !== undefined ? { name: String(data.name).trim() } : {}),
+    ...(data?.description !== undefined
+      ? { description: String(data.description || "").trim() }
+      : {}),
     ...(data?.is_listed !== undefined
       ? { is_listed: Boolean(data.is_listed) }
       : {}),
   };
+  if (hasOwn(data, "sub_section")) {
+    patch.sub_section = data.sub_section || null;
+  }
   if (data?.thumbnail instanceof File) {
     patch.thumbnail = await uploadSectionThumbnail(
       "secondary",
@@ -1482,11 +1794,41 @@ export async function removeSecondarySection(id) {
   if (isOldAppId(id)) {
     const parsed = parseOldAppId(id);
     if (parsed?.level === "sub") {
-      await deleteOldAppSubSection(parsed.mainDocId, parsed.subDocId);
+      await deleteOldAppSubSection(parsed.mainDocId, parsed.subDocId, { cascade: true });
       return true;
     }
   }
   const db = sectionsDb();
+  const secSnap = await get(dbRef(db, `${SECTIONS_ROOT}/secondary/${id}`));
+  const secRow = secSnap.exists() ? secSnap.val() || {} : null;
+  const filePrimary = await get(dbRef(db, `${UPLOADS_ROOT}`));
+  const fileFallback = await get(dbRef(db, `${UPLOADS_FALLBACK_ROOT}`));
+  const youtubeSnap = await get(dbRef(db, `${CONTENT_ROOT}/youtube`));
+  const fileRows = [
+    ...(filePrimary.exists() ? Object.values(filePrimary.val() || {}) : []),
+    ...(fileFallback.exists() ? Object.values(fileFallback.val() || {}) : []),
+  ];
+  const videos = youtubeSnap.exists() ? Object.values(youtubeSnap.val() || {}) : [];
+  const fileRowsToDelete = fileRows.filter((row) =>
+    sameSectionId(row?.metadata?.secondary_subsection, id),
+  );
+  const videosToDelete = videos.filter((row) =>
+    sameSectionId(row?.metadata?.secondary_subsection, id),
+  );
+  await deleteStorageUrlsByValue([
+    ...collectAssetUrls(secRow),
+    ...fileRowsToDelete.flatMap(collectAssetUrls),
+    ...videosToDelete.flatMap(collectAssetUrls),
+  ]);
+  await Promise.all(
+    fileRowsToDelete.flatMap((row) => [
+      remove(dbRef(db, `${UPLOADS_ROOT}/${row.fileId || row.id}`)),
+      remove(dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${row.fileId || row.id}`)),
+    ]),
+  );
+  await Promise.all(
+    videosToDelete.map((row) => remove(dbRef(db, `${CONTENT_ROOT}/youtube/${row.id}`))),
+  );
   await remove(dbRef(db, `${SECTIONS_ROOT}/secondary/${id}`));
   return true;
 }
@@ -1845,32 +2187,77 @@ export async function mirrorUploadedFileToMshcatBook({
 export async function updateFile(fileId, data) {
   const mshBook = parseMshcatBookId(fileId);
   if (mshBook) {
-    const subId = data?.metadata?.subsection;
-    const secId = data?.metadata?.secondary_subsection;
-    const target = detectMshcatContentTarget({
-      subsectionId: subId,
-      secondarySubsectionId: secId,
-    });
-    await updateMshcatBook(mshBook.bookDocId, {
-      title: data?.metadata?.title,
-      description: data?.metadata?.description,
-      author: data?.metadata?.author,
-      contentType: data?.metadata?.content_type,
-      thumbnail: data?.metadata?.thumbnail,
-      ...(target?.docId ? { categoryDocId: target.docId } : {}),
-    });
+    const patch = {};
+    if (hasOwn(data?.metadata || {}, "title")) patch.title = asTrimmedString(data.metadata.title);
+    if (hasOwn(data?.metadata || {}, "description")) {
+      patch.description = asTrimmedString(data.metadata.description);
+    }
+    if (hasOwn(data?.metadata || {}, "author")) patch.author = asTrimmedString(data.metadata.author);
+    if (hasOwn(data?.metadata || {}, "content_type")) {
+      patch.contentType = asTrimmedString(data.metadata.content_type);
+    }
+    if (data?.thumbnail instanceof File) {
+      patch.thumbnail = await uploadSectionThumbnail(
+        "files-mshcat",
+        mshBook.bookDocId,
+        data.thumbnail,
+      );
+    } else if (hasOwn(data?.metadata || {}, "thumbnail")) {
+      patch.thumbnail = data.metadata.thumbnail;
+    }
+    const wantsMove =
+      hasOwn(data?.metadata || {}, "subsection") ||
+      hasOwn(data?.metadata || {}, "secondary_subsection");
+    if (wantsMove) {
+      const target = detectMshcatContentTarget({
+        subsectionId: data?.metadata?.subsection,
+        secondarySubsectionId: data?.metadata?.secondary_subsection,
+      });
+      if (target?.docId) patch.categoryDocId = target.docId;
+    }
+    if (data?.file instanceof File) {
+      const uploaded = await smartUpload({
+        file: data.file,
+        target: "mshcat",
+        folder: `content/files/${mshBook.bookDocId}`,
+        filename: `${Date.now()}_${String(data.file.name || "file").replace(/[^\w.\-]/g, "_")}`,
+      });
+      patch.sourceUrl = uploaded.url;
+    }
+    await updateMshcatBook(mshBook.bookDocId, patch);
     return { id: fileId };
   }
 
   const oldContent = parseOldAppContentId(fileId);
   if (oldContent) {
-    await updateOldAppLesson(oldContent.lessonDocId, {
-      title: data?.metadata?.title,
-      description: data?.metadata?.description,
-      author: data?.metadata?.author,
-      contentType: data?.metadata?.content_type,
-      thumbnail: data?.metadata?.thumbnail,
-    });
+    const patch = {};
+    if (hasOwn(data?.metadata || {}, "title")) patch.title = asTrimmedString(data.metadata.title);
+    if (hasOwn(data?.metadata || {}, "description")) {
+      patch.description = asTrimmedString(data.metadata.description);
+    }
+    if (hasOwn(data?.metadata || {}, "author")) patch.author = asTrimmedString(data.metadata.author);
+    if (hasOwn(data?.metadata || {}, "content_type")) {
+      patch.contentType = asTrimmedString(data.metadata.content_type);
+    }
+    if (data?.thumbnail instanceof File) {
+      patch.thumbnail = await uploadSectionThumbnail(
+        "files-oldapp",
+        oldContent.lessonDocId,
+        data.thumbnail,
+      );
+    } else if (hasOwn(data?.metadata || {}, "thumbnail")) {
+      patch.thumbnail = data.metadata.thumbnail;
+    }
+    if (data?.file instanceof File) {
+      const uploaded = await smartUpload({
+        file: data.file,
+        target: "oldapp",
+        folder: `content/files/${oldContent.lessonDocId}`,
+        filename: `${Date.now()}_${String(data.file.name || "file").replace(/[^\w.\-]/g, "_")}`,
+      });
+      patch.sourceUrl = uploaded.url;
+    }
+    await updateOldAppLesson(oldContent.lessonDocId, patch);
     return { id: fileId };
   }
 
@@ -1883,15 +2270,39 @@ export async function updateFile(fileId, data) {
   const snap = primarySnap.exists() ? primarySnap : fallbackSnap;
   if (!snap.exists()) throw new Error("File not found");
   const current = snap.val();
-  const nextMetadata = {
-    ...(current.metadata || {}),
-    ...(data?.metadata || {}),
-  };
+  const nextMetadata = mergeContentMetadataPreservingHierarchy(
+    current.metadata || {},
+    data?.metadata || {},
+  );
   const next = {
     ...current,
     metadata: nextMetadata,
-    ...buildUploadMirrorFields(current, nextMetadata),
   };
+  if (data?.thumbnail instanceof File) {
+    next.metadata.thumbnail = await uploadSectionThumbnail("files", fileId, data.thumbnail);
+  }
+  if (data?.file instanceof File) {
+    const uploaded = await smartUpload({
+      file: data.file,
+      target: "nebras",
+      folder: `content/files/${fileId}`,
+      filename: `${Date.now()}_${String(data.file.name || "file").replace(/[^\w.\-]/g, "_")}`,
+    });
+    next.filename = data.file.name;
+    next.fileType = data.file.type || current.fileType || "";
+    next.fileSize = Number(data.file.size || 0);
+    next.downloadUrl = uploaded.url;
+    next.file_url = uploaded.url;
+    next.sourceUrl = uploaded.url;
+    next.storagePath = uploaded.path;
+    if (current?.storagePath && current.storagePath !== uploaded.path) {
+      try {
+        const storage = sectionsStorage();
+        await deleteObject(storageRef(storage, current.storagePath));
+      } catch {}
+    }
+  }
+  Object.assign(next, buildUploadMirrorFields(next, next.metadata));
   await set(itemRef, next);
   return next;
 }
@@ -1918,11 +2329,11 @@ export async function removeFile(fileId) {
   const snap = primarySnap.exists() ? primarySnap : fallbackSnap;
   if (!snap.exists()) return true;
   const item = snap.val();
-  const storagePath = item?.storagePath;
-  if (storagePath) {
+  await deleteStorageUrlsByValue(collectAssetUrls(item));
+  if (item?.storagePath) {
     try {
       const storage = sectionsStorage();
-      await deleteObject(storageRef(storage, storagePath));
+      await deleteObject(storageRef(storage, item.storagePath));
     } catch {
       // Continue deleting DB entry even if file already missing in storage.
     }

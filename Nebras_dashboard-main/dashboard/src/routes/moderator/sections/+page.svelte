@@ -7,6 +7,9 @@
 -->
 
 <script>
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import {
 		listMyMainSections, createMainSection, updateMainSection, removeMainSection,
 		listMySubSections, createSubSection, updateSubSection, removeSubSection,
@@ -71,7 +74,10 @@
 	let editingItem = $state(null);
 	let editForm = $state({
 		name: '',
+		description: '',
 		order_index: 0,
+		main_section: '',
+		sub_section: '',
 		is_listed: true
 	});
 	let editThumbnail = $state(null);         // File object (null = no change)
@@ -109,6 +115,19 @@
 
 	// Partial source failures (Mshcat/OldApp).
 	let partialFailures = $state([]);
+
+	function consumeModalIntent() {
+		const params = page.url?.searchParams;
+		const modal = params?.get('modal');
+		const id = params?.get('id');
+		if (!modal || !id) return false;
+		const item = items.find((entry) => String(entry.id) === String(id));
+		if (!item) return false;
+		if (modal === 'edit') openEditModal(item);
+		if (modal === 'delete') openDeleteModal(item);
+		goto(page.url.pathname, { replaceState: true, noScroll: true, keepFocus: true });
+		return true;
+	}
 
 	// ─── Fetch items (search-driven + filter-driven) ────
 
@@ -265,6 +284,21 @@
 		}
 	}
 
+	onMount(async () => {
+		const params = page.url?.searchParams;
+		const level = String(params?.get('level') || '').trim();
+		const q = String(params?.get('q') || '').trim();
+		if (level === 'main' || level === 'sub' || level === 'secondary') {
+			activeLevel = level;
+		}
+		if (q) {
+			searchQuery = q;
+			currentPage = 1;
+			await fetchItems();
+			consumeModalIntent();
+		}
+	});
+
 	function handleFilterChange() {
 		currentPage = 1;
 		// الفلتر يُطلق الجلب مباشرة الآن.
@@ -394,16 +428,33 @@
 
 	// ─── Edit ───────────────────────────────────────────
 
-	function openEditModal(item) {
+	async function openEditModal(item) {
 		editingItem = item;
 		editForm = {
 			name: item.name,
+			description: item.description || '',
 			order_index: item.order_index ?? 0,
+			main_section: item.main_section || '',
+			sub_section: item.sub_section || '',
 			is_listed: item.is_listed ?? true
 		};
 		editThumbnail = null;
 		editThumbnailPreview = item.thumbnail || '';
 		editFormError = '';
+
+		if (activeLevel === 'sub' || activeLevel === 'secondary') {
+			if (mainSectionsList.length === 0) await fetchMainSectionsOptions();
+		}
+		if (activeLevel === 'secondary') {
+			await fetchSubSectionsOptions(editForm.main_section || '');
+			if (!editForm.main_section && editForm.sub_section) {
+				const currentParent = subSectionsList.find((s) => String(s.id) === String(editForm.sub_section));
+				if (currentParent?.main_section) {
+					editForm.main_section = currentParent.main_section;
+					await fetchSubSectionsOptions(editForm.main_section);
+				}
+			}
+		}
 		showEditModal = true;
 	}
 
@@ -422,18 +473,37 @@
 		editThumbnailPreview = '';
 	}
 
+	function handleEditMainSectionChange() {
+		if (activeLevel === 'secondary') {
+			editForm.sub_section = '';
+			fetchSubSectionsOptions(editForm.main_section || '');
+		}
+	}
+
 	async function handleEdit() {
 		editFormError = '';
 		editFormLoading = true;
 		try {
+			if (activeLevel === 'sub' && !editForm.main_section) {
+				editFormError = 'Please select a parent main section.';
+				editFormLoading = false;
+				return;
+			}
+			if (activeLevel === 'secondary' && !editForm.sub_section) {
+				editFormError = 'Please select a parent sub section.';
+				editFormLoading = false;
+				return;
+			}
 			const payload = { ...editForm };
 			if (editThumbnail) payload.thumbnail = editThumbnail;
 
 			if (activeLevel === 'main') {
 				await updateMainSection(editingItem.id, payload);
 			} else if (activeLevel === 'sub') {
+				payload.main_section = editForm.main_section;
 				await updateSubSection(editingItem.id, payload);
 			} else {
+				payload.sub_section = editForm.sub_section;
 				await updateSecondarySection(editingItem.id, payload);
 			}
 			showEditModal = false;
@@ -559,24 +629,15 @@
 
 	<!-- Toolbar -->
 	<div class="toolbar">
-		<div class="search-box">
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon">
-				<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-			</svg>
-			<input type="text" placeholder={t('sections.search')} bind:value={searchQuery}
-				onkeydown={handleSearchKey} class="search-input" id="search-sections" />
-			{#if searchQuery}
+		{#if searchQuery}
+			<div class="active-query-chip" title={searchQuery}>
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="search-icon"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+				<span class="active-query-text">{searchQuery}</span>
 				<button type="button" class="search-clear" aria-label={t('common.search_clear')} title={t('common.search_clear')} onclick={clearSearch}>
 					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18L18 6M6 6l12 12" /></svg>
 				</button>
-			{/if}
-		</div>
-		<button type="button" class="btn btn-primary btn-search" onclick={submitSearch} disabled={!String(searchQuery || '').trim()}>
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon">
-				<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-			</svg>
-			{t('common.search_btn')}
-		</button>
+			</div>
+		{/if}
 
 		<!-- Parent: Main Section dropdown (for sub & secondary levels) -->
 		{#if activeLevel === 'sub' || activeLevel === 'secondary'}
@@ -638,7 +699,10 @@
 					<path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-linecap="round" stroke-linejoin="round" />
 				</svg>
 				<p class="empty-title">{t('common.search_empty_title')}</p>
-				<p class="empty-hint">{t('common.search_empty_hint')}</p>
+				<p class="empty-hint">{t('common.search_use_header')}</p>
+				<button type="button" class="btn btn-secondary" style="margin-top:0.75rem" onclick={() => { const el = document.getElementById('search-input'); if (el) { el.focus(); el.scrollIntoView({ block: 'center' }); } }}>
+					{t('common.search_open_global')}
+				</button>
 			</div>
 		{:else if items.length === 0}
 			<div class="state-box empty-state">
@@ -987,9 +1051,45 @@
 				</div>
 
 				<div class="form-group">
+					<label for="edit-description" class="form-label">{t('content.description')}</label>
+					<textarea id="edit-description" bind:value={editForm.description} class="form-input form-textarea" rows="3"></textarea>
+				</div>
+
+				<div class="form-group">
 					<label for="edit-order" class="form-label">{t('sections.order_index')}</label>
 					<input type="number" id="edit-order" bind:value={editForm.order_index} class="form-input" />
 				</div>
+
+				{#if activeLevel === 'sub'}
+					<div class="form-group">
+						<label for="edit-parent-main" class="form-label">{t('sections.main_section')} *</label>
+						<select id="edit-parent-main" bind:value={editForm.main_section} class="form-select">
+							<option value="">{t('common.select_option') || 'Select main section'}</option>
+							{#each mainSectionsList as item}
+								<option value={item.id}>{item.name}</option>
+							{/each}
+						</select>
+					</div>
+				{:else if activeLevel === 'secondary'}
+					<div class="form-group">
+						<label for="edit-parent-main-secondary" class="form-label">{t('sections.main_section')} *</label>
+						<select id="edit-parent-main-secondary" bind:value={editForm.main_section} class="form-select" onchange={handleEditMainSectionChange}>
+							<option value="">{t('common.select_option') || 'Select main section'}</option>
+							{#each mainSectionsList as item}
+								<option value={item.id}>{item.name}</option>
+							{/each}
+						</select>
+					</div>
+					<div class="form-group">
+						<label for="edit-parent-sub" class="form-label">{t('sections.sub_section')} *</label>
+						<select id="edit-parent-sub" bind:value={editForm.sub_section} class="form-select">
+							<option value="">{t('common.select_option') || 'Select sub section'}</option>
+							{#each subSectionsList as item}
+								<option value={item.id}>{item.name}</option>
+							{/each}
+						</select>
+					</div>
+				{/if}
 
 				<div class="form-group" style="margin-top: 1.5rem; margin-bottom: 0.5rem;">
 					<label class="toggle-switch">
@@ -1199,23 +1299,6 @@
 	.sk-short { width: 60%; }
 	@keyframes sk-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-	.search-box {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.5rem 0.75rem;
-		background: var(--color-surface-800);
-		border: 1px solid var(--color-surface-700);
-		border-radius: 10px;
-		flex: 1;
-		max-width: 280px;
-		transition: border-color 0.2s;
-	}
-
-	.search-box:focus-within {
-		border-color: var(--color-primary-600);
-	}
-
 	.search-icon {
 		width: 16px;
 		height: 16px;
@@ -1223,18 +1306,24 @@
 		flex-shrink: 0;
 	}
 
-	.search-input {
-		flex: 1;
-		background: none;
-		border: none;
-		outline: none;
-		color: var(--color-surface-100);
-		font-size: 0.8125rem;
-		font-family: inherit;
+	.active-query-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.4rem 0.7rem;
+		background: rgba(5,150,105,0.08);
+		border: 1px solid var(--color-primary-700);
+		border-radius: 999px;
+		color: var(--color-primary-400);
+		font-size: 0.78rem;
+		max-width: 280px;
 	}
 
-	.search-input::placeholder {
-		color: var(--color-surface-500);
+	.active-query-text {
+		font-weight: 600;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.filter-select {
@@ -1324,10 +1413,6 @@
 		text-align: center;
 		max-width: 480px;
 		line-height: 1.5;
-	}
-
-	.btn-search {
-		white-space: nowrap;
 	}
 
 	.spinner {
@@ -1967,7 +2052,7 @@
 
 	@media (max-width: 640px) {
 		.toolbar { flex-direction: column; align-items: stretch; }
-		.search-box, .filter-select { max-width: 100%; width: 100%; }
+		.filter-select, .active-query-chip { max-width: 100%; width: 100%; }
 		.count-badge { margin-left: 0; align-self: flex-start; }
 		.sections-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
 		.detail-row { flex-direction: column; gap: 0.25rem; }

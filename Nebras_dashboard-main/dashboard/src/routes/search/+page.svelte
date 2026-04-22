@@ -10,12 +10,7 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import {
-		listMyMainSections,
-		listMySubSections,
-		listMySecondarySections,
-		listMyFiles,
-		listMyYoutubeVideos,
-		getLastPartialFailures
+		searchDashboardUnified
 	} from '$lib/api/moderator.js';
 	import { t } from '$lib/i18n/store.svelte.js';
 	import { tokenize, highlightMatches } from '$lib/utils/search.js';
@@ -64,28 +59,31 @@
 		error = '';
 		searchTokens = tokenize(q);
 		try {
-			// نُشغّل كلّ المصادر بالتوازي. كلّ مصدر يُطبّق فلترة AND + ranking
-			// بنفسه داخل moderator.js، فنستقبل نتائج مرتّبة جاهزة.
-			const [mains, subs, secondaries, files, videos] = await Promise.all([
-				listMyMainSections({ search: q, page: 1, requireSearch: true }),
-				listMySubSections({ search: q, page: 1, requireSearch: true }),
-				listMySecondarySections({ search: q, page: 1, requireSearch: true }),
-				listMyFiles({ search: q, page: 1, requireSearch: true }),
-				listMyYoutubeVideos({ search: q, page: 1, requireSearch: true })
-			]);
+			const results = await searchDashboardUnified({ query: q, requireSearch: true });
 			sectionsResults = [
-				...mains.results.map((x) => ({ ...x, _level: 'main' })),
-				...subs.results.map((x) => ({ ...x, _level: 'sub' })),
-				...secondaries.results.map((x) => ({ ...x, _level: 'secondary' }))
+				...(results.groups.mainSections || []).map((x) => ({ ...x, _level: 'main' })),
+				...(results.groups.subSections || []).map((x) => ({ ...x, _level: 'sub' })),
+				...(results.groups.secondarySections || []).map((x) => ({ ...x, _level: 'secondary' }))
 			];
-			filesResults = files.results || [];
-			videosResults = videos.results || [];
-			partialFailures = getLastPartialFailures();
+			filesResults = (results.groups.content || []).filter((x) => x.kind === 'file');
+			videosResults = (results.groups.content || []).filter((x) => x.kind === 'youtube');
+			partialFailures = results.partialFailures || [];
 		} catch (err) {
 			error = err?.message || String(err);
 		} finally {
 			isLoading = false;
 		}
+	}
+
+	function buildActionHref(action) {
+		if (!action?.route) return '#';
+		const url = new URL(action.route, $page.url.origin);
+		for (const [key, value] of Object.entries(action.query || {})) {
+			if (value !== undefined && value !== null && value !== '') {
+				url.searchParams.set(key, String(value));
+			}
+		}
+		return url.pathname + url.search;
 	}
 
 	function submit(e) {
@@ -171,14 +169,18 @@
 				<h2 class="group-title">{t('common.sections')} <span class="count-badge">{sectionsResults.length}</span></h2>
 				<div class="grid">
 					{#each sectionsResults as item (item._level + ':' + String(item.id))}
-						<a class="result-card" href={`/moderator/sections?level=${item._level}`}>
+						<div class="result-card">
 							{#if item.thumbnail}<img class="thumb" src={item.thumbnail} alt={item.name} />{/if}
 							<div class="body">
 								<span class="chip">{levelLabel(item._level)}</span>
-								<h3 class="title">{@html highlightMatches(item.name, searchTokens)}</h3>
+								<h3 class="title">{@html highlightMatches(item.title || item.name, searchTokens)}</h3>
 								<div class="meta">#{item.id}</div>
+								<div class="result-actions">
+									<a class="mini-btn" href={buildActionHref(item.actions?.edit)}>{t('common.edit')}</a>
+									<a class="mini-btn danger" href={buildActionHref(item.actions?.delete)}>{t('common.delete')}</a>
+								</div>
 							</div>
-						</a>
+						</div>
 					{/each}
 				</div>
 			{/if}
@@ -188,14 +190,18 @@
 				<h2 class="group-title">{t('content.file_uploads')} <span class="count-badge">{filesResults.length}</span></h2>
 				<div class="grid">
 					{#each filesResults as item (item.id)}
-						<a class="result-card" href={`/moderator/content/files`}>
-							{#if item.metadata?.thumbnail}<img class="thumb" src={item.metadata.thumbnail} alt={item.metadata?.title} />{/if}
+						<div class="result-card">
+							{#if item.thumbnail}<img class="thumb" src={item.thumbnail} alt={item.title} />{/if}
 							<div class="body">
-								<span class="chip">{item.metadata?.content_type || 'file'}</span>
-								<h3 class="title">{@html highlightMatches(item.metadata?.title || item.filename || 'Untitled', searchTokens)}</h3>
-								{#if item.metadata?.description}<p class="desc">{@html highlightMatches(String(item.metadata.description).slice(0, 120), searchTokens)}</p>{/if}
+								<span class="chip">{item.content_type || 'file'}</span>
+								<h3 class="title">{@html highlightMatches(item.title || 'Untitled', searchTokens)}</h3>
+								{#if item.description}<p class="desc">{@html highlightMatches(String(item.description).slice(0, 120), searchTokens)}</p>{/if}
+								<div class="result-actions">
+									<a class="mini-btn" href={buildActionHref(item.actions?.edit)}>{t('common.edit')}</a>
+									<a class="mini-btn danger" href={buildActionHref(item.actions?.delete)}>{t('common.delete')}</a>
+								</div>
 							</div>
-						</a>
+						</div>
 					{/each}
 				</div>
 			{/if}
@@ -205,14 +211,17 @@
 				<h2 class="group-title">{t('content.youtube_videos')} <span class="count-badge">{videosResults.length}</span></h2>
 				<div class="grid">
 					{#each videosResults as item (item.id)}
-						<a class="result-card" href={`/moderator/content/youtube`}>
-							{#if item.metadata?.thumbnail}<img class="thumb" src={item.metadata.thumbnail} alt={item.metadata?.title} />{/if}
+						<div class="result-card">
+							{#if item.thumbnail}<img class="thumb" src={item.thumbnail} alt={item.title} />{/if}
 							<div class="body">
 								<span class="chip">YouTube</span>
-								<h3 class="title">{@html highlightMatches(item.metadata?.title || 'Untitled', searchTokens)}</h3>
-								{#if item.metadata?.author}<div class="meta">· {item.metadata.author}</div>{/if}
+								<h3 class="title">{@html highlightMatches(item.title || 'Untitled', searchTokens)}</h3>
+								<div class="result-actions">
+									<a class="mini-btn" href={buildActionHref(item.actions?.edit)}>{t('common.edit')}</a>
+									<a class="mini-btn danger" href={buildActionHref(item.actions?.delete)}>{t('common.delete')}</a>
+								</div>
 							</div>
-						</a>
+						</div>
 					{/each}
 				</div>
 			{/if}
@@ -246,6 +255,10 @@
 	.result-card { background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 10px; padding: 0.75rem; text-decoration: none; color: inherit; display: flex; flex-direction: column; gap: 0.5rem; transition: border-color 0.15s, transform 0.15s; }
 	.result-card:hover { border-color: var(--color-primary-600); transform: translateY(-2px); }
 	.thumb { width: 100%; height: 120px; object-fit: cover; border-radius: 8px; }
+	.result-actions { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
+	.mini-btn { display: inline-flex; align-items: center; justify-content: center; padding: 0.35rem 0.7rem; border-radius: 8px; background: var(--color-surface-700); color: var(--color-surface-100); text-decoration: none; font-size: 0.78rem; font-weight: 600; }
+	.mini-btn:hover { background: var(--color-primary-700); }
+	.mini-btn.danger:hover { background: rgba(220, 38, 38, 0.9); }
 	.chip { display: inline-block; font-size: 0.7rem; padding: 0.1rem 0.45rem; border-radius: 4px; background: var(--color-surface-700); color: var(--color-surface-200); }
 	.title { font-size: 0.95rem; font-weight: 600; margin: 0.1rem 0 0 0; color: var(--color-surface-100); }
 	.desc { font-size: 0.8rem; color: var(--color-surface-400); margin: 0.2rem 0 0 0; }

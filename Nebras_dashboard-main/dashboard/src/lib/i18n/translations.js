@@ -57,6 +57,8 @@ export const translations = {
             search_global_placeholder: 'Search everything…',
             search_global_title: 'Global Search',
             search_global_desc: 'Unified search across sections, files and videos (Nebras, Mshcat, OldApp).',
+            search_use_header: 'Use the global search bar in the header to find sections, files, and videos across the whole dashboard.',
+            search_open_global: 'Open global search',
             search_partial_warning: 'Partial data — some sources failed:',
             search_source: 'Source',
             results: 'Results'
@@ -376,6 +378,8 @@ export const translations = {
             search_global_placeholder: 'ابحث في كلّ شيء…',
             search_global_title: 'البحث الشامل',
             search_global_desc: 'بحث موحَّد عبر الأقسام والملفّات والفيديوهات (Nebras وMshcat وOldApp).',
+            search_use_header: 'استخدم شريط البحث الشامل في أعلى الصفحة للعثور على الأقسام والملفّات والفيديوهات دفعة واحدة.',
+            search_open_global: 'فتح البحث الشامل',
             search_partial_warning: 'بيانات جزئيّة — فشل جلب بعض المصادر:',
             search_source: 'المصدر',
             results: 'النتائج'
