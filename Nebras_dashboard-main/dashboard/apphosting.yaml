@@ -1,6 +1,12 @@
 # Firebase App Hosting configuration for the Nebras dashboard (SvelteKit).
 # Docs: https://firebase.google.com/docs/app-hosting/configure
 
+# Explicitly override build/run commands so App Hosting does not try to
+# auto-detect a framework adapter (only Next.js & Angular are preconfigured).
+scripts:
+  buildCommand: npm run build
+  runCommand: node build
+
 runConfig:
   minInstances: 0
   maxInstances: 2
