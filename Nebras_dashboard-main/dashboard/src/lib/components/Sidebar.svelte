@@ -37,7 +37,7 @@
 			{ label: t('common.sections'), href: '/moderator/sections', icon: 'sections' },
 			{ label: t('common.content'), href: '/moderator/content/files', icon: 'content' },
 			{ label: t('content.multi_upload'), href: '/moderator/content/multi', icon: 'multiUpload' },
-			{ label: t('fetcher.title'), href: '/moderator/fetcher', icon: 'fetcher' },
+			{ label: 'استيراد مكتبة نور', href: '/moderator/content/import-noor', icon: 'fetcher' },
 			{ label: t('common.chat'), href: '/moderator/chat', icon: 'chat' },
 			...(authState.role === 'owner'
 				? [
