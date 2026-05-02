@@ -1,0 +1,46 @@
+{
+  "startedAt": "2026-05-02T02:11:26.796Z",
+  "finishedAt": "2026-05-02T02:11:26.796Z",
+  "chromeExecutablePath": "/usr/local/bin/google-chrome",
+  "stealthMode": true,
+  "booksAdded": 0,
+  "booksSkipped": 0,
+  "newSections": [
+    {
+      "level": "main",
+      "path": "التربية والتعليم",
+      "order_index": 0,
+      "is_listed": true,
+      "thumbnail": null,
+      "status": "pending_environment"
+    },
+    {
+      "level": "sub",
+      "path": "التربية والتعليم > التعليم والتدريس",
+      "order_index": 0,
+      "is_listed": true,
+      "thumbnail": null,
+      "status": "pending_environment"
+    },
+    {
+      "level": "secondary",
+      "path": "التربية والتعليم > التعليم والتدريس > إرشادات ومهارات تعليمية",
+      "order_index": 0,
+      "is_listed": true,
+      "thumbnail": null,
+      "status": "pending_environment"
+    }
+  ],
+  "items": [
+    {
+      "title": "النصائح حول التعليمات العلمية السادة",
+      "status": "pending_environment",
+      "path": {
+        "main": "التربية والتعليم",
+        "sub": "التعليم والتدريس",
+        "secondary": "إرشادات ومهارات تعليمية"
+      }
+    }
+  ],
+  "error": "MSHCAT_SERVICE_ACCOUNT_JSON أو MSHCAT_SERVICE_ACCOUNT_PATH مطلوب للكتابة في Firestore."
+}

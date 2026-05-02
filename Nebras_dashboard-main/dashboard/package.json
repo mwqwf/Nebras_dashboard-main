@@ -11,6 +11,7 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"start": "node build",
+		"import:noor": "node scripts/noor/importNoorBooks.js",
 		"prepare": "svelte-kit sync || echo ''"
 	},
 	"devDependencies": {
@@ -28,6 +29,9 @@
 		"chart.js": "^4.5.1",
 		"firebase": "^12.12.0",
 		"firebase-admin": "^13.8.0",
-		"nodemailer": "^8.0.5"
+		"nodemailer": "^8.0.5",
+		"puppeteer-core": "^24.42.0",
+		"puppeteer-extra": "^3.3.6",
+		"puppeteer-extra-plugin-stealth": "^2.11.2"
 	}
 }
