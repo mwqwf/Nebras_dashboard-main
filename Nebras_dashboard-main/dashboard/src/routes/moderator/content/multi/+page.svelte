@@ -10,12 +10,12 @@
 
 <script>
 	import { onMount } from 'svelte';
-	import {
-		listMyMainSections,
-		listMySubSections,
-		listMySecondarySections
-	} from '$lib/api/moderator.js';
 	import { formatFileSize, mimeToContentType } from '$lib/utils/fileUpload.js';
+	import {
+		getCachedMainSections,
+		getCachedSubSections,
+		getCachedSecondarySections
+	} from '$lib/utils/sectionOptionsCache.js';
 	import {
 		getMultiUploadState,
 		addItem,
@@ -26,7 +26,9 @@
 		resetQueue,
 		startAll,
 		stopAll,
-		setLastSections
+		setLastSections,
+		setConcurrency,
+		DEFAULT_CONCURRENCY
 	} from '$lib/stores/multiUpload.svelte.js';
 	import { t } from '$lib/i18n/store.svelte.js';
 
@@ -37,7 +39,8 @@
 	let showItemModal = $state(false);
 	let editingItemId = $state(null);
 	let itemForm = $state(freshItemForm());
-	let itemFile = $state(null);
+	/** @type {File[]} */
+	let itemFiles = $state([]);
 	let itemThumbnail = $state(null);
 	let itemThumbnailPreview = $state('');
 	let itemFormError = $state('');
@@ -55,7 +58,7 @@
 	let allDone = $derived(
 		multi.allDoneAt > 0 && hasQueue && multi.queue.every((it) => it.status === 'completed')
 	);
-	let currentIndex = $derived(multi.queue.findIndex((it) => it.id === multi.currentId));
+	let isMultiFileMode = $derived(!editingItemId && itemFiles.length > 1);
 
 	onMount(() => {
 		fetchMainOptions();
@@ -74,36 +77,21 @@
 	}
 
 	async function fetchMainOptions() {
-		try {
-			const d = await listMyMainSections({ page: 1 });
-			mainSectionsList = d.results || [];
-		} catch {
-			mainSectionsList = [];
-		}
+		mainSectionsList = await getCachedMainSections();
 	}
 
 	async function fetchSubOpts(mainId) {
-		try {
-			const d = await listMySubSections({ main_section: mainId || undefined, page: 1 });
-			itemSubOptions = d.results || [];
-		} catch {
-			itemSubOptions = [];
-		}
+		itemSubOptions = await getCachedSubSections(mainId);
 	}
 
 	async function fetchSecOpts(subId) {
-		try {
-			const d = await listMySecondarySections({ sub_section: subId || undefined, page: 1 });
-			itemSecondaryOptions = d.results || [];
-		} catch {
-			itemSecondaryOptions = [];
-		}
+		itemSecondaryOptions = await getCachedSecondarySections(subId);
 	}
 
 	function openAddModal() {
 		editingItemId = null;
 		itemForm = freshItemForm();
-		itemFile = null;
+		itemFiles = [];
 		itemThumbnail = null;
 		itemThumbnailPreview = '';
 		itemFormError = '';
@@ -140,7 +128,7 @@
 			secondary_subsection: item.form.secondary_subsection,
 			is_listed: item.form.is_listed
 		};
-		itemFile = item.file;
+		itemFiles = item.file ? [item.file] : [];
 		itemThumbnail = item.thumbnail;
 		itemThumbnailPreview = item.thumbnailPreview || '';
 		itemFormError = '';
@@ -151,13 +139,23 @@
 		if (itemForm.subsection) fetchSecOpts(itemForm.subsection);
 	}
 
-	function handleFileSelect(e) {
-		const f = e.target.files?.[0];
-		if (!f) return;
-		itemFile = f;
-		if (!itemForm.title) {
-			itemForm.title = f.name.replace(/\.[^/.]+$/, '');
+	function handleFilesSelect(e) {
+		const list = Array.from(e.target.files || []);
+		if (!list.length) return;
+		if (editingItemId) {
+			itemFiles = [list[0]];
+			if (!itemForm.title) itemForm.title = list[0].name.replace(/\.[^/.]+$/, '');
+		} else {
+			// نُلحق الملفات المختارة إلى نهاية القائمة الحالية للحفاظ على
+			// **ترتيب الاختيار**: ما اختاره المستخدم أوّلاً يبقى في المقدّمة،
+			// وما يضيفه لاحقاً يأتي بعده. هذا هو نفس ترتيب البدء في الرفع.
+			itemFiles = [...itemFiles, ...list];
+			if (itemFiles.length === 1 && !itemForm.title) {
+				itemForm.title = itemFiles[0].name.replace(/\.[^/.]+$/, '');
+			}
 		}
+		// نعيد تعيين قيمة الـ input حتى يستطيع المستخدم اختيار نفس الملف لاحقاً.
+		try { e.target.value = ''; } catch { /* ignore */ }
 	}
 
 	function handleThumbSelect(e) {
@@ -171,8 +169,12 @@
 		reader.readAsDataURL(f);
 	}
 
-	function clearFile() {
-		itemFile = null;
+	function removeFileAt(idx) {
+		itemFiles = itemFiles.filter((_, i) => i !== idx);
+	}
+
+	function clearAllFiles() {
+		itemFiles = [];
 	}
 
 	function clearThumb() {
@@ -202,11 +204,12 @@
 
 	function saveItemToQueue() {
 		itemFormError = '';
-		if (!itemFile) {
+		if (itemFiles.length === 0) {
 			itemFormError = t('content.click_select');
 			return;
 		}
-		if (!itemForm.title?.trim()) {
+		// في الوضع متعدد الملفات نسمح بترك العنوان فارغاً (سيُؤخذ من اسم الملف).
+		if (!isMultiFileMode && !itemForm.title?.trim()) {
 			itemFormError = t('common.title');
 			return;
 		}
@@ -228,19 +231,34 @@
 					(s) => String(s.id) === String(itemForm.secondary_subsection)
 				)?.name || ''
 			: '';
-
-		const payload = {
-			file: itemFile,
-			thumbnail: itemThumbnail,
-			thumbnailPreview: itemThumbnailPreview,
-			form: { ...itemForm },
-			labels: { main: mainName, sub: subName, secondary: secName }
-		};
+		const labels = { main: mainName, sub: subName, secondary: secName };
 
 		if (editingItemId) {
-			replaceItemFields(editingItemId, payload);
+			// التعديل دائماً على ملف واحد. لا تغيير في ترتيب الطابور.
+			replaceItemFields(editingItemId, {
+				file: itemFiles[0],
+				thumbnail: itemThumbnail,
+				thumbnailPreview: itemThumbnailPreview,
+				form: { ...itemForm },
+				labels
+			});
 		} else {
-			addItem(payload);
+			// نُضيف بترتيب الاختيار: index 0 أوّلاً، ١، ٢، …، وهو ما يضمن
+			// أنّ أوّل ملف اختاره المستخدم هو أوّل من يُبدأ رفعه عند الانطلاق.
+			for (let i = 0; i < itemFiles.length; i++) {
+				const f = itemFiles[i];
+				const titleForFile =
+					isMultiFileMode
+						? f.name.replace(/\.[^/.]+$/, '')
+						: (itemForm.title?.trim() || f.name.replace(/\.[^/.]+$/, ''));
+				addItem({
+					file: f,
+					thumbnail: itemThumbnail,
+					thumbnailPreview: itemThumbnailPreview,
+					form: { ...itemForm, title: titleForFile },
+					labels
+				});
+			}
 			// لا نحفظ آخر أقسام إلا عند إضافة بند جديد — التعديل لا يغيّر السياق.
 			setLastSections({
 				main_section: itemForm.main_section,
@@ -284,6 +302,10 @@
 		stopAll();
 	}
 
+	function handleConcurrencyChange(e) {
+		setConcurrency(Number(e.target.value));
+	}
+
 	function statusLabel(status) {
 		if (status === 'uploading') return t('content.item_active');
 		if (status === 'completed') return t('content.item_done');
@@ -308,6 +330,21 @@
 			<p class="page-desc">{t('content.multi_upload_desc')}</p>
 		</div>
 		<div class="header-actions">
+			<label class="concurrency-picker" title={t('content.concurrency_label')}>
+				<span class="concurrency-label">{t('content.parallel_hint')}</span>
+				<select
+					class="concurrency-select"
+					value={multi.concurrency || DEFAULT_CONCURRENCY}
+					onchange={handleConcurrencyChange}
+					disabled={multi.isUploading}
+				>
+					<option value={1}>1</option>
+					<option value={2}>2</option>
+					<option value={3}>3</option>
+					<option value={4}>4</option>
+					<option value={5}>5</option>
+				</select>
+			</label>
 			<button class="btn btn-secondary" disabled={!hasQueue} onclick={handleReset}>
 				{t('content.reset_queue')}
 			</button>
@@ -321,7 +358,7 @@
 					stroke-linejoin="round"
 					class="btn-icon"><path d="M12 5v14m-7-7h14" /></svg
 				>
-				{t('content.add_to_queue')}
+				{t('content.add_to_queue_multi')}
 			</button>
 		</div>
 	</div>
@@ -401,7 +438,7 @@
 				>
 				<p>{t('content.queue_empty')}</p>
 				<button class="btn btn-primary btn-sm" onclick={openAddModal}
-					>{t('content.add_to_queue')}</button
+					>{t('content.add_to_queue_multi')}</button
 				>
 			</div>
 		{:else}
@@ -409,7 +446,7 @@
 				{#each multi.queue as item, idx (item.id)}
 					<li
 						class="queue-item"
-						class:is-active={currentIndex === idx}
+						class:is-active={item.status === 'uploading'}
 						class:is-completed={item.status === 'completed'}
 						class:is-failed={item.status === 'failed'}
 					>
@@ -566,11 +603,44 @@
 			<div class="modal-form">
 				<div class="form-group">
 					<span class="form-label">{t('content.file')} *</span>
-					{#if itemFile}
-						<div class="selected-file">
-							<span class="selected-file-name">{itemFile.name}</span>
-							<span class="selected-file-size">{formatFileSize(itemFile.size)}</span>
-							<button type="button" class="selected-file-remove" onclick={clearFile}>×</button>
+					{#if itemFiles.length > 0}
+						<div class="selected-files">
+							{#if itemFiles.length > 1}
+								<div class="selected-files-head">
+									<span class="selected-files-count">
+										{itemFiles.length} {t('content.selected_files_count')}
+									</span>
+									<button type="button" class="selected-files-clear" onclick={clearAllFiles}>
+										{t('content.clear_all_files')}
+									</button>
+								</div>
+							{/if}
+							<ul class="selected-files-list">
+								{#each itemFiles as f, i (i + ':' + f.name + ':' + f.size)}
+									<li class="selected-file">
+										<span class="selected-file-name" title={f.name}>{f.name}</span>
+										<span class="selected-file-size">{formatFileSize(f.size)}</span>
+										<button
+											type="button"
+											class="selected-file-remove"
+											onclick={() => removeFileAt(i)}
+											aria-label="Remove">×</button
+										>
+									</li>
+								{/each}
+							</ul>
+							{#if !editingItemId}
+								<label class="upload-zone small-zone upload-zone-add" for="multi-file">
+									<span>＋ {t('content.click_select_multi')}</span>
+								</label>
+								<input
+									type="file"
+									id="multi-file"
+									class="file-input-hidden"
+									multiple
+									onchange={handleFilesSelect}
+								/>
+							{/if}
 						</div>
 					{:else}
 						<label class="upload-zone" for="multi-file">
@@ -586,27 +656,34 @@
 									stroke-linejoin="round"
 								/></svg
 							>
-							<span>{t('content.click_select')}</span>
+							<span>{t('content.click_select_multi')}</span>
 							<span class="upload-hint">{t('content.upload_hint')}</span>
 						</label>
 						<input
 							type="file"
 							id="multi-file"
 							class="file-input-hidden"
-							onchange={handleFileSelect}
+							multiple={!editingItemId}
+							onchange={handleFilesSelect}
 						/>
 					{/if}
 				</div>
 
 				<div class="form-group">
-					<label for="multi-title" class="form-label">{t('common.title')} *</label>
+					<label for="multi-title" class="form-label">
+						{t('common.title')} {isMultiFileMode ? '' : '*'}
+					</label>
 					<input
 						id="multi-title"
 						type="text"
 						class="form-input"
 						bind:value={itemForm.title}
-						placeholder={t('common.title')}
+						placeholder={isMultiFileMode ? t('content.multi_titles_from_filenames') : t('common.title')}
+						disabled={isMultiFileMode}
 					/>
+					{#if isMultiFileMode}
+						<span class="form-hint">{t('content.multi_titles_from_filenames')}</span>
+					{/if}
 				</div>
 
 				<div class="form-group">
@@ -850,11 +927,24 @@
 	.preview-remove:hover { background: rgba(244,63,94,0.8); }
 	.preview-remove svg { width: 14px; height: 14px; }
 
-	.selected-file { display: flex; align-items: center; gap: 0.5rem; padding: 0.75rem 1rem; background: var(--color-surface-900); border: 1px solid var(--color-primary-700); border-radius: 10px; }
-	.selected-file-name { flex: 1; font-size: 0.8125rem; color: var(--color-surface-100); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.selected-files { display: flex; flex-direction: column; gap: 0.5rem; }
+	.selected-files-head { display: flex; align-items: center; justify-content: space-between; padding: 0 0.125rem; }
+	.selected-files-count { font-size: 0.75rem; color: var(--color-surface-300); font-weight: 600; }
+	.selected-files-clear { background: none; border: none; color: var(--color-danger-400); font-size: 0.75rem; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 6px; }
+	.selected-files-clear:hover { background: rgba(244,63,94,0.08); }
+	.selected-files-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.375rem; max-height: 240px; overflow-y: auto; }
+	.selected-file { display: flex; align-items: center; gap: 0.5rem; padding: 0.625rem 0.875rem; background: var(--color-surface-900); border: 1px solid var(--color-primary-700); border-radius: 10px; }
+	.selected-file-name { flex: 1; font-size: 0.8125rem; color: var(--color-surface-100); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 	.selected-file-size { font-size: 0.6875rem; color: var(--color-surface-400); flex-shrink: 0; }
-	.selected-file-remove { background: none; border: none; color: var(--color-surface-400); cursor: pointer; font-size: 1.25rem; padding: 0 0.25rem; }
+	.selected-file-remove { background: none; border: none; color: var(--color-surface-400); cursor: pointer; font-size: 1.25rem; padding: 0 0.25rem; line-height: 1; }
 	.selected-file-remove:hover { color: var(--color-danger-400); }
+	.upload-zone-add { font-size: 0.75rem; padding: 0.5rem 0.75rem; }
+	.form-hint { font-size: 0.6875rem; color: var(--color-surface-500); line-height: 1.4; }
+
+	.concurrency-picker { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.625rem; background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 10px; }
+	.concurrency-label { font-size: 0.6875rem; font-weight: 600; color: var(--color-surface-400); text-transform: uppercase; letter-spacing: 0.04em; }
+	.concurrency-select { background: var(--color-surface-900); color: var(--color-surface-100); border: 1px solid var(--color-surface-600); border-radius: 6px; font-size: 0.8125rem; padding: 0.2rem 0.4rem; font-family: inherit; cursor: pointer; }
+	.concurrency-select:disabled { opacity: 0.6; cursor: not-allowed; }
 
 	:global(.animate-fade-in) { animation: fadeIn 0.15s ease-out; }
 	@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
