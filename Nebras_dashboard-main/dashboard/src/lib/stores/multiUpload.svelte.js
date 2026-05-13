@@ -15,7 +15,6 @@
 
 import { createFileUploader, mimeToContentType } from '$lib/utils/fileUpload.js';
 import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
-import { mirrorUploadedFileToOldAppLesson, mirrorUploadedFileToMshcatBook } from '$lib/api/moderator.js';
 
 /** @typedef {'queued'|'uploading'|'completed'|'failed'} QueueStatus */
 
@@ -265,23 +264,6 @@ async function uploadOne(itemId) {
 
 	try {
 		const result = await uploader.start();
-		const selSub = String(startSnapshot.form?.subsection || '');
-		const selSec = String(startSnapshot.form?.secondary_subsection || '');
-		if (selSub.startsWith('mshcat:') || selSec.startsWith('mshcat:')) {
-			await mirrorUploadedFileToMshcatBook({
-				fileId: result?.id,
-				subsectionId: startSnapshot.form?.subsection,
-				secondarySubsectionId: startSnapshot.form?.secondary_subsection,
-				fallbackMetadata: metadata
-			});
-		} else if (selSec.startsWith('oldapp:sub:')) {
-			await mirrorUploadedFileToOldAppLesson({
-				fileId: result?.id,
-				subsectionId: startSnapshot.form?.subsection,
-				secondarySubsectionId: startSnapshot.form?.secondary_subsection,
-				fallbackMetadata: metadata
-			});
-		}
 		if (multiState.queue.some((it) => it.id === itemId)) {
 			updateItem(itemId, { status: 'completed', progress: 100, error: '' });
 			// إشعار FCM بعد نجاح كل بند — لا يُعطَّل الطابور إن فشل.

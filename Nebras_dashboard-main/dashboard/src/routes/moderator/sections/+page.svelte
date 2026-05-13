@@ -17,18 +17,9 @@
 		getLastPartialFailures
 	} from '$lib/api/moderator.js';
 	import { notifySectionCreated } from '$lib/utils/notifyEvents.js';
-	import { isMshcatConfigured } from '$lib/api/mshcatBrowse.js';
 	import { t } from '$lib/i18n/store.svelte.js';
 	import { tokenize, highlightMatches } from '$lib/utils/search.js';
 
-	// هل Mshcat مُهيَّأ؟ لو لا، نخفي خيار المصدر من الواجهة.
-	const mshcatAvailable = isMshcatConfigured();
-
-	// ملاحظة تكامل OldApp:
-	//   هذا الملفّ لا يعرف شيئًا عن OldApp. كل التوجيه الشفّاف (قراءة/كتابة
-	//   على Firestore الثانوي) يتمّ داخل `$lib/api/moderator.js` — الواجهة
-	//   تبقى نفسها والمستخدم لا يرى أيّ مربّعات ربط يدويّة.
-	//
 	// سياسة الجلب (Search-Driven On-Demand Fetching):
 	//   لا يتمّ جلب أيّ بيانات عند فتح الصفحة أو عند تغيير الفلاتر. الشاشة
 	//   تبقى فارغة حتّى يكتب المستخدم كلمة بحث ويضغط Enter أو زرّ البحث.
@@ -61,8 +52,7 @@
 		order_index: 0,
 		main_section: '',
 		sub_section: '',
-		is_listed: true,
-		source: 'nebras'
+		is_listed: true
 	});
 	let createThumbnail = $state(null);       // File object
 	let createThumbnailPreview = $state('');   // data URL for preview
@@ -113,7 +103,7 @@
 	// ─── Search tokens (for highlighting) ───────────────
 	let searchTokens = $state([]);
 
-	// Partial source failures (Mshcat/OldApp).
+	// Partial source failures (عرض تحذيري عند فشل جزئي أثناء الجلب).
 	let partialFailures = $state([]);
 
 	function consumeModalIntent() {
@@ -326,8 +316,7 @@
 			order_index: 0,
 			main_section: '',
 			sub_section: '',
-			is_listed: true,
-			source: 'nebras'
+			is_listed: true
 		};
 		createThumbnail = null;
 		createThumbnailPreview = '';
@@ -378,8 +367,7 @@
 					name: createForm.name,
 					order_index: createForm.order_index || 0,
 					is_listed: createForm.is_listed,
-					thumbnail: createThumbnail || undefined,
-					source: createForm.source || 'nebras'
+					thumbnail: createThumbnail || undefined
 				});
 				notifyInfo = { level: 'main', name: createForm.name, parentName: '', sectionId: created?.id, parentId: '' };
 			} else if (activeLevel === 'sub') {
@@ -909,25 +897,6 @@
 						<label for="create-order" class="form-label">{t('sections.order_index')}</label>
 						<input type="number" id="create-order" bind:value={createForm.order_index} class="form-input" />
 					</div>
-
-					{#if mshcatAvailable}
-						<!--
-							مصدر القسم الرئيسي — يُحدَّد مرّة واحدة عند الإنشاء فقط.
-							كل ما يُضاف بعدها من فرعي/ثانوي/محتوى تحته يرث المصدر
-							تلقائيًّا (Transparent routing) دون أي تدخّل بصري.
-						-->
-						<div class="form-group">
-							<label for="create-source" class="form-label">مصدر البيانات *</label>
-							<select id="create-source" bind:value={createForm.source} class="form-input">
-								<option value="nebras">Nebras (Firebase الرئيسي)</option>
-								<option value="mshcat">Mshcat (mshcat-fkdl)</option>
-							</select>
-							<span class="form-hint">
-								اختيار «Mshcat» ينشئ القسم مباشرةً في مشروع `mshcat-fkdl` — كل ما
-								يُضاف تحته سيُوجَّه لقاعدته تلقائيًّا.
-							</span>
-						</div>
-					{/if}
 				{/if}
 
 				{#if activeLevel === 'sub'}

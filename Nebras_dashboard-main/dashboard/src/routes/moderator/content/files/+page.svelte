@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { listMyFiles, removeFile, updateFile, listMyMainSections, listMySubSections, listMySecondarySections, mirrorUploadedFileToOldAppLesson, mirrorUploadedFileToMshcatBook, getLastPartialFailures } from '$lib/api/moderator.js';
+	import { listMyFiles, removeFile, updateFile, listMyMainSections, listMySubSections, listMySecondarySections, getLastPartialFailures } from '$lib/api/moderator.js';
 	import { createFileUploader, createResumeUploader, formatFileSize, mimeToContentType } from '$lib/utils/fileUpload.js';
 	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
@@ -200,23 +200,6 @@
 
 		try {
 			const result = await uploader.start();
-			const selSub = String(uploadForm.subsection || '');
-			const selSec = String(uploadForm.secondary_subsection || '');
-			if (selSub.startsWith('mshcat:') || selSec.startsWith('mshcat:')) {
-				await mirrorUploadedFileToMshcatBook({
-					fileId: result?.id,
-					subsectionId: uploadForm.subsection,
-					secondarySubsectionId: uploadForm.secondary_subsection,
-					fallbackMetadata: metadata
-				});
-			} else if (selSec.startsWith('oldapp:sub:')) {
-				await mirrorUploadedFileToOldAppLesson({
-					fileId: result?.id,
-					subsectionId: uploadForm.subsection,
-					secondarySubsectionId: uploadForm.secondary_subsection,
-					fallbackMetadata: metadata
-				});
-			}
 			// إشعار FCM غير مُعطِّل: لا نَوقف التدفّق إن فشل.
 			const mainName = mainSectionsList.find((m) => String(m.id) === String(uploadForm.main_section))?.name || '';
 			const subName = uploadSubOptions.find((s) => String(s.id) === String(uploadForm.subsection))?.name || '';

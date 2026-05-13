@@ -27,11 +27,3 @@ env:
     secret: NEBRAS_SERVICE_ACCOUNT_JSON
     availability:
       - RUNTIME
-  - variable: MSHCAT_SERVICE_ACCOUNT_JSON
-    secret: MSHCAT_SERVICE_ACCOUNT_JSON
-    availability:
-      - RUNTIME
-  - variable: OLDAPP_SERVICE_ACCOUNT_JSON
-    secret: OLDAPP_SERVICE_ACCOUNT_JSON
-    availability:
-      - RUNTIME
