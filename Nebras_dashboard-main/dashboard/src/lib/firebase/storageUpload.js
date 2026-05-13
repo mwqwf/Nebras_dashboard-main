@@ -104,16 +104,21 @@ function buildMobileCompatibleFields(metadata, downloadUrl) {
 }
 
 /**
+ * المرحلة الأولى من الرفع: تحميل البايتات إلى Firebase Storage فقط (دون كتابة
+ * أي سجل في RTDB). تُعاد رابط التنزيل ومسار التخزين ليُستخدما لاحقاً بعد
+ * انتهاء رفع الـ thumbnail بالتوازي. يسمح هذا التقسيم بتشغيل رفعَي الـ
+ * thumbnail والملف الرئيسي بالتوازي ثم كتابة سجلّ RTDB مرّة واحدة بعد
+ * اكتمالهما.
+ *
  * @param {File} file
- * @param {string|number} fileId من الخادم بعد initiate
- * @param {Record<string, unknown>} metadata نفس metadata النموذج الحالي
+ * @param {string|number} fileId
  * @param {{ onProgress: (n: number) => void, isAborted: () => boolean, onTaskCreated?: (task: import('firebase/storage').UploadTask) => void }} opts
+ * @returns {Promise<{ downloadUrl: string, storagePath: string }>}
  */
-export async function firebaseUploadContentFile(file, fileId, metadata, opts) {
+export async function firebaseUploadFileToStorage(file, fileId, opts) {
   const { onProgress, isAborted, onTaskCreated } = opts;
   const storage = getFirebaseStorage();
-  const db = getFirebaseDatabase();
-  if (!storage || !db) {
+  if (!storage) {
     throw new Error(
       "Firebase غير مهيأ. تحقق من متغيرات VITE_FIREBASE_* في .env",
     );
@@ -149,6 +154,31 @@ export async function firebaseUploadContentFile(file, fileId, metadata, opts) {
   if (isAborted()) throw new Error("Upload aborted");
 
   const downloadUrl = await getDownloadURL(task.snapshot.ref);
+  return { downloadUrl, storagePath };
+}
+
+/**
+ * المرحلة الثانية من الرفع: كتابة سجل الملف في RTDB. تُستدعى بعد انتهاء
+ * رفع الملف الرئيسي ورفع الـ thumbnail (إن وُجد) بالتوازي، لضمان أن
+ * `metadata.thumbnail` يحتوي رابط الـ thumbnail النهائي قبل الكتابة.
+ *
+ * @param {{ fileId: string|number, file: File, downloadUrl: string, storagePath: string, metadata: Record<string, unknown> }} params
+ * @returns {Promise<string>} يُعيد downloadUrl
+ */
+export async function firebaseWriteFileRecord({
+  fileId,
+  file,
+  downloadUrl,
+  storagePath,
+  metadata,
+}) {
+  const db = getFirebaseDatabase();
+  if (!db) {
+    throw new Error(
+      "Firebase غير مهيأ. تحقق من متغيرات VITE_FIREBASE_* في .env",
+    );
+  }
+
   const compatibleFields = buildMobileCompatibleFields(metadata, downloadUrl);
 
   // Keep RTDB key = fileId so update/remove/list can target the same record reliably.
@@ -181,5 +211,30 @@ export async function firebaseUploadContentFile(file, fileId, metadata, opts) {
     }
   }
 
+  return downloadUrl;
+}
+
+/**
+ * @param {File} file
+ * @param {string|number} fileId من الخادم بعد initiate
+ * @param {Record<string, unknown>} metadata نفس metadata النموذج الحالي
+ * @param {{ onProgress: (n: number) => void, isAborted: () => boolean, onTaskCreated?: (task: import('firebase/storage').UploadTask) => void }} opts
+ *
+ * (محفوظة لأغراض التوافق مع الاستدعاءات الخارجية — تُعيد تركيب
+ * المرحلتين بالتسلسل كما كانت سابقاً.)
+ */
+export async function firebaseUploadContentFile(file, fileId, metadata, opts) {
+  const { downloadUrl, storagePath } = await firebaseUploadFileToStorage(
+    file,
+    fileId,
+    opts,
+  );
+  await firebaseWriteFileRecord({
+    fileId,
+    file,
+    downloadUrl,
+    storagePath,
+    metadata,
+  });
   return downloadUrl;
 }

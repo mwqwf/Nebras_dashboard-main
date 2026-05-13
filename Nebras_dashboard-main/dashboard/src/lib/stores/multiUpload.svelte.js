@@ -6,7 +6,10 @@
  *
  * المهام:
  *   - إدارة طابور ملفات الرفع المتعدد (queue) مع بيانات كل بند.
- *   - التحكم في بدء/إيقاف الرفع المتسلسل.
+ *   - التحكم في بدء/إيقاف الرفع — يعمل عبر "مسبح" متوازٍ بسقف قابل
+ *     للضبط مع احترام صارم لترتيب الاختيار: أوّل ملف اختاره المستخدم
+ *     يبدأ رفعه أوّلاً دائماً (FIFO start). قد ينتهي ملفٌ صغير قبل
+ *     ملفٍ كبير سبقه — لكنّ بدء الرفع يحترم الترتيب الذي رتّبه المستخدم.
  *   - السماح بحذف بند واحد في أي وقت — حتى أثناء رفعه فعلياً —
  *     دون التأثير على بقية البنود، مع إجهاض الرفع الخاص به تلقائياً.
  *   - يحفظ كائنات الـ uploader في Map خارج الحالة التفاعلية (غير reactive)
@@ -36,6 +39,11 @@ import { mirrorUploadedFileToOldAppLesson, mirrorUploadedFileToMshcatBook } from
 /** @type {Map<string, { start: ()=>Promise<any>, abort: ()=>void }>} */
 const uploaderRegistry = new Map();
 
+// السقف الافتراضي لعدد الرفعات المتوازية. ٣ يوازن جيداً بين سرعة
+// الإنجاز وعدم إغراق المتصفح أو الشبكة. يمكن تجاوزه بتمرير
+// `{ concurrency }` إلى `startAll`.
+export const DEFAULT_CONCURRENCY = 3;
+
 // ─── الحالة التفاعلية ───────────────────────────────────────
 /**
  * @type {{
@@ -44,15 +52,20 @@ const uploaderRegistry = new Map();
  *   currentId: string|null,
  *   lastError: string,
  *   allDoneAt: number,
+ *   concurrency: number,
  *   lastSections: { main_section: string, subsection: string, secondary_subsection: string }
  * }}
  */
 let multiState = $state({
 	queue: [],
 	isUploading: false,
+	// أوّل بند يبدأ الرفع في الدفعة الحالية — يُستخدم للمؤشر العائم
+	// والإبراز المرئي. مع التوازي يبقى مفهوم "نشط" مستنداً إلى
+	// حالة كل بند (`status === 'uploading'`) بدلاً من معرّف واحد.
 	currentId: null,
 	lastError: '',
 	allDoneAt: 0,
+	concurrency: DEFAULT_CONCURRENCY,
 	// تُستخدم لتذكّر آخر اختيار أقسام أجراه المستخدم داخل نموذج "إضافة إلى الطابور"
 	// حتى لا يُضطرّ إلى إعادة اختيارها مع كل ملف في نفس الدفعة.
 	lastSections: { main_section: '', subsection: '', secondary_subsection: '' }
@@ -60,6 +73,12 @@ let multiState = $state({
 
 export function getMultiUploadState() {
 	return multiState;
+}
+
+/** ضبط عدد الرفعات المتوازية القصوى (1–5). */
+export function setConcurrency(n) {
+	const v = Math.max(1, Math.min(5, Number(n) || DEFAULT_CONCURRENCY));
+	multiState.concurrency = v;
 }
 
 /** حفظ آخر اختيار أقسام ليُعاد استخدامه تلقائياً عند إضافة البند التالي. */
@@ -82,33 +101,39 @@ function newId() {
 	return `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** إضافة بند جديد إلى نهاية الطابور. يعيد id البند الجديد. */
+/**
+ * إضافة بند جديد إلى **نهاية** الطابور دائماً. نستخدم `push` بدلاً من
+ * spread لتجنّب رتبة O(n) عند إضافة دفعة كبيرة (مثلاً ١٠٠ ملف معاً).
+ * يضمن `push` بقاء ترتيب الاختيار محفوظاً، وبما أنّ مُختار البند التالي
+ * في حلقة الرفع يستخدم `Array.find()` (الذي يبدأ من الفهرس 0)، فأوّل
+ * بندٍ يدخل الطابور هو أوّل من يبدأ رفعه دائماً.
+ */
 export function addItem({ file, thumbnail = null, thumbnailPreview = '', form, labels }) {
 	const id = newId();
-	multiState.queue = [
-		...multiState.queue,
-		{
-			id,
-			file,
-			thumbnail,
-			thumbnailPreview,
-			form: { ...form },
-			labels: { ...labels },
-			status: 'queued',
-			progress: 0,
-			error: ''
-		}
-	];
+	multiState.queue.push({
+		id,
+		file,
+		thumbnail,
+		thumbnailPreview,
+		form: { ...form },
+		labels: { ...labels },
+		status: 'queued',
+		progress: 0,
+		error: ''
+	});
 	return id;
 }
 
-/** تحديث بند موجود. لا يغيّر الترتيب. */
+/**
+ * تحديث بند موجود **في الموضع** (in-place). هذا أرخص بكثير من إعادة
+ * بناء المصفوفة كاملة، وضروري عند التوازي حيث تصل آلاف أحداث `progress`
+ * في الثانية من عدّة بنود متزامنة. الحقول الداخلية مُسجّلة في `$state`
+ * deep-reactive لذا يكتفي Svelte 5 بمراقبة `Object.assign`.
+ */
 export function updateItem(id, patch) {
 	const idx = multiState.queue.findIndex((it) => it.id === id);
 	if (idx === -1) return;
-	const next = [...multiState.queue];
-	next[idx] = { ...next[idx], ...patch };
-	multiState.queue = next;
+	Object.assign(multiState.queue[idx], patch);
 }
 
 /** استبدال بيانات بند كاملة (أثناء تعديل من المحرّر). */
@@ -119,7 +144,7 @@ export function replaceItemFields(id, fields) {
 /**
  * حذف بند من الطابور.
  * - إن كان البند قيد الرفع الآن: يتم إجهاض رفعه فوراً، ثم يتم حذفه،
- *   وتستمر الدورة الرئيسية في startAll لاختيار البند التالي طبيعياً.
+ *   وتستمر دورة المسبح في `startAll` لاختيار البند التالي طبيعياً.
  * - إن كان في الطابور فقط (queued/failed/completed): يُحذف مباشرةً.
  */
 export function removeItem(id) {
@@ -150,9 +175,10 @@ export function moveItem(id, direction) {
 	) {
 		return;
 	}
-	const next = [...multiState.queue];
-	[next[idx], next[target]] = [next[target], next[idx]];
-	multiState.queue = next;
+	// تبديل في الموضع دون إعادة بناء المصفوفة بأكملها.
+	const a = multiState.queue[idx];
+	multiState.queue[idx] = multiState.queue[target];
+	multiState.queue[target] = a;
 }
 
 /** إزالة جميع البنود المنتهية بنجاح. */
@@ -169,14 +195,21 @@ export function resetQueue() {
 	clearLastSections();
 }
 
-// ─── الرفع ───────────────────────────────────────────────────
+// ─── الرفع المتوازي ─────────────────────────────────────────
 
 /**
- * بدء رفع جميع البنود الموجودة في الطابور بالتسلسل، حسب ترتيبها الحالي.
- * تتم إعادة المسح في كل دورة على `multiState.queue` الحالي، بحيث لو حُذف
- * بند أو أُضيف بعد البدء، يلتقطه الحلقة بشكل طبيعي.
+ * بدء رفع جميع البنود الموجودة في الطابور عبر مسبح متوازٍ بسقف
+ * `concurrency`. القاعدة الذهبية: **`pickNext` يُرجع أوّل بند في
+ * الطابور صالح للرفع (status === 'queued' || 'failed')**، أي
+ * `Array.find` يبدأ من الفهرس 0 دائماً. وبما أنّ `addItem` يدفع إلى
+ * النهاية، فإنّ أوّل ملف اختاره المستخدم هو أوّل من يُبدأ رفعه دائماً.
+ *
+ * قد ينتهي ملف صغير قبل ملف كبير سبقه — هذا طبيعي ومقبول؛ المضمون
+ * هو **ترتيب البدء**، لا ترتيب الانتهاء.
+ *
+ * @param {{ concurrency?: number }} [opts]
  */
-export async function startAll() {
+export async function startAll({ concurrency } = {}) {
 	if (multiState.isUploading) return;
 	multiState.isUploading = true;
 	multiState.lastError = '';
@@ -184,22 +217,54 @@ export async function startAll() {
 	// بمجرد انطلاق الرفع لم نعد بحاجة لتذكّر آخر اختيار أقسام — ننسى تلقائياً.
 	clearLastSections();
 
-	while (multiState.isUploading) {
-		const next = multiState.queue.find(
+	const limit = Math.max(
+		1,
+		Math.min(5, Number(concurrency) || multiState.concurrency || DEFAULT_CONCURRENCY)
+	);
+
+	/** @type {Set<Promise<void>>} */
+	const active = new Set();
+
+	function pickNext() {
+		// `find` يبدأ من index 0 — وهذا ما يضمن أنّ أوّل بند في
+		// الطابور (= أوّل ملف اختاره المستخدم) ينطلق أوّلاً.
+		return multiState.queue.find(
 			(it) => it.status === 'queued' || it.status === 'failed'
 		);
-		if (!next) break;
-		await uploadOne(next.id);
-		if (!multiState.isUploading) break;
 	}
 
-	multiState.isUploading = false;
-	multiState.currentId = null;
+	try {
+		// حلقة "ابقَ المسبح ممتلئاً": كلّما فرغ مكانٌ نضع بنداً جديداً
+		// من رأس الطابور. ننتظر اكتمال أيّ بند للسماح بالتقاط
+		// البند التالي حسب الترتيب.
+		while (multiState.isUploading) {
+			while (multiState.isUploading && active.size < limit) {
+				const next = pickNext();
+				if (!next) break;
+				// نضع حالة 'uploading' فوراً قبل أيّ await حتى لا يلتقطه
+				// `pickNext` التالي في نفس الدورة الإستراتيجية.
+				updateItem(next.id, { status: 'uploading', progress: 0, error: '' });
+				if (!multiState.currentId) multiState.currentId = next.id;
+				const p = uploadOne(next.id).finally(() => active.delete(p));
+				active.add(p);
+			}
+			if (active.size === 0) break;
+			// انتظر أوّل بند ينتهي ثم أعد ملء المكان.
+			await Promise.race(active);
+		}
+		// إذا توقّفنا بسبب stopAll، انتظر تنظيف الأنشطة الجارية.
+		if (active.size > 0) {
+			await Promise.allSettled(active);
+		}
+	} finally {
+		multiState.isUploading = false;
+		multiState.currentId = null;
 
-	const anythingLeft = multiState.queue.length > 0;
-	const everyDone = anythingLeft && multiState.queue.every((it) => it.status === 'completed');
-	if (everyDone) {
-		multiState.allDoneAt = Date.now();
+		const anythingLeft = multiState.queue.length > 0;
+		const everyDone = anythingLeft && multiState.queue.every((it) => it.status === 'completed');
+		if (everyDone) {
+			multiState.allDoneAt = Date.now();
+		}
 	}
 }
 
@@ -214,25 +279,32 @@ export function stopAll({ markUploadingAsFailed = false } = {}) {
 		}
 		uploaderRegistry.delete(id);
 	}
-	multiState.queue = multiState.queue.map((it) => {
-		if (it.status !== 'uploading') return it;
-		return markUploadingAsFailed
-			? { ...it, status: 'failed', progress: 0, error: 'Upload stopped' }
-			: { ...it, status: 'queued', progress: 0, error: '' };
-	});
+	for (let i = 0; i < multiState.queue.length; i++) {
+		const it = multiState.queue[i];
+		if (it.status !== 'uploading') continue;
+		if (markUploadingAsFailed) {
+			Object.assign(it, { status: 'failed', progress: 0, error: 'Upload stopped' });
+		} else {
+			Object.assign(it, { status: 'queued', progress: 0, error: '' });
+		}
+	}
 	multiState.currentId = null;
 }
 
 /**
  * رفع بند واحد. يُحدّث الحالة والتقدم. يُسجّل uploader في السجل كي يمكن
  * إجهاضه لاحقاً من خلال removeItem أو stopAll.
+ *
+ * - تحديثات `progress` مخنوقة (throttled) — كلّ ≥1% أو كلّ ≥100ms —
+ *   لتقليل ضغط إعادة التصيير حين تكون عدة بنود ترفع بالتوازي.
+ * - عمليّات النسخ المرآة (mshcat/oldapp) تُطلَق بـ fire-and-forget بعد
+ *   نجاح الرفع: الملف يصبح في Storage + RTDB فوراً، والمرآة تحدث في
+ *   الخلفية. أيّ فشل في المرآة يُسجَّل في `error` كتنبيه ناعم دون
+ *   انتكاسة الحالة إلى failed (لأن الرفع الأصلي نجح فعلاً).
  */
 async function uploadOne(itemId) {
 	const startSnapshot = multiState.queue.find((it) => it.id === itemId);
 	if (!startSnapshot) return;
-
-	updateItem(itemId, { status: 'uploading', progress: 0, error: '' });
-	multiState.currentId = itemId;
 
 	const contentType = mimeToContentType(startSnapshot.file.type);
 	const metadata = {
@@ -247,17 +319,24 @@ async function uploadOne(itemId) {
 		metadata.secondary_subsection = String(startSnapshot.form.secondary_subsection);
 	}
 
+	// خانق تحديثات التقدم: نُمرّر فقط حين يتغيّر النص الظاهر فعلاً.
+	let lastReported = -1;
+	let lastReportedAt = 0;
+	const onProgressThrottled = (p) => {
+		const rounded = Math.round(p);
+		const now = Date.now();
+		if (rounded < 100 && rounded === lastReported && now - lastReportedAt < 100) return;
+		if (rounded < 100 && now - lastReportedAt < 80) return;
+		lastReported = rounded;
+		lastReportedAt = now;
+		updateItem(itemId, { progress: rounded });
+	};
+
 	const uploader = createFileUploader(startSnapshot.file, metadata, startSnapshot.thumbnail, {
-		onProgress: (p) => {
-			if (multiState.queue.some((it) => it.id === itemId)) {
-				updateItem(itemId, { progress: p });
-			}
-		},
+		onProgress: onProgressThrottled,
 		onStatus: () => {},
 		onError: (msg) => {
-			if (multiState.queue.some((it) => it.id === itemId)) {
-				updateItem(itemId, { error: msg });
-			}
+			updateItem(itemId, { error: msg });
 		}
 	});
 
@@ -265,26 +344,47 @@ async function uploadOne(itemId) {
 
 	try {
 		const result = await uploader.start();
+
+		// النجاح الفعلي: الملف وصل Storage + RTDB. نضع البند مكتملاً
+		// فوراً قبل تشغيل المرآة كي لا تحجز الواجهة أيّ شيء.
+		const stillThere = multiState.queue.some((it) => it.id === itemId);
+		if (stillThere) {
+			updateItem(itemId, { status: 'completed', progress: 100, error: '' });
+		}
+
+		// نسخ مرآة في الخلفية (لا نُعطّل بقية الطابور إذا تأخّرت):
+		// مشاركة في Mshcat أو ربط درس OldApp. الفشل يُسجَّل في `error`
+		// كرسالة تحذير ناعمة دون إعادة الحالة إلى failed.
 		const selSub = String(startSnapshot.form?.subsection || '');
 		const selSec = String(startSnapshot.form?.secondary_subsection || '');
 		if (selSub.startsWith('mshcat:') || selSec.startsWith('mshcat:')) {
-			await mirrorUploadedFileToMshcatBook({
+			mirrorUploadedFileToMshcatBook({
 				fileId: result?.id,
 				subsectionId: startSnapshot.form?.subsection,
 				secondarySubsectionId: startSnapshot.form?.secondary_subsection,
 				fallbackMetadata: metadata
+			}).catch((err) => {
+				console.warn('[multiUpload] Mshcat mirror failed:', err);
+				if (multiState.queue.some((it) => it.id === itemId)) {
+					updateItem(itemId, { error: 'تمّ الرفع، لكنّ النسخ إلى Mshcat فشل.' });
+				}
 			});
 		} else if (selSec.startsWith('oldapp:sub:')) {
-			await mirrorUploadedFileToOldAppLesson({
+			mirrorUploadedFileToOldAppLesson({
 				fileId: result?.id,
 				subsectionId: startSnapshot.form?.subsection,
 				secondarySubsectionId: startSnapshot.form?.secondary_subsection,
 				fallbackMetadata: metadata
+			}).catch((err) => {
+				console.warn('[multiUpload] OldApp mirror failed:', err);
+				if (multiState.queue.some((it) => it.id === itemId)) {
+					updateItem(itemId, { error: 'تمّ الرفع، لكنّ ربط الدرس في OldApp فشل.' });
+				}
 			});
 		}
-		if (multiState.queue.some((it) => it.id === itemId)) {
-			updateItem(itemId, { status: 'completed', progress: 100, error: '' });
-			// إشعار FCM بعد نجاح كل بند — لا يُعطَّل الطابور إن فشل.
+
+		// إشعار FCM (fire-and-forget، لا يُعطّل الطابور إن فشل).
+		if (stillThere) {
 			notifyContentAdded({
 				title: startSnapshot.form.title,
 				contentType: contentType,

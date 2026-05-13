@@ -4,6 +4,8 @@
  * Handles upload lifecycle through Firebase Storage + Realtime Database only.
  */
 import {
+	firebaseUploadFileToStorage,
+	firebaseWriteFileRecord,
 	firebaseUploadContentFile,
 	uploadContentThumbnail
 } from '$lib/firebase/storageUpload.js';
@@ -38,27 +40,41 @@ export function createFileUploader(file, metadata, thumbnail, { onProgress, onSt
 			const fileId = `fb_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 			if (aborted) throw new Error('Upload aborted');
 
-			// Upload the thumbnail FIRST (if any) so its download URL can be mirrored
-			// into the metadata + root-level fields the mobile app reads.
-			let thumbnailUrl = null;
-			if (thumbnail) {
-				try {
-					thumbnailUrl = await uploadContentThumbnail(fileId, thumbnail);
-				} catch (thumbErr) {
-					console.warn('[fileUpload] Thumbnail upload failed, continuing without it:', thumbErr);
-				}
-			}
-			const finalMetadata = thumbnailUrl
-				? { ...metadata, thumbnail: thumbnailUrl }
-				: metadata;
-
 			setStatus('uploading');
-			await firebaseUploadContentFile(file, fileId, finalMetadata, {
+
+			// نشغّل رفع الـ thumbnail (إن وُجد) ورفع الملف الأساسي بالتوازي.
+			// الـ thumbnail عادةً صغير جداً ولا يستهلك من معدّل الرفع الكلي
+			// شيئاً يُذكر، لذا تجنّب جعله بوّابة تسلسلية يُسرّع بداية الرفع
+			// الفعلي للملف الرئيسي. كتابة سجل RTDB تنتظر اكتمال الاثنين معاً
+			// لضمان حضور `metadata.thumbnail` في السجل النهائي.
+			const thumbPromise = thumbnail
+				? uploadContentThumbnail(fileId, thumbnail).catch((thumbErr) => {
+					console.warn('[fileUpload] Thumbnail upload failed, continuing without it:', thumbErr);
+					return null;
+				})
+				: Promise.resolve(null);
+
+			const storagePromise = firebaseUploadFileToStorage(file, fileId, {
 				onProgress: (pct) => setProgress(pct),
 				isAborted: () => aborted,
 				onTaskCreated: (task) => {
 					firebaseUploadTask = task;
 				}
+			});
+
+			const [thumbnailUrl, storageRes] = await Promise.all([thumbPromise, storagePromise]);
+			if (aborted) throw new Error('Upload aborted');
+
+			const finalMetadata = thumbnailUrl
+				? { ...metadata, thumbnail: thumbnailUrl }
+				: metadata;
+
+			await firebaseWriteFileRecord({
+				fileId,
+				file,
+				downloadUrl: storageRes.downloadUrl,
+				storagePath: storageRes.storagePath,
+				metadata: finalMetadata
 			});
 
 			if (aborted) throw new Error('Upload aborted');
