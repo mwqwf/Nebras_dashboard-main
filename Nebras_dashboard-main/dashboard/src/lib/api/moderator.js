@@ -38,55 +38,64 @@ import {
 import { ref as storageRef, deleteObject } from "firebase/storage";
 import { smartUpload } from "$lib/api/smartUpload.js";
 import {
-  isOldAppConfigured,
-  isOldAppId,
-  parseOldAppId,
-  getHostMainSectionId,
-  listOldAppMainSections,
-  listOldAppSubSections,
-  adaptOldAppMainAsSub,
-  adaptOldAppSubAsSecondary,
-  createOldAppMainSection,
-  updateOldAppMainSection,
-  deleteOldAppMainSection,
-  createOldAppSubSection,
-  updateOldAppSubSection,
-  deleteOldAppSubSection,
-  listOldAppLessonsBySub,
-  createOldAppLesson,
-  updateOldAppLesson,
-  deleteOldAppLesson,
-  adaptOldAppLessonAsFile,
-  adaptOldAppLessonAsYoutube,
-} from "$lib/api/oldAppBrowse.js";
-import {
-  isMshcatConfigured,
-  isMshcatId,
-  parseMshcatId,
-  listMshcatMainSections,
-  listMshcatSubSections,
-  listMshcatSecondarySections,
-  listMshcatBooksForCategory,
-  listAllMshcatBooks,
-  classifyMshcatCategories,
-  createMshcatCategory,
-  updateMshcatCategory,
-  deleteMshcatCategory,
-  createMshcatBook,
-  updateMshcatBook,
-  deleteMshcatBook,
-  adaptMshcatMain,
-  adaptMshcatSub,
-  adaptMshcatSecondary,
-  adaptMshcatBookAsFile,
-  adaptMshcatBookAsYoutube,
-} from "$lib/api/mshcatBrowse.js";
-import {
   tokenize,
   matchesAllTokens,
   filterAndRank,
   createTtlCache,
 } from "$lib/utils/search.js";
+
+// Mshcat/OldApp bridges removed (commit e4e0062). Legacy code paths inside this
+// file branch on isMshcatConfigured()/isOldAppConfigured() — wired here to inert
+// stubs so the rest of the module stays loadable for the primary Nebras flow.
+const NOT_CONFIGURED = () => false;
+const RETURN_NULL = () => null;
+const EMPTY_LIST = async () => [];
+const NOT_SUPPORTED = async () => {
+  throw new Error("الجسر الخارجي محذوف — الكتابة مدعومة في نبراس فقط.");
+};
+const PASSTHROUGH = (x) => x;
+
+const isOldAppConfigured = NOT_CONFIGURED;
+const isOldAppId = NOT_CONFIGURED;
+const parseOldAppId = RETURN_NULL;
+const getHostMainSectionId = async () => null;
+const listOldAppMainSections = EMPTY_LIST;
+const listOldAppSubSections = EMPTY_LIST;
+const adaptOldAppMainAsSub = PASSTHROUGH;
+const adaptOldAppSubAsSecondary = PASSTHROUGH;
+const createOldAppMainSection = NOT_SUPPORTED;
+const updateOldAppMainSection = NOT_SUPPORTED;
+const deleteOldAppMainSection = NOT_SUPPORTED;
+const createOldAppSubSection = NOT_SUPPORTED;
+const updateOldAppSubSection = NOT_SUPPORTED;
+const deleteOldAppSubSection = NOT_SUPPORTED;
+const listOldAppLessonsBySub = EMPTY_LIST;
+const createOldAppLesson = NOT_SUPPORTED;
+const updateOldAppLesson = NOT_SUPPORTED;
+const deleteOldAppLesson = NOT_SUPPORTED;
+const adaptOldAppLessonAsFile = PASSTHROUGH;
+const adaptOldAppLessonAsYoutube = PASSTHROUGH;
+
+const isMshcatConfigured = NOT_CONFIGURED;
+const isMshcatId = NOT_CONFIGURED;
+const parseMshcatId = RETURN_NULL;
+const listMshcatMainSections = EMPTY_LIST;
+const listMshcatSubSections = EMPTY_LIST;
+const listMshcatSecondarySections = EMPTY_LIST;
+const listMshcatBooksForCategory = EMPTY_LIST;
+const listAllMshcatBooks = EMPTY_LIST;
+const classifyMshcatCategories = async () => ({ main: [], sub: [], secondary: [] });
+const createMshcatCategory = NOT_SUPPORTED;
+const updateMshcatCategory = NOT_SUPPORTED;
+const deleteMshcatCategory = NOT_SUPPORTED;
+const createMshcatBook = NOT_SUPPORTED;
+const updateMshcatBook = NOT_SUPPORTED;
+const deleteMshcatBook = NOT_SUPPORTED;
+const adaptMshcatMain = PASSTHROUGH;
+const adaptMshcatSub = PASSTHROUGH;
+const adaptMshcatSecondary = PASSTHROUGH;
+const adaptMshcatBookAsFile = PASSTHROUGH;
+const adaptMshcatBookAsYoutube = PASSTHROUGH;
 
 // ─── Helpers ────────────────────────────────────────────
 
