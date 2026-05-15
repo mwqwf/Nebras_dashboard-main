@@ -14,7 +14,7 @@
 <script>
 	import { onMount, onDestroy } from 'svelte';
 	import { getAuthState } from '$lib/stores/auth.svelte.js';
-	import { startAuthListener } from '$lib/api/auth.js';
+	import { startAuthListener, completeGoogleRedirectSignIn } from '$lib/api/auth.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import LoadingScreen from '$lib/components/LoadingScreen.svelte';
@@ -64,6 +64,10 @@
 	onMount(async () => {
 		await initFirebase();
 		setLanguage(getLanguage());
+		// يجب استدعاء getRedirectResult قبل onAuthStateChanged حتى لا تبقى
+		// نتيجة التحويل عالقة؛ وإلا قد يبقى isLoading=true ولا تُعرض صفحة
+		// /login أبداً فيتخطّى المستخدم استهلاك redirect بالكامل.
+		await completeGoogleRedirectSignIn();
 		unsubscribe = startAuthListener();
 	});
 

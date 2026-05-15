@@ -15,10 +15,9 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { getAuthState } from '$lib/stores/auth.svelte.js';
+	import { getAuthState, takeRedirectSignInError } from '$lib/stores/auth.svelte.js';
 	import {
 		signInWithGoogle,
-		completeGoogleRedirectSignIn,
 		requestOwnerCode,
 		verifyOwnerCode,
 		logout,
@@ -31,39 +30,17 @@
 
 	// رسالة تعليق الوصول (عند قدوم المستخدم بعد طرده من الجدار).
 	let blockedNotice = $state('');
-	onMount(async () => {
+	onMount(() => {
 		const params = page.url?.searchParams;
 		if (params?.get('blocked') === '1') {
 			blockedNotice = 'تم تعليق وصولك من قبل الإدارة';
 		}
-
-		// التقاط نتيجة `signInWithRedirect` بعد عودة المستخدم من Google.
-		// بدون هذه الخطوة يبقى المستخدم عالقاً على /login رغم أنّه صادق
-		// بنجاح، لأنّ Firebase Auth لا يُكمل الجلسة من تلقاء نفسه.
-		try {
-			busy = true;
-			const r = await completeGoogleRedirectSignIn();
-			if (!r.handled) return; // لا redirect معلَّق — مسار عادي.
-			if (!r.ok) {
-				if (r.error && r.error !== 'cancelled') {
-					errorKey = authErrorTranslationKey(r.error);
-				}
-				return;
-			}
-			if (r.authorized) {
-				await goto('/moderator/content/files');
-				return;
-			}
-			if (r.needsOwnerCode) {
-				step = 'owner_code';
-				await sendFreshCode({ silent: true, force: true });
-			}
-		} catch (err) {
-			console.error('[login] redirect completion failed:', err);
-			errorKey = 'auth.error.google_failed';
-		} finally {
-			busy = false;
+		const redirErr = takeRedirectSignInError();
+		if (redirErr) {
+			errorKey = authErrorTranslationKey(redirErr);
 		}
+		// اكتمال signInWithRedirect يُنفَّذ في +layout.svelte قبل startAuthListener
+		// حتى لا يُحجب بشاشة التحميل ولا يُستهلك redirect متأخراً.
 	});
 
 	/** @type {'welcome'|'signin'|'owner_code'} */

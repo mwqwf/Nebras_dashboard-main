@@ -50,7 +50,8 @@ function saveToStorage(key, value) {
  *   needsOwnerCode: boolean,
  *   role: 'owner'|'supervisor'|null,
  *   isBlocked: boolean,
- *   viewMode: 'admin'|'moderator'
+ *   viewMode: 'admin'|'moderator',
+ *   redirectSignInError: string
  * }} */
 let authState = $state({
 	user: null,
@@ -59,7 +60,9 @@ let authState = $state({
 	needsOwnerCode: false,
 	role: null,
 	isBlocked: false,
-	viewMode: loadFromStorage('nebras_view_mode', 'admin')
+	viewMode: loadFromStorage('nebras_view_mode', 'admin'),
+	/** رمز خطأ Firebase أو مفتاح بعد فشل إكمال signInWithRedirect (يُقرأ مرة في /login). */
+	redirectSignInError: ''
 });
 
 // ─── Setters ────────────────────────────────────────────
@@ -105,6 +108,19 @@ export function clearAuth() {
 	authState.needsOwnerCode = false;
 	authState.role = null;
 	authState.isBlocked = false;
+	authState.redirectSignInError = '';
+}
+
+/** @param {string} code */
+export function setRedirectSignInError(code) {
+	authState.redirectSignInError = code || '';
+}
+
+/** @returns {string} */
+export function takeRedirectSignInError() {
+	const v = authState.redirectSignInError || '';
+	authState.redirectSignInError = '';
+	return v;
 }
 
 export function getAuthState() {

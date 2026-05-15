@@ -27,7 +27,8 @@ import {
 	setLoading,
 	setRole,
 	setBlocked,
-	clearAuth
+	clearAuth,
+	setRedirectSignInError
 } from '$lib/stores/auth.svelte.js';
 
 function toPlainUser(firebaseUser) {
@@ -201,6 +202,15 @@ export async function completeGoogleRedirectSignIn() {
 		}
 		setUser(toPlainUser(result.user));
 		const checked = await checkCurrentAuth();
+		// نفس سلوك صفحة /login بعد popup: طلب رمز المالك تلقائياً (الواجهة قد
+		// لا تكون قد ارتفعت بعد بسبب isLoading في الجذر).
+		if (checked.needsOwnerCode) {
+			try {
+				await requestOwnerCode();
+			} catch (e) {
+				console.warn('[auth] requestOwnerCode after redirect failed:', e);
+			}
+		}
 		return { handled: true, ok: true, ...checked };
 	} catch (err) {
 		const code = err?.code || '';
@@ -215,6 +225,7 @@ export async function completeGoogleRedirectSignIn() {
 			};
 		}
 		console.error('[auth] completeGoogleRedirectSignIn failed:', err);
+		setRedirectSignInError(code || 'unknown');
 		return {
 			handled: true,
 			ok: false,
