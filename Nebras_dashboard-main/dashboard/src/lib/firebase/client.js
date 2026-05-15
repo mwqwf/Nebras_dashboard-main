@@ -5,6 +5,7 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getAnalytics, isSupported } from 'firebase/analytics';
 import { getDatabase } from 'firebase/database';
+import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import {
 	getAuth,
@@ -51,11 +52,17 @@ export function getFirebaseDatabase() {
 	return getDatabase(application);
 }
 
-/** Cloud Firestore — مشروع نبراس الأساسي (المحتوى الموحّد والأقسام). */
+/** Cloud Firestore — مشروع نبراس الأساسي (المحتوى الموحّد والأقسام).
+ *  ملاحظة مهمّة: قاعدة البيانات في مشروع nebras-9118c معرَّفة باسم `default`
+ *  (بدون أقواس)، وهي قاعدة مسمّاة (Named Database). الـ Web SDK افتراضياً
+ *  يتّصل بـ `(default)` (مع أقواس) — لذا يجب تمرير اسم القاعدة صراحةً. */
+const NEBRAS_FIRESTORE_DATABASE_ID =
+	String(import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID || 'default');
+
 export function getNebrasFirestore() {
 	const application = getFirebaseApp();
 	if (!application) return undefined;
-	return getFirestore(application);
+	return getFirestore(application, NEBRAS_FIRESTORE_DATABASE_ID);
 }
 
 /** Cloud Storage — نفس storageBucket في الإعدادات */

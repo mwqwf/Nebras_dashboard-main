@@ -133,7 +133,10 @@ export const translations = {
                 no_code: 'No active code. Please request a new one.',
                 rate_limited: 'Please wait a moment before requesting a new code.',
                 send_failed: 'Could not send the code right now. Please try again.',
-                server: 'Server error. Please try again.'
+                server: 'Server error. Please try again.',
+                firebase_not_configured: 'Firebase is not configured. Add VITE_FIREBASE_* values to .env and restart the dev server.',
+                unauthorized_domain: 'This URL is not allowed for Google sign-in. Open the dashboard via http://localhost:5173 instead, or add this host to Firebase → Authentication → Settings → Authorized domains.',
+                popup_blocked: 'The Google sign-in popup was blocked by the browser. Allow popups for this site and try again.'
             }
         },
         bans: {
@@ -454,7 +457,10 @@ export const translations = {
                 no_code: 'لا يوجد رمز نشط. اطلب رمزًا جديدًا.',
                 rate_limited: 'انتظر قليلًا قبل طلب رمز جديد.',
                 send_failed: 'تعذّر إرسال الرمز الآن. حاول مجدّدًا.',
-                server: 'خطأ في الخادم. حاول مجدّدًا.'
+                server: 'خطأ في الخادم. حاول مجدّدًا.',
+                firebase_not_configured: 'لم تتمّ تهيئة Firebase. أضف قيم VITE_FIREBASE_* في ملف .env ثم أعد تشغيل خادم التطوير.',
+                unauthorized_domain: 'هذا العنوان غير مسموح به لتسجيل الدخول عبر Google. افتح لوحة التحكّم عبر http://localhost:5173، أو أضِف هذا العنوان من Firebase → Authentication → Settings → Authorized domains.',
+                popup_blocked: 'حظر المتصفّح نافذة تسجيل الدخول. اسمح بالنوافذ المنبثقة لهذا الموقع وحاول مجدّدًا.'
             }
         },
         bans: {

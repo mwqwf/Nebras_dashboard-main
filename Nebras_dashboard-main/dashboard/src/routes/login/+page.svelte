@@ -21,7 +21,8 @@
 		requestOwnerCode,
 		verifyOwnerCode,
 		logout,
-		checkCurrentAuth
+		checkCurrentAuth,
+		authErrorTranslationKey
 	} from '$lib/api/auth.js';
 	import { getLanguage, toggleLanguage, t, getDir } from '$lib/i18n/store.svelte.js';
 
@@ -101,7 +102,13 @@
 					// إلغاء طبيعي من المستخدم — لا نُظهر خطأ صاخبًا.
 					return;
 				}
-				errorKey = 'auth.error.google_failed';
+				// نستعمل المفتاح الدقيق المُستخرَج من رمز خطأ Firebase (مثل
+				// `auth/unauthorized-domain`) كي يُرى السبب الحقيقيّ في الواجهة.
+				errorKey = authErrorTranslationKey(result.error);
+				return;
+			}
+			if (result.pendingRedirect) {
+				// تحويل خارجيّ — لا نعرض خطأ ولا نتابع.
 				return;
 			}
 			if (result.authorized) {

@@ -58,6 +58,8 @@
 	let log = $derived(status?.log || []);
 	let engineActive = $derived(!!status?.config?.enabled);
 	let processAlive = $derived(!!status?.processRunning);
+	/** حالة شريط الحالة — يُستخدم data-variant حتى يلتقط المُجمّع أنماط CSS الصحيحة */
+	let metaChipVariant = $derived(processAlive ? 'on' : engineActive ? 'warn' : 'off');
 
 	// ─── Lifecycle ─────────────────────────────────────────────
 	onMount(async () => {
@@ -254,7 +256,7 @@
 		</div>
 		<div class="header-meta">
 			<!-- الذكاء الاصطناعي محذوف حالياً -->
-			<span class="meta-chip" class:chip-on={processAlive} class:chip-warn={!processAlive && engineActive}>
+			<span class="meta-chip" data-variant={metaChipVariant}>
 				<span class="dot"></span>
 				{#if processAlive}
 					الحلقة الداخليّة تعمل
@@ -569,12 +571,10 @@
 	.header-meta { display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-end; }
 	.meta-chip { font-size: 0.75rem; padding: 0.35rem 0.7rem; background: var(--color-surface-800); border: 1px solid var(--color-surface-700); border-radius: 100px; color: var(--color-surface-300); display: inline-flex; align-items: center; gap: 0.5rem; }
 	.meta-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-surface-500); }
-	.meta-chip.chip-on { color: var(--color-primary-300); border-color: var(--color-primary-700); }
-	.meta-chip.chip-on .dot { background: var(--color-primary-400); box-shadow: 0 0 8px var(--color-primary-500); }
-	.meta-chip.chip-off { color: #f59e0b; }
-	.meta-chip.chip-off .dot { background: #f59e0b; }
-	.meta-chip.chip-warn { color: #fbbf24; border-color: rgba(245,158,11,0.4); }
-	.meta-chip.chip-warn .dot { background: #fbbf24; }
+	.meta-chip[data-variant="on"] { color: var(--color-primary-300); border-color: var(--color-primary-700); }
+	.meta-chip[data-variant="on"] .dot { background: var(--color-primary-400); box-shadow: 0 0 8px var(--color-primary-500); }
+	.meta-chip[data-variant="warn"] { color: #fbbf24; border-color: rgba(245,158,11,0.4); }
+	.meta-chip[data-variant="warn"] .dot { background: #fbbf24; }
 
 	/* ── Alerts ─────────────────────────── */
 	.alert { padding: 0.75rem 1rem; border-radius: 10px; font-size: 0.8125rem; }

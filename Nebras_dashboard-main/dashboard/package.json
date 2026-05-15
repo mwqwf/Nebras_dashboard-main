@@ -11,7 +11,10 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"start": "node build",
-		"prepare": "svelte-kit sync || echo ''"
+		"prepare": "svelte-kit sync || echo ''",
+		"deploy:rules": "node scripts/deploy-firestore-rules.mjs",
+		"check:rules": "node check-rules.mjs",
+		"resolve:sa-path": "node scripts/resolve-sa-path.mjs"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.0",
@@ -20,8 +23,14 @@
 		"@sveltejs/kit": "^2.50.2",
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
 		"@tailwindcss/vite": "^4.1.18",
+		"bufferutil": "^4.1.0",
+		"encoding": "^0.1.13",
+		"source-map-support": "^0.5.21",
+		"supports-color": "^10.2.2",
 		"svelte": "^5.49.2",
 		"tailwindcss": "^4.1.18",
+		"typescript": "^5.9.3",
+		"utf-8-validate": "^6.0.6",
 		"vite": "^7.3.1"
 	},
 	"dependencies": {

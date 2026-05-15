@@ -23,22 +23,36 @@ service cloud.firestore {
 
     match /sections_unified/{level} {
       allow read: if true;
-      allow write: if hasDashboardWrite();
+      allow write: if hasDashboardWrite()
+        && level in ['main', 'sub', 'secondary'];
+    }
+
+    function validFileDoc() {
+      return request.resource.data.keys().hasAny(['id', 'fileId']);
     }
 
     match /dashboard_uploads/{docId} {
       allow read: if true;
-      allow write: if hasDashboardWrite();
+      allow create, update: if hasDashboardWrite() && validFileDoc();
+      allow delete: if hasDashboardWrite();
     }
 
     match /content_unified_files/{docId} {
       allow read: if true;
-      allow write: if hasDashboardWrite();
+      allow create, update: if hasDashboardWrite() && validFileDoc();
+      allow delete: if hasDashboardWrite();
+    }
+
+    function validYoutubeDoc() {
+      return request.resource.data.keys().hasAll(['id', 'video_url'])
+        && request.resource.data.video_url is string
+        && request.resource.data.video_url.size() > 0;
     }
 
     match /content_unified_youtube/{docId} {
       allow read: if true;
-      allow write: if hasDashboardWrite();
+      allow create, update: if hasDashboardWrite() && validYoutubeDoc();
+      allow delete: if hasDashboardWrite();
     }
 
     // كلّ ما عدا المسارات أعلاه — مرفوض افتراضيّاً (يمكن لاحقاً إضافة مجموعات أخرى صراحةً).

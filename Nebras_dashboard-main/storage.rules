@@ -8,9 +8,12 @@ rules_version = '2';
 //  firebase-rules-update.txt الفقرة 3 لمنحهم الـ claim المناسب
 //  (role = 'owner' أو 'supervisor').
 //
-//  ملاحظة معماريّة: كلّ الكتابة من /api/admin/*، /api/mshcat/*، /api/oldapp/*
-//  تمرّ عبر Admin SDK من الخادم، الذي يتجاوز هذه القواعد. القواعد هنا تحمي
-//  الكتابات المباشرة من Web SDK (المتصفّح) فقط (Defense-in-depth).
+//  ملاحظة معماريّة: كلّ الكتابة من /api/admin/* تمرّ عبر Admin SDK من
+//  الخادم، الذي يتجاوز هذه القواعد. القواعد هنا تحمي الكتابات المباشرة
+//  من Web SDK (المتصفّح) فقط (Defense-in-depth).
+//
+//  ⛔ تمّ إلغاء جميع جسور المشاريع الخارجيّة (Mshcat / OldApp / Internet
+//  Archive / IslamHouse). لم تعد هناك مسارات api/mshcat، api/oldapp.
 // ════════════════════════════════════════════════════════════════════
 
 service firebase.storage {

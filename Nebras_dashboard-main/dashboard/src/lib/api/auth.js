@@ -12,6 +12,8 @@
 
 import {
 	signInWithPopup,
+	signInWithRedirect,
+	getRedirectResult,
 	onAuthStateChanged,
 	signOut as firebaseSignOut,
 	getIdToken
@@ -138,11 +140,111 @@ export async function checkCurrentAuth() {
 	return { signedIn: true, authorized: false, needsOwnerCode: Boolean(data.needsOwnerCode) };
 }
 
+/** @returns {boolean} */
+function isLocalDevHost() {
+	if (typeof window === 'undefined') return true;
+	const host = window.location.hostname;
+	return host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+}
+
+/**
+ * على عنوان LAN (مثل 10.x) تفشل signInWithPopup غالباً بـ unauthorized-domain
+ * ما لم يُضف العنوان يدوياً في Firebase Console. نفضّل redirect هناك.
+ * @returns {boolean}
+ */
+function shouldPreferGoogleRedirect() {
+	return typeof window !== 'undefined' && !isLocalDevHost();
+}
+
+const POPUP_FALLBACK_CODES = new Set([
+	'auth/unauthorized-domain',
+	'auth/operation-not-supported-in-this-environment',
+	'auth/popup-blocked',
+	'auth/popup-closed-by-user' // أحياناً يظهر عند حظر النافذة المنبثقة
+]);
+
+function isCancelledAuthError(code) {
+	return (
+		code === 'auth/popup-closed-by-user' ||
+		code === 'auth/cancelled-popup-request' ||
+		code === 'auth/user-cancelled'
+	);
+}
+
+/**
+ * يُكمِل تسجيل الدخول بعد العودة من signInWithRedirect.
+ * يُستدعى من صفحة /login عند التحميل.
+ */
+export async function completeGoogleRedirectSignIn() {
+	const auth = getFirebaseAuth();
+	if (!auth) {
+		return {
+			handled: false,
+			ok: false,
+			signedIn: false,
+			authorized: false,
+			needsOwnerCode: false,
+			error: 'firebase_not_configured'
+		};
+	}
+
+	try {
+		const result = await getRedirectResult(auth);
+		if (!result?.user) {
+			return {
+				handled: false,
+				ok: true,
+				signedIn: false,
+				authorized: false,
+				needsOwnerCode: false
+			};
+		}
+		setUser(toPlainUser(result.user));
+		const checked = await checkCurrentAuth();
+		return { handled: true, ok: true, ...checked };
+	} catch (err) {
+		const code = err?.code || '';
+		if (isCancelledAuthError(code)) {
+			return {
+				handled: true,
+				ok: false,
+				signedIn: false,
+				authorized: false,
+				needsOwnerCode: false,
+				error: 'cancelled'
+			};
+		}
+		console.error('[auth] completeGoogleRedirectSignIn failed:', err);
+		return {
+			handled: true,
+			ok: false,
+			signedIn: false,
+			authorized: false,
+			needsOwnerCode: false,
+			error: code || 'unknown'
+		};
+	}
+}
+
+async function startGoogleRedirect(auth) {
+	const provider = buildGoogleProvider();
+	await signInWithRedirect(auth, provider);
+	return {
+		ok: true,
+		pendingRedirect: true,
+		signedIn: false,
+		authorized: false,
+		needsOwnerCode: false
+	};
+}
+
 /**
  * يفتح نافذة Google Sign-In. عند النجاح يُحدِّث store ثمّ يُعيد نتيجة
  * التحقّق من الأهليّة (checkCurrentAuth).
  *
- * @returns {Promise<{ ok: boolean, signedIn: boolean, authorized: boolean, needsOwnerCode: boolean, error?: string }>}
+ * على عناوين الشبكة المحلية (غير localhost) يُستخدم redirect تلقائياً.
+ *
+ * @returns {Promise<{ ok: boolean, signedIn: boolean, authorized: boolean, needsOwnerCode: boolean, pendingRedirect?: boolean, error?: string }>}
  */
 export async function signInWithGoogle() {
 	const auth = getFirebaseAuth();
@@ -156,6 +258,21 @@ export async function signInWithGoogle() {
 		};
 	}
 
+	if (shouldPreferGoogleRedirect()) {
+		try {
+			return await startGoogleRedirect(auth);
+		} catch (err) {
+			console.error('[auth] signInWithRedirect failed:', err);
+			return {
+				ok: false,
+				signedIn: false,
+				authorized: false,
+				needsOwnerCode: false,
+				error: err?.code || 'unknown'
+			};
+		}
+	}
+
 	try {
 		const provider = buildGoogleProvider();
 		const result = await signInWithPopup(auth, provider);
@@ -164,11 +281,7 @@ export async function signInWithGoogle() {
 		return { ok: true, ...checked };
 	} catch (err) {
 		const code = err?.code || '';
-		if (
-			code === 'auth/popup-closed-by-user' ||
-			code === 'auth/cancelled-popup-request' ||
-			code === 'auth/user-cancelled'
-		) {
+		if (isCancelledAuthError(code)) {
 			return {
 				ok: false,
 				signedIn: false,
@@ -176,6 +289,20 @@ export async function signInWithGoogle() {
 				needsOwnerCode: false,
 				error: 'cancelled'
 			};
+		}
+		if (POPUP_FALLBACK_CODES.has(code)) {
+			try {
+				return await startGoogleRedirect(auth);
+			} catch (redirectErr) {
+				console.error('[auth] redirect fallback failed:', redirectErr);
+				return {
+					ok: false,
+					signedIn: false,
+					authorized: false,
+					needsOwnerCode: false,
+					error: redirectErr?.code || code || 'unknown'
+				};
+			}
 		}
 		console.error('[auth] signInWithGoogle failed:', err);
 		return {
@@ -185,6 +312,21 @@ export async function signInWithGoogle() {
 			needsOwnerCode: false,
 			error: code || 'unknown'
 		};
+	}
+}
+
+/** يحوّل رمز خطأ Firebase إلى مفتاح ترجمة في الواجهة. */
+export function authErrorTranslationKey(error) {
+	switch (error) {
+		case 'firebase_not_configured':
+			return 'auth.error.firebase_not_configured';
+		case 'auth/unauthorized-domain':
+			return 'auth.error.unauthorized_domain';
+		case 'auth/popup-blocked':
+		case 'auth/operation-not-supported-in-this-environment':
+			return 'auth.error.popup_blocked';
+		default:
+			return 'auth.error.google_failed';
 	}
 }
 
