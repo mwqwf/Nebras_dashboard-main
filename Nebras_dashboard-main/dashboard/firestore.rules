@@ -1,0 +1,49 @@
+rules_version = '2';
+
+// انسخ إلى Firebase Console → Firestore Database → Rules
+// القراءة عامة للمحتوى؛ الكتابة لمشرفي لوحة التحكّم فقط.
+//
+// claim `role` ∈ { owner, supervisor } يُضبَط تلقائياً من الخادم عبر
+// `syncNebrasDashboardClaimsForUid` بعد قراءة `dashboard_users/{uid}` في RTDB
+// (مسارات /api/auth/check و /api/auth/verify-code و /api/admin/supervisors/*).
+// يجب أن يستدعي العميل `getIdToken(true)` بعد تسجيل الدخول ليحمّل التوكن المحدَّث.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasDashboardWrite() {
+      return isSignedIn() && (
+        request.auth.token.role == 'owner' ||
+        request.auth.token.role == 'supervisor'
+      );
+    }
+
+    match /sections_unified/{level} {
+      allow read: if true;
+      allow write: if hasDashboardWrite();
+    }
+
+    match /dashboard_uploads/{docId} {
+      allow read: if true;
+      allow write: if hasDashboardWrite();
+    }
+
+    match /content_unified_files/{docId} {
+      allow read: if true;
+      allow write: if hasDashboardWrite();
+    }
+
+    match /content_unified_youtube/{docId} {
+      allow read: if true;
+      allow write: if hasDashboardWrite();
+    }
+
+    // كلّ ما عدا المسارات أعلاه — مرفوض افتراضيّاً (يمكن لاحقاً إضافة مجموعات أخرى صراحةً).
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

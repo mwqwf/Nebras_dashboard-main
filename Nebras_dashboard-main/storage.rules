@@ -1,16 +1,69 @@
 rules_version = '2';
+
+// ════════════════════════════════════════════════════════════════════
+//  Cloud Storage Rules — Nebras Dashboard (nebras-9118c)
+//
+//  مهم: هذه القواعد تعتمد على Firebase Auth Custom Claims (request.auth.token.role).
+//  إذا لم تكن قد رقّيت المستخدمين بعد، استعمل سكريبت الترقية في
+//  firebase-rules-update.txt الفقرة 3 لمنحهم الـ claim المناسب
+//  (role = 'owner' أو 'supervisor').
+//
+//  ملاحظة معماريّة: كلّ الكتابة من /api/admin/*، /api/mshcat/*، /api/oldapp/*
+//  تمرّ عبر Admin SDK من الخادم، الذي يتجاوز هذه القواعد. القواعد هنا تحمي
+//  الكتابات المباشرة من Web SDK (المتصفّح) فقط (Defense-in-depth).
+// ════════════════════════════════════════════════════════════════════
+
 service firebase.storage {
   match /b/{bucket}/o {
-    match /{allPaths=**} {
-      // القراءة مفتوحة لمستخدمي تطبيق الموبايل (يقرؤون بدون مصادقة).
-      allow read: if true;
 
-      // الكتابة مقصورة على جلسات Firebase Auth فقط. لوحة التحكم تُسجّل
-      // دخولها بـ Google عبر firebase/auth فيُرفَع request.auth، بينما
-      // تطبيق الموبايل يستخدم google_sign_in الأصلي بدون firebase_auth
-      // فيبقى request.auth == null ويُمنَع من الكتابة. الـ Admin SDK على
-      // السيرفر يتجاوز القواعد بطبيعته فلا يتأثر.
-      allow write: if request.auth != null;
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasOwnerOrSupervisor() {
+      return isSignedIn() && (
+        request.auth.token.role == 'owner' ||
+        request.auth.token.role == 'supervisor' ||
+        request.auth.token.email == 'bdalmjydtbwn812@gmail.com'  // المالك الرسمي (احتياطي إن لم تُفعَّل Custom Claims)
+      );
+    }
+
+    function isValidUpload() {
+      return request.resource.size < 200 * 1024 * 1024
+        && request.resource.contentType.matches('(image|video|audio|application)/.*');
+    }
+
+    // محتوى لوحة التحكّم (الملفّات الفعلية + الـ thumbnails)
+    // يكتب فيه storageUpload.js → firebaseUploadContentFile + uploadContentThumbnail
+    match /dashboard/content/{fileId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if hasOwnerOrSupervisor() && isValidUpload();
+    }
+
+    // الرفع العام المباشر إلى Nebras (smartUpload.js → target=nebras)
+    match /dashboard/uploads/{allPaths=**} {
+      allow read: if true;
+      allow write: if hasOwnerOrSupervisor() && isValidUpload();
+    }
+
+    // ملفات سكريبت Noor Library (المحرّك الآلي)
+    match /dashboard/noor-library/{bookId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if hasOwnerOrSupervisor() && isValidUpload();
+    }
+
+    // thumbnails الأقسام (sections/main|sub|secondary/{id}/...)
+    match /sections/{level}/{sectionId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if hasOwnerOrSupervisor()
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // منع كل ما عدا ذلك
+    match /{path=**} {
+      allow read: if false;
+      allow write: if false;
     }
   }
 }

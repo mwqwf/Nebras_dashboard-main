@@ -121,6 +121,8 @@ export async function checkCurrentAuth() {
 		setNeedsOwnerCode(false);
 		setRole(role);
 		setBlocked(false);
+		// توكن جديد يتضمّن Custom Claims بعد مزامنة الخادم (Firestore rules).
+		await fetchIdToken(true);
 		return {
 			signedIn: true,
 			authorized: true,
@@ -225,6 +227,7 @@ export async function verifyOwnerCode(code) {
 		setNeedsOwnerCode(false);
 		setRole(role);
 		setBlocked(false);
+		await fetchIdToken(true);
 		return { ok: true };
 	}
 	return { ok: false, reason: data?.reason || 'unknown' };

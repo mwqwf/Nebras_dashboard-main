@@ -16,6 +16,7 @@
 
 import { json } from '@sveltejs/kit';
 import { getAdminDatabase, verifyIdToken } from '$lib/server/firebaseAdmin.js';
+import { syncNebrasDashboardClaimsForUid } from '$lib/server/dashboardClaimsSync.js';
 import { verifyCode } from '$lib/server/ownerCode.js';
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
@@ -62,6 +63,7 @@ export async function POST({ request }) {
 				lastSignedInAt: now,
 				createdVia: 'otp_approval'
 			});
+		await syncNebrasDashboardClaimsForUid(uid);
 	} catch (err) {
 		console.error('[api/auth/verify-code] failed to write user:', err);
 		return json({ error: 'server_error', message: err?.message || 'unknown' }, { status: 500 });

@@ -14,18 +14,78 @@ import {
   apiDelete,
 } from "$lib/api/client.js";
 import {
-  getFirebaseDatabase,
   getFirebaseStorage,
 } from "$lib/firebase/client.js";
-import { ref as dbRef, get, set, remove } from "firebase/database";
-// ⚠️ الرفع يمرّ عبر smartUpload إلى دلو Nebras (Web SDK).
+import {
+  clientFsReadSectionsLevel,
+  clientFsReadSectionsSubMap,
+  clientFsGetSectionRecord,
+  clientFsSetSectionRecord,
+  clientFsDeleteSectionRecord,
+  clientFsListYoutubeRecords,
+  clientFsSetYoutubeRecord,
+  clientFsGetYoutubeRecord,
+  clientFsDeleteYoutubeRecord,
+  clientFsListFileRowsMerged,
+  clientFsGetFileRow,
+  clientFsWriteFileMirrorBoth,
+  clientFsDeleteFileMirrorBoth,
+} from "$lib/firebase/nebrasUnifiedFirestoreClient.js";
+// ⚠️ الرفع لم يعد يستخدم Storage Web SDK مباشرة من هنا؛ نمرّ عبر smartUpload
+// الذي يوجِّه تلقائيًّا: Nebras → Web SDK، Mshcat/OldApp → /api/.../uploads.
 // نُبقي `ref` و `deleteObject` فقط لحذف كائنات التخزين الفعليّة في Nebras
 // (مسار `removeFile`) — وهي عمليّة حذف لا رفع.
 import { ref as storageRef, deleteObject } from "firebase/storage";
 import { smartUpload } from "$lib/api/smartUpload.js";
 import {
+  isOldAppConfigured,
+  isOldAppId,
+  parseOldAppId,
+  getHostMainSectionId,
+  listOldAppMainSections,
+  listOldAppSubSections,
+  adaptOldAppMainAsSub,
+  adaptOldAppSubAsSecondary,
+  createOldAppMainSection,
+  updateOldAppMainSection,
+  deleteOldAppMainSection,
+  createOldAppSubSection,
+  updateOldAppSubSection,
+  deleteOldAppSubSection,
+  listOldAppLessonsBySub,
+  createOldAppLesson,
+  updateOldAppLesson,
+  deleteOldAppLesson,
+  adaptOldAppLessonAsFile,
+  adaptOldAppLessonAsYoutube,
+} from "$lib/api/oldAppBrowse.js";
+import {
+  isMshcatConfigured,
+  isMshcatId,
+  parseMshcatId,
+  listMshcatMainSections,
+  listMshcatSubSections,
+  listMshcatSecondarySections,
+  listMshcatBooksForCategory,
+  listAllMshcatBooks,
+  classifyMshcatCategories,
+  createMshcatCategory,
+  updateMshcatCategory,
+  deleteMshcatCategory,
+  createMshcatBook,
+  updateMshcatBook,
+  deleteMshcatBook,
+  adaptMshcatMain,
+  adaptMshcatSub,
+  adaptMshcatSecondary,
+  adaptMshcatBookAsFile,
+  adaptMshcatBookAsYoutube,
+} from "$lib/api/mshcatBrowse.js";
+import {
   tokenize,
+  matchesAllTokens,
   filterAndRank,
+  createTtlCache,
 } from "$lib/utils/search.js";
 
 // ─── Helpers ────────────────────────────────────────────
@@ -50,7 +110,21 @@ function shouldSkipListing({ requireSearch, search, hasActiveFilter } = {}) {
   return q.length < MIN_SEARCH_LEN;
 }
 
-// تتبّع فشل جزئي أثناء الجلب (للعرض في الواجهة).
+// ─── Memoization for external heavy merges ──────────────
+//
+// بعض استدعاءات المشاريع الثانويّة (Mshcat/OldApp) تقرأ شجرة كاملة من
+// الكتب أو الأقسام. تكرار البحث خلال ثوانٍ قليلة (مثلاً تصحيح كلمة)
+// يجب ألّا يُعيد نفس القراءات الشبكيّة. نستخدم TTL قصير (30s) لنضمن أن
+// البيانات تظلّ طازجة بعد أيّ عمليّة كتابة من المستخدم (إنشاء/تعديل/حذف).
+const EXTERNAL_TTL_MS = 30000;
+const externalCache = createTtlCache(EXTERNAL_TTL_MS);
+
+/** يُفرغ ذاكرة دمج المشاريع الثانويّة بعد أيّ عمليّة كتابة حاسمة. */
+function invalidateExternalCaches() {
+  externalCache.invalidate();
+}
+
+// Tracking partial source failures for UI awareness.
 // مخصَّص للاستخدام عبر `getLastPartialFailures()` من الصفحات.
 let _lastPartialFailures = [];
 function recordPartialFailure(source, err) {
@@ -61,7 +135,7 @@ function resetPartialFailures() {
   _lastPartialFailures = [];
 }
 /**
- * يُرجع أيّ فشل جزئي حدث أثناء آخر عمليّة جلب.
+ * يُرجع أيّ فشل جزئي حدث أثناء آخر عمليّة جلب (Mshcat/OldApp).
  * الواجهة تستطيع عرضه كـ toast تحذيري بدل أن يظنّ المشرف أنّ القائمة كاملة.
  */
 export function getLastPartialFailures() {
@@ -287,12 +361,84 @@ export async function listMyYoutubeVideos({
     is_listed !== undefined;
   if (shouldSkipListing({ requireSearch, search, hasActiveFilter })) return emptyPage();
   resetPartialFailures();
-  const db = sectionsDb();
-  const ytSnap = await get(dbRef(db, `${CONTENT_ROOT}/youtube`));
-  const subSnap = await get(dbRef(db, `${SECTIONS_ROOT}/sub`));
-  const subMap = subSnap.exists() ? subSnap.val() || {} : {};
+  const ytSnap = await clientFsListYoutubeRecords();
+  const subMap = await clientFsReadSectionsSubMap();
   const listedFilter = metadata__is_listed ?? is_listed;
-  let list = ytSnap.exists() ? Object.values(ytSnap.val() || {}) : [];
+  let list = ytSnap;
+
+  if (isOldAppConfigured()) {
+    try {
+      const hostId = await getHostMainSectionId();
+      const shouldMergeOldApp =
+        main_section === undefined || main_section === "" || sameSectionId(main_section, hostId);
+      if (hostId != null && shouldMergeOldApp) {
+        // التحميل المتوازي: نقرأ جميع الأقسام الرئيسيّة ثمّ الفرعيّة ثمّ
+        // الدروس بالتوازي (Promise.all) بدل التسلسل الخطّي O(N*M*K).
+        const oldMains = await externalCache.get("oldapp:mains", () =>
+          listOldAppMainSections(),
+        );
+        const allLessons = await Promise.all(
+          oldMains.map(async (m) => {
+            try {
+              const oldSubs = await externalCache.get(
+                `oldapp:subs:${m.id}`,
+                () => listOldAppSubSections(m.id),
+              );
+              const lessonsBatches = await Promise.all(
+                oldSubs.map((s) =>
+                  externalCache
+                    .get(`oldapp:lessons:${m.id}:${s.id}`, () =>
+                      listOldAppLessonsBySub(m.id, s.id),
+                    )
+                    .then((lessons) =>
+                      lessons.map((lesson) => ({ lesson, mainDocId: m.id, subDocId: s.id })),
+                    )
+                    .catch((err) => {
+                      recordPartialFailure(`OldApp lessons ${m.id}/${s.id}`, err);
+                      return [];
+                    }),
+                ),
+              );
+              return lessonsBatches.flat();
+            } catch (err) {
+              recordPartialFailure(`OldApp subs ${m.id}`, err);
+              return [];
+            }
+          }),
+        );
+        for (const entry of allLessons.flat()) {
+          const asYoutube = adaptOldAppLessonAsYoutube(entry.lesson, {
+            mainDocId: entry.mainDocId,
+            subDocId: entry.subDocId,
+          });
+          if (String(asYoutube?.metadata?.content_type) === "youtube") {
+            list.push(asYoutube);
+          }
+        }
+      }
+    } catch (err) {
+      recordPartialFailure("OldApp youtube merge", err);
+    }
+  }
+
+  // دمج فيديوهات Mshcat: كتب من `books` نوعها youtube.
+  if (isMshcatConfigured()) {
+    try {
+      const books = await externalCache.get("mshcat:books:all", () =>
+        listAllMshcatBooks(),
+      );
+      for (const b of books) {
+        const yt = adaptMshcatBookAsYoutube(b);
+        const t = String(yt?.metadata?.content_type || "").toLowerCase();
+        const url = String(yt?.video_url || "").toLowerCase();
+        if (t === "youtube" || url.includes("youtube.com") || url.includes("youtu.be")) {
+          list.push(yt);
+        }
+      }
+    } catch (err) {
+      recordPartialFailure("Mshcat youtube merge", err);
+    }
+  }
 
   // AND search + relevance ranking (Arabic-normalized).
   const tokens = tokenize(search);
@@ -319,7 +465,10 @@ export async function listMyYoutubeVideos({
     list = list.filter((item) => {
       const subId = item?.metadata?.subsection;
       const sub = subMap[String(subId)];
-      return sameSectionId(sub?.main_section, main_section);
+      return (
+        sameSectionId(sub?.main_section, main_section) ||
+        sameSectionId(item?.__oldappMainDocId, parseOldAppId(subId)?.mainDocId)
+      );
     });
   }
   if (listedFilter !== undefined && listedFilter !== "") {
@@ -346,7 +495,90 @@ export async function listMyYoutubeVideos({
  * @param {Object} data - { video_url, thumbnail? (File), metadata: { title, description?, subsection, secondary_subsection?, content_type:'youtube' } }
  */
 export async function createYoutubeVideo(data) {
-  const db = sectionsDb();
+  const subId = String(data?.metadata?.subsection ?? "");
+  const secId = String(data?.metadata?.secondary_subsection ?? "");
+
+  // Mshcat routing — نحفظ كتابًا في `books` وحقل `categoryId` يحمل docId
+  // لأعمق قسم تمّ اختياره (sec أفضل، ثمّ sub، ثمّ main).
+  const mshcatTarget = detectMshcatContentTarget({
+    subsectionId: subId,
+    secondarySubsectionId: secId,
+  });
+  if (mshcatTarget) {
+    let thumbnailUrl = null;
+    if (data?.thumbnail instanceof File) {
+      thumbnailUrl = await uploadSectionThumbnail(
+        "youtube-mshcat",
+        Date.now(),
+        data.thumbnail,
+      );
+    }
+    const created = await createMshcatBook({
+      categoryDocId: mshcatTarget.docId,
+      title: data?.metadata?.title,
+      description: data?.metadata?.description,
+      author: data?.metadata?.author,
+      contentType: "youtube",
+      sourceUrl: data?.video_url,
+      thumbnail: thumbnailUrl,
+    });
+    return {
+      id: `mshcat:book:${created.id}`,
+      video_url: String(data?.video_url || "").trim(),
+      metadata: {
+        title: String(data?.metadata?.title || "").trim(),
+        description: data?.metadata?.description ? String(data.metadata.description) : "",
+        author: data?.metadata?.author ? String(data.metadata.author) : "",
+        subsection: subId,
+        secondary_subsection: secId || null,
+        content_type: "youtube",
+        is_listed: data?.metadata?.is_listed ?? true,
+        thumbnail: thumbnailUrl || null,
+        created_at: new Date().toISOString(),
+      },
+      __mshcatBookDocId: created.id,
+      __mshcatCategoryDocId: mshcatTarget.docId,
+    };
+  }
+
+  const parsedSub = isOldAppId(subId) ? parseOldAppId(subId) : null;
+  const parsedSec = isOldAppId(secId) ? parseOldAppId(secId) : null;
+  const target = parsedSec?.level === "sub" ? parsedSec : parsedSub?.level === "sub" ? parsedSub : null;
+  if (target) {
+    let thumbnailUrl = null;
+    if (data?.thumbnail instanceof File) {
+      thumbnailUrl = await uploadSectionThumbnail("youtube-oldapp", Date.now(), data.thumbnail);
+    }
+    const created = await createOldAppLesson({
+      mainDocId: target.mainDocId,
+      subDocId: target.subDocId,
+      title: data?.metadata?.title,
+      description: data?.metadata?.description,
+      author: data?.metadata?.author,
+      contentType: "youtube",
+      sourceUrl: data?.video_url,
+      thumbnail: thumbnailUrl,
+    });
+    return {
+      id: `oldapp:lesson:${created.id}`,
+      video_url: String(data?.video_url || "").trim(),
+      metadata: {
+        title: String(data?.metadata?.title || "").trim(),
+        description: data?.metadata?.description ? String(data.metadata.description) : "",
+        author: data?.metadata?.author ? String(data.metadata.author) : "",
+        subsection: `oldapp:main:${target.mainDocId}`,
+        secondary_subsection: `oldapp:sub:${target.mainDocId}:${target.subDocId}`,
+        content_type: "youtube",
+        is_listed: data?.metadata?.is_listed ?? true,
+        thumbnail: thumbnailUrl || null,
+        created_at: new Date().toISOString(),
+      },
+      __oldappMainDocId: target.mainDocId,
+      __oldappSubDocId: target.subDocId,
+      __oldappContentDocId: created.id,
+    };
+  }
+
   const id = makeSectionId();
   const createdAt = new Date().toISOString();
   let thumbnailUrl;
@@ -381,7 +613,7 @@ export async function createYoutubeVideo(data) {
       thumbnail: thumbnailUrl || null,
     }),
   };
-  await set(dbRef(db, `${CONTENT_ROOT}/youtube/${id}`), payload);
+  await clientFsSetYoutubeRecord(id, payload);
   return payload;
 }
 
@@ -391,11 +623,58 @@ export async function createYoutubeVideo(data) {
  * @param {Object} data
  */
 export async function updateYoutubeVideo(id, data) {
-  const db = sectionsDb();
-  const itemRef = dbRef(db, `${CONTENT_ROOT}/youtube/${id}`);
-  const snap = await get(itemRef);
-  if (!snap.exists()) throw new Error("Video not found");
-  const current = snap.val();
+  const mshBook = parseMshcatBookId(id);
+  if (mshBook) {
+    const patch = { contentType: "youtube" };
+    if (hasOwn(data, "video_url")) patch.sourceUrl = asTrimmedString(data.video_url);
+    if (hasOwn(data?.metadata || {}, "title")) patch.title = asTrimmedString(data.metadata.title);
+    if (hasOwn(data?.metadata || {}, "description")) {
+      patch.description = asTrimmedString(data.metadata.description);
+    }
+    if (hasOwn(data?.metadata || {}, "author")) patch.author = asTrimmedString(data.metadata.author);
+    if (data?.thumbnail instanceof File) {
+      patch.thumbnail = await uploadSectionThumbnail(
+        "youtube-mshcat",
+        mshBook.bookDocId,
+        data.thumbnail,
+      );
+    }
+    const wantsMove =
+      hasOwn(data?.metadata || {}, "subsection") ||
+      hasOwn(data?.metadata || {}, "secondary_subsection");
+    if (wantsMove) {
+      const target = detectMshcatContentTarget({
+        subsectionId: data?.metadata?.subsection,
+        secondarySubsectionId: data?.metadata?.secondary_subsection,
+      });
+      if (target?.docId) patch.categoryDocId = target.docId;
+    }
+    await updateMshcatBook(mshBook.bookDocId, patch);
+    return { id };
+  }
+
+  const oldContent = parseOldAppContentId(id);
+  if (oldContent) {
+    const patch = { contentType: "youtube" };
+    if (hasOwn(data, "video_url")) patch.sourceUrl = asTrimmedString(data.video_url);
+    if (hasOwn(data?.metadata || {}, "title")) patch.title = asTrimmedString(data.metadata.title);
+    if (hasOwn(data?.metadata || {}, "description")) {
+      patch.description = asTrimmedString(data.metadata.description);
+    }
+    if (hasOwn(data?.metadata || {}, "author")) patch.author = asTrimmedString(data.metadata.author);
+    if (data?.thumbnail instanceof File) {
+      patch.thumbnail = await uploadSectionThumbnail(
+        "youtube-oldapp",
+        oldContent.lessonDocId,
+        data.thumbnail,
+      );
+    }
+    await updateOldAppLesson(oldContent.lessonDocId, patch);
+    return { id };
+  }
+
+  const current = await clientFsGetYoutubeRecord(id);
+  if (!current) throw new Error("Video not found");
   const nextMetadata = mergeContentMetadataPreservingHierarchy(
     current.metadata || {},
     data?.metadata || {},
@@ -421,7 +700,7 @@ export async function updateYoutubeVideo(id, data) {
       current,
     }),
   };
-  await set(itemRef, next);
+  await clientFsSetYoutubeRecord(id, next);
   return next;
 }
 
@@ -430,12 +709,20 @@ export async function updateYoutubeVideo(id, data) {
  * @param {number} id
  */
 export async function removeYoutubeVideo(id) {
-  const db = sectionsDb();
-  const itemRef = dbRef(db, `${CONTENT_ROOT}/youtube/${id}`);
-  const snap = await get(itemRef);
-  if (!snap.exists()) return true;
-  await deleteStorageUrlsByValue(collectAssetUrls(snap.val() || {}));
-  await remove(itemRef);
+  const mshBook = parseMshcatBookId(id);
+  if (mshBook) {
+    await deleteMshcatBook(mshBook.bookDocId);
+    return true;
+  }
+  const oldContent = parseOldAppContentId(id);
+  if (oldContent) {
+    await deleteOldAppLesson(oldContent.lessonDocId);
+    return true;
+  }
+  const current = await clientFsGetYoutubeRecord(id);
+  if (!current) return true;
+  await deleteStorageUrlsByValue(collectAssetUrls(current || {}));
+  await clientFsDeleteYoutubeRecord(id);
   return true;
 }
 
@@ -443,10 +730,10 @@ export async function removeYoutubeVideo(id) {
 
 const SECTIONS_ROOT = "sections_unified";
 
-function sectionsDb() {
-  const db = getFirebaseDatabase();
-  if (!db) throw new Error("Firebase Database غير مهيأ.");
-  return db;
+async function readLevel(level) {
+  return clientFsReadSectionsLevel(
+    /** @type {'main'|'sub'|'secondary'} */ (level),
+  );
 }
 
 function sectionsStorage() {
@@ -460,29 +747,46 @@ function makeSectionId() {
 }
 
 /**
- * رفع صورة مصغّرة لقسم أو محتوى إلى دلو Nebras.
+ * استنتاج وجهة الرفع (target) من قيمة `level` — الطريقة الأكثر ثباتًا
+ * للتوجيه الذكيّ دون أيّ تعديل في مواقع الاستدعاء.
  *
- * @param {string} level
+ * تقاليد التسمية الحاليّة في هذا الملفّ (ثابتة تاريخيًّا):
+ *   - "main" / "sub" / "secondary" / "youtube"              → Nebras
+ *   - "main-mshcat" / "sub-mshcat" / "secondary-mshcat" /
+ *     "youtube-mshcat"                                       → Mshcat
+ *   - "sub-oldapp" / "secondary-oldapp" / "youtube-oldapp"   → OldApp
+ */
+function resolveThumbnailTarget(level) {
+  const s = String(level || "").toLowerCase();
+  if (s.endsWith("-mshcat")) return "mshcat";
+  if (s.endsWith("-oldapp")) return "oldapp";
+  return "nebras";
+}
+
+/**
+ * الموجّه الذكيّ لرفع صورة مصغّرة لقسم/محتوى.
+ * - Nebras  → smartUpload يضع الملفّ في دلو Nebras مباشرةً (Web SDK).
+ * - Mshcat  → smartUpload يمرّر FormData إلى `/api/mshcat/uploads`.
+ * - OldApp  → smartUpload يمرّر FormData إلى `/api/oldapp/uploads`.
+ *
+ * أخطاء smartUpload تحمل `.status` و `.message` عربي جاهز للـ UI
+ * ونتركها تُمرَّر إلى الأعلى كما هي (شفافيّة الأخطاء).
+ *
+ * @param {string} level       — وصفة تُستخدم كمجلد داخل الدلو (مع target suffix).
  * @param {string|number} sectionId
  * @param {File} file
- * @returns {Promise<string|undefined>}
+ * @returns {Promise<string|undefined>} — download URL أو undefined إن لا ملف.
  */
 async function uploadSectionThumbnail(level, sectionId, file) {
   if (!(file instanceof File)) return undefined;
+  const target = resolveThumbnailTarget(level);
   const folder = `sections/${level}/${sectionId}`;
   const filename = `${Date.now()}_${String(file.name || "thumb").replace(
     /[^\w.\-]/g,
     "_",
   )}`;
-  const result = await smartUpload({ file, target: "nebras", folder, filename });
+  const result = await smartUpload({ file, target, folder, filename });
   return result?.url || undefined;
-}
-
-async function readLevel(level) {
-  const db = sectionsDb();
-  const snap = await get(dbRef(db, `${SECTIONS_ROOT}/${level}`));
-  if (!snap.exists()) return [];
-  return Object.values(snap.val() || {});
 }
 
 function paginate(list, page = 1, pageSize = 10) {
@@ -497,10 +801,49 @@ function paginate(list, page = 1, pageSize = 10) {
   };
 }
 
-/** مقارنة معرّفات متسامحة مع String/Number. */
+/** مقارنة معرّفات متسامحة مع String/Number (OldApp يستعمل docId نصّي). */
 function sameSectionId(a, b) {
   if (a === undefined || a === null || b === undefined || b === null) return false;
   return String(a) === String(b);
+}
+
+function parseOldAppContentId(id) {
+  const s = String(id || "");
+  if (!s.startsWith("oldapp:lesson:")) return null;
+  const parts = s.split(":");
+  return parts[2] ? { lessonDocId: parts[2] } : null;
+}
+
+/**
+ * يُحدّد القسم الهدف (Mshcat category docId) عند إنشاء/تحديث محتوى.
+ * يفحص `secondary_subsection` ثمّ `subsection` وفق الأولويّة: ثانوي (sec)
+ * أفضل من فرعي (sub) أفضل من رئيسي (main). يعيد `{ docId, level }` أو null.
+ */
+function detectMshcatContentTarget({ subsectionId, secondarySubsectionId }) {
+  const candidates = [secondarySubsectionId, subsectionId];
+  for (const c of candidates) {
+    if (!isMshcatId(c)) continue;
+    const parsed = parseMshcatId(c);
+    if (!parsed) continue;
+    // نقبل أيّ مستوى؛ لكن نفضّل sec > sub > main.
+    if (parsed.level === "sec") return { docId: parsed.docId, level: "sec" };
+  }
+  for (const c of candidates) {
+    if (!isMshcatId(c)) continue;
+    const parsed = parseMshcatId(c);
+    if (parsed?.level === "sub") return { docId: parsed.docId, level: "sub" };
+  }
+  for (const c of candidates) {
+    if (!isMshcatId(c)) continue;
+    const parsed = parseMshcatId(c);
+    if (parsed?.level === "main") return { docId: parsed.docId, level: "main" };
+  }
+  return null;
+}
+
+function parseMshcatBookId(id) {
+  const parsed = parseMshcatId(id);
+  return parsed?.level === "book" ? { bookDocId: parsed.docId } : null;
 }
 
 function buildSearchAction(kind, id, query = "") {
@@ -686,21 +1029,69 @@ function applySectionFilters(
 
 /**
  * List the moderator's own main sections.
+ *
+ * **دمج Mshcat**: إن كان المشروع الثانوي مُهيَّأً نُدرج أقسامه الرئيسيّة
+ * (mshcat:main:*) بجانب أقسام Nebras — تطابق 1:1 دون هبوط رتبة.
  * @param {Object} params - { search?, page? }
  */
 export async function listMyMainSections({ search = "", page = 1, requireSearch = false } = {}) {
   if (shouldSkipListing({ requireSearch, search })) return emptyPage();
   const all = await readLevel("main");
-  const filtered = applySectionFilters(all, { search });
+  let merged = all;
+  if (isMshcatConfigured()) {
+    try {
+      const mains = await listMshcatMainSections();
+      merged = [...all, ...mains.map(adaptMshcatMain)];
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn("[moderator] Mshcat main merge failed:", err);
+      }
+    }
+  }
+  const filtered = applySectionFilters(merged, { search });
   return paginate(filtered, page);
 }
 
 /**
  * Create a main section (multipart/form-data).
- * @param {Object} data - { name, order_index?, thumbnail? (File) }
+ *
+ * **توجيه المصدر**: إذا حمل `data.source` قيمة `'mshcat'` نُنشئ الفئة
+ * مباشرةً في قاعدة بيانات Mshcat (root category) بدل RTDB. خيار المصدر
+ * وحيد في شاشة إنشاء القسم الرئيسيّ فقط — كلّ ما يتولّد بعدها من
+ * فرعي/ثانوي/محتوى يرث المصدر تلقائيًّا بناءً على الـ ID.
+ * @param {Object} data - { name, order_index?, thumbnail? (File), source? }
  */
 export async function createMainSection(data) {
-  const db = sectionsDb();
+  const source = String(data?.source || "nebras").trim().toLowerCase();
+  if (source === "mshcat") {
+    if (!isMshcatConfigured()) {
+      throw new Error("Mshcat Firebase غير مُهيّأ — أضف متغيّرات VITE_MSHCAT_* في .env");
+    }
+    let thumbUrl = null;
+    if (data?.thumbnail instanceof File) {
+      thumbUrl = await uploadSectionThumbnail(
+        "main-mshcat",
+        Date.now(),
+        data.thumbnail,
+      );
+    }
+    const created = await createMshcatCategory({
+      name: data?.name,
+      thumbnailUrl: thumbUrl,
+      parentDocId: "",
+    });
+    return {
+      id: `mshcat:main:${created.id}`,
+      name: String(data?.name || "").trim(),
+      order_index: Number(data?.order_index || 0),
+      is_listed: data?.is_listed ?? true,
+      thumbnail: thumbUrl || null,
+      created_at: new Date().toISOString(),
+      __mshcatDocId: created.id,
+      __mshcatLevel: "main",
+    };
+  }
+
   const id = makeSectionId();
   const thumbUrl = await uploadSectionThumbnail("main", id, data?.thumbnail);
   const payload = {
@@ -711,7 +1102,7 @@ export async function createMainSection(data) {
     thumbnail: thumbUrl || null,
     created_at: new Date().toISOString(),
   };
-  await set(dbRef(db, `${SECTIONS_ROOT}/main/${id}`), payload);
+  await clientFsSetSectionRecord("main", id, payload);
   return payload;
 }
 
@@ -721,11 +1112,27 @@ export async function createMainSection(data) {
  * @param {Object} data - { name?, order_index?, thumbnail? (File) }
  */
 export async function updateMainSection(id, data) {
-  const db = sectionsDb();
-  const currentRef = dbRef(db, `${SECTIONS_ROOT}/main/${id}`);
-  const snap = await get(currentRef);
-  if (!snap.exists()) throw new Error("Section not found");
-  const current = snap.val();
+  if (isMshcatId(id)) {
+    const parsed = parseMshcatId(id);
+    if (parsed?.level === "main") {
+      let thumbUrl;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "main-mshcat",
+          parsed.docId,
+          data.thumbnail,
+        );
+      }
+      await updateMshcatCategory(parsed.docId, {
+        name: data?.name,
+        ...(thumbUrl !== undefined ? { thumbnailUrl: thumbUrl } : {}),
+      });
+      return { id, name: data?.name, thumbnail: thumbUrl || null };
+    }
+  }
+
+  const current = await clientFsGetSectionRecord("main", id);
+  if (!current) throw new Error("Section not found");
   const patch = {
     ...(data?.name !== undefined ? { name: String(data.name).trim() } : {}),
     ...(data?.description !== undefined
@@ -742,7 +1149,7 @@ export async function updateMainSection(id, data) {
     patch.thumbnail = await uploadSectionThumbnail("main", id, data.thumbnail);
   }
   const next = { ...current, ...patch };
-  await set(currentRef, next);
+  await clientFsSetSectionRecord("main", id, next);
   return next;
 }
 
@@ -751,19 +1158,19 @@ export async function updateMainSection(id, data) {
  * @param {number} id
  */
 export async function removeMainSection(id) {
-  const db = sectionsDb();
-  const mainSnap = await get(dbRef(db, `${SECTIONS_ROOT}/main/${id}`));
-  const mainRow = mainSnap.exists() ? mainSnap.val() || {} : null;
+  if (isMshcatId(id)) {
+    const parsed = parseMshcatId(id);
+    if (parsed?.level === "main") {
+      await deleteMshcatCategory(parsed.docId);
+      return true;
+    }
+  }
+
+  const mainRow = await clientFsGetSectionRecord("main", id);
   const subItems = await readLevel("sub");
   const secItems = await readLevel("secondary");
-  const filePrimary = await get(dbRef(db, `${UPLOADS_ROOT}`));
-  const fileFallback = await get(dbRef(db, `${UPLOADS_FALLBACK_ROOT}`));
-  const youtubeSnap = await get(dbRef(db, `${CONTENT_ROOT}/youtube`));
-  const fileRows = [
-    ...(filePrimary.exists() ? Object.values(filePrimary.val() || {}) : []),
-    ...(fileFallback.exists() ? Object.values(fileFallback.val() || {}) : []),
-  ];
-  const videos = youtubeSnap.exists() ? Object.values(youtubeSnap.val() || {}) : [];
+  const fileRows = await clientFsListFileRowsMerged();
+  const videos = await clientFsListYoutubeRecords();
   const subRows = subItems.filter((s) => sameSectionId(s.main_section, id));
   const subIds = subRows.map((s) => s.id);
   const secondaryRows = secItems.filter((sec) =>
@@ -785,28 +1192,25 @@ export async function removeMainSection(id) {
     return subMatch || secMatch;
   });
   await deleteStorageUrlsByValue([
-    ...collectAssetUrls(mainRow),
+    ...collectAssetUrls(mainRow || {}),
     ...subRows.flatMap(collectAssetUrls),
     ...secondaryRows.flatMap(collectAssetUrls),
     ...fileRowsToDelete.flatMap(collectAssetUrls),
     ...videosToDelete.flatMap(collectAssetUrls),
   ]);
   await Promise.all(
-    fileRowsToDelete.flatMap((row) => [
-      remove(dbRef(db, `${UPLOADS_ROOT}/${row.fileId || row.id}`)),
-      remove(dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${row.fileId || row.id}`)),
-    ]),
+    fileRowsToDelete.map((row) => clientFsDeleteFileMirrorBoth(row.fileId || row.id)),
   );
   await Promise.all(
-    videosToDelete.map((row) => remove(dbRef(db, `${CONTENT_ROOT}/youtube/${row.id}`))),
+    videosToDelete.map((row) => clientFsDeleteYoutubeRecord(row.id)),
   );
   for (const sec of secondaryRows) {
-    await remove(dbRef(db, `${SECTIONS_ROOT}/secondary/${sec.id}`));
+    await clientFsDeleteSectionRecord("secondary", sec.id);
   }
   for (const sub of subRows) {
-    await remove(dbRef(db, `${SECTIONS_ROOT}/sub/${sub.id}`));
+    await clientFsDeleteSectionRecord("sub", sub.id);
   }
-  await remove(dbRef(db, `${SECTIONS_ROOT}/main/${id}`));
+  await clientFsDeleteSectionRecord("main", id);
   return true;
 }
 
@@ -814,6 +1218,10 @@ export async function removeMainSection(id) {
 
 /**
  * List the moderator's own sub sections, optionally filtered by main_section.
+ *
+ * توجيه شفّاف: إن كانت `main_section` هي القسم المضيف لـ OldApp، تُضاف
+ * قائمة أقسام OldApp الرئيسيّة الحقيقيّة كأقسام فرعيّة افتراضيّة مع
+ * الحفاظ على شكل البيانات المتوقّع من الواجهة.
  * @param {Object} params - { main_section?, search?, page? }
  */
 export async function listMySubSections({
@@ -823,17 +1231,126 @@ export async function listMySubSections({
   requireSearch = false,
 } = {}) {
   if (shouldSkipListing({ requireSearch, search })) return emptyPage();
+  // حالة Mshcat: إن كان الأب المحدّد قسمًا رئيسيًّا من Mshcat نعرض أقسامه
+  // الفرعيّة حصرًا من مشروع Mshcat (لا خلط مع Nebras).
+  if (isMshcatId(main_section)) {
+    const parsed = parseMshcatId(main_section);
+    if (parsed?.level === "main") {
+      try {
+        const subs = await listMshcatSubSections(parsed.docId);
+        const adapted = subs.map(adaptMshcatSub);
+        const filtered = applySectionFilters(adapted, { search, main_section });
+        return paginate(filtered, page);
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn("[moderator] Mshcat sub list failed:", err);
+        }
+        return paginate([], page);
+      }
+    }
+  }
+
   const all = await readLevel("sub");
-  const filtered = applySectionFilters(all, { search, main_section });
+  let merged = all;
+
+  // لا يوجد فلتر → دمج أقسام Mshcat الفرعيّة كافّة (للإدارة/التعديل/الحذف).
+  const noMainFilter =
+    main_section === undefined || main_section === "" || main_section === null;
+  if (noMainFilter && isMshcatConfigured()) {
+    try {
+      const { allSubs } = await classifyMshcatCategories();
+      merged = [...merged, ...allSubs.map(adaptMshcatSub)];
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn("[moderator] Mshcat subs merge failed:", err);
+      }
+    }
+  }
+
+  if (isOldAppConfigured()) {
+    const hostId = await getHostMainSectionId();
+    if (hostId != null) {
+      const filteringByHost =
+        main_section !== undefined &&
+        main_section !== "" &&
+        main_section !== null &&
+        sameSectionId(main_section, hostId);
+      const noParentFilter =
+        main_section === undefined ||
+        main_section === "" ||
+        main_section === null;
+
+      if (filteringByHost || noParentFilter) {
+        try {
+          const oldMains = await listOldAppMainSections();
+          const adapted = oldMains.map((m) => adaptOldAppMainAsSub(m, hostId));
+          // نمرّر الأقسام الحقيقيّة من OldApp أوّلًا، ثمّ الأقسام المحلّية.
+          merged = [...adapted, ...all];
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            console.warn("[moderator] OldApp main list merge failed:", err);
+          }
+        }
+      }
+    }
+  }
+
+  const filtered = applySectionFilters(merged, { search, main_section });
   return paginate(filtered, page);
 }
 
 /**
- * Create a sub section.
+ * Create a sub section. يوجَّه تلقائيًّا إلى OldApp Firestore إن كان
+ * الأب هو القسم المضيف — بدون أيّ مربّعات ربط في الواجهة.
  * @param {Object} data - { name, main_section, thumbnail? (File) }
  */
 export async function createSubSection(data) {
-  const db = sectionsDb();
+  const parent = data?.main_section;
+
+  // Mshcat: الأب قسم رئيسيّ من Mshcat → ننشئ فئة فرعيّة في نفس المجموعة
+  // `categories` مع تعيين حقل الأبوّة على الـ docId الحقيقي.
+  if (isMshcatId(parent)) {
+    const parsed = parseMshcatId(parent);
+    if (parsed?.level === "main") {
+      let thumbUrl = null;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "sub-mshcat",
+          Date.now(),
+          data.thumbnail,
+        );
+      }
+      const created = await createMshcatCategory({
+        name: data?.name,
+        thumbnailUrl: thumbUrl,
+        parentDocId: parsed.docId,
+      });
+      return {
+        id: `mshcat:sub:${created.id}`,
+        name: String(data?.name || "").trim(),
+        main_section: parent,
+        is_listed: true,
+        thumbnail: thumbUrl || null,
+        created_at: new Date().toISOString(),
+        __mshcatDocId: created.id,
+        __mshcatLevel: "sub",
+      };
+    }
+  }
+
+  if (isOldAppConfigured() && parent !== undefined && parent !== null && parent !== "") {
+    const hostId = await getHostMainSectionId();
+    if (hostId != null && sameSectionId(parent, hostId)) {
+      const thumbUrl = data?.thumbnail instanceof File
+        ? await uploadSectionThumbnail("sub-oldapp", Date.now(), data.thumbnail)
+        : null;
+      return createOldAppMainSection({
+        name: data?.name,
+        thumbnailUrl: thumbUrl,
+      });
+    }
+  }
+
   const id = makeSectionId();
   const thumbUrl = await uploadSectionThumbnail("sub", id, data?.thumbnail);
   const payload = {
@@ -844,21 +1361,56 @@ export async function createSubSection(data) {
     thumbnail: thumbUrl || null,
     created_at: new Date().toISOString(),
   };
-  await set(dbRef(db, `${SECTIONS_ROOT}/sub/${id}`), payload);
+  await clientFsSetSectionRecord("sub", id, payload);
   return payload;
 }
 
 /**
- * Update a sub section.
+ * Update a sub section. يوجَّه تلقائيًّا إلى OldApp إن كان معرّفه افتراضيًّا.
  * @param {number|string} id
  * @param {Object} data
  */
 export async function updateSubSection(id, data) {
-  const db = sectionsDb();
-  const currentRef = dbRef(db, `${SECTIONS_ROOT}/sub/${id}`);
-  const snap = await get(currentRef);
-  if (!snap.exists()) throw new Error("Section not found");
-  const current = snap.val();
+  if (isMshcatId(id)) {
+    const parsed = parseMshcatId(id);
+    if (parsed?.level === "sub") {
+      let thumbUrl;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "sub-mshcat",
+          parsed.docId,
+          data.thumbnail,
+        );
+      }
+      await updateMshcatCategory(parsed.docId, {
+        name: data?.name,
+        ...(thumbUrl !== undefined ? { thumbnailUrl: thumbUrl } : {}),
+      });
+      return { id, name: data?.name, thumbnail: thumbUrl || null };
+    }
+  }
+
+  if (isOldAppId(id)) {
+    const parsed = parseOldAppId(id);
+    if (parsed?.level === "main") {
+      let thumbUrl;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "sub-oldapp",
+          parsed.mainDocId,
+          data.thumbnail,
+        );
+      }
+      await updateOldAppMainSection(parsed.mainDocId, {
+        name: data?.name,
+        ...(thumbUrl !== undefined ? { thumbnailUrl: thumbUrl } : {}),
+      });
+      return { id, name: data?.name, thumbnail: thumbUrl || null };
+    }
+  }
+
+  const current = await clientFsGetSectionRecord("sub", id);
+  if (!current) throw new Error("Section not found");
   const patch = {
     ...(data?.name !== undefined ? { name: String(data.name).trim() } : {}),
     ...(data?.description !== undefined
@@ -875,29 +1427,35 @@ export async function updateSubSection(id, data) {
     patch.thumbnail = await uploadSectionThumbnail("sub", id, data.thumbnail);
   }
   const next = { ...current, ...patch };
-  await set(currentRef, next);
+  await clientFsSetSectionRecord("sub", id, next);
   return next;
 }
 
 /**
- * Delete a sub section.
+ * Delete a sub section (يوجَّه إلى OldApp إن كان المعرّف افتراضيًّا).
  * @param {number|string} id
  */
 export async function removeSubSection(id) {
-  const db = sectionsDb();
-  const subSnap = await get(dbRef(db, `${SECTIONS_ROOT}/sub/${id}`));
-  const subRow = subSnap.exists() ? subSnap.val() || {} : null;
+  if (isMshcatId(id)) {
+    const parsed = parseMshcatId(id);
+    if (parsed?.level === "sub") {
+      await deleteMshcatCategory(parsed.docId);
+      return true;
+    }
+  }
+  if (isOldAppId(id)) {
+    const parsed = parseOldAppId(id);
+    if (parsed?.level === "main") {
+      await deleteOldAppMainSection(parsed.mainDocId, { cascade: true });
+      return true;
+    }
+  }
+  const subRow = await clientFsGetSectionRecord("sub", id);
   const secItems = await readLevel("secondary");
   const secondaryRows = secItems.filter((sec) => sameSectionId(sec.sub_section, id));
   const secondaryIds = secondaryRows.map((sec) => sec.id);
-  const filePrimary = await get(dbRef(db, `${UPLOADS_ROOT}`));
-  const fileFallback = await get(dbRef(db, `${UPLOADS_FALLBACK_ROOT}`));
-  const youtubeSnap = await get(dbRef(db, `${CONTENT_ROOT}/youtube`));
-  const fileRows = [
-    ...(filePrimary.exists() ? Object.values(filePrimary.val() || {}) : []),
-    ...(fileFallback.exists() ? Object.values(fileFallback.val() || {}) : []),
-  ];
-  const videos = youtubeSnap.exists() ? Object.values(youtubeSnap.val() || {}) : [];
+  const fileRows = await clientFsListFileRowsMerged();
+  const videos = await clientFsListYoutubeRecords();
   const fileRowsToDelete = fileRows.filter((row) => {
     const subMatch = sameSectionId(row?.metadata?.subsection, id);
     const secMatch = secondaryIds.some((secId) =>
@@ -913,31 +1471,30 @@ export async function removeSubSection(id) {
     return subMatch || secMatch;
   });
   await deleteStorageUrlsByValue([
-    ...collectAssetUrls(subRow),
+    ...collectAssetUrls(subRow || {}),
     ...secondaryRows.flatMap(collectAssetUrls),
     ...fileRowsToDelete.flatMap(collectAssetUrls),
     ...videosToDelete.flatMap(collectAssetUrls),
   ]);
   await Promise.all(
-    fileRowsToDelete.flatMap((row) => [
-      remove(dbRef(db, `${UPLOADS_ROOT}/${row.fileId || row.id}`)),
-      remove(dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${row.fileId || row.id}`)),
-    ]),
+    fileRowsToDelete.map((row) => clientFsDeleteFileMirrorBoth(row.fileId || row.id)),
   );
   await Promise.all(
-    videosToDelete.map((row) => remove(dbRef(db, `${CONTENT_ROOT}/youtube/${row.id}`))),
+    videosToDelete.map((row) => clientFsDeleteYoutubeRecord(row.id)),
   );
   for (const sec of secondaryRows) {
-    await remove(dbRef(db, `${SECTIONS_ROOT}/secondary/${sec.id}`));
+    await clientFsDeleteSectionRecord("secondary", sec.id);
   }
-  await remove(dbRef(db, `${SECTIONS_ROOT}/sub/${id}`));
+  await clientFsDeleteSectionRecord("sub", id);
   return true;
 }
 
 // ─── Secondary Sub Sections ────────────────────────────
 
 /**
- * List secondary sub sections.
+ * List secondary sub sections. إن كان `sub_section` معرّفًا افتراضيًّا
+ * (`oldapp:main:<docId>`) نُرجع الأقسام الفرعيّة الحقيقيّة من OldApp
+ * بعد تكييف شكلها.
  * @param {Object} params - { sub_section?, search?, page? }
  */
 export async function listMySecondarySections({
@@ -947,16 +1504,166 @@ export async function listMySecondarySections({
   requireSearch = false,
 } = {}) {
   if (shouldSkipListing({ requireSearch, search })) return emptyPage();
+  // Mshcat: الأب قسم فرعي من Mshcat (mshcat:sub:*) → ثانويات الأطفال مباشرة.
+  if (isMshcatId(sub_section)) {
+    const parsed = parseMshcatId(sub_section);
+    if (parsed?.level === "sub") {
+      try {
+        const secs = await listMshcatSecondarySections(parsed.docId);
+        const adapted = secs.map(adaptMshcatSecondary);
+        const filtered = applySectionFilters(adapted, { search, sub_section });
+        return paginate(filtered, page);
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn("[moderator] Mshcat secondary list failed:", err);
+        }
+        return paginate([], page);
+      }
+    }
+  }
+
+  // حالة 1: استعراض ثانويات Main قديم محدد (oldapp:main:<id>)
+  if (isOldAppId(sub_section)) {
+    const parsed = parseOldAppId(sub_section);
+    if (parsed?.level === "main") {
+      try {
+        const subs = await listOldAppSubSections(parsed.mainDocId);
+        const adapted = subs.map((s) => adaptOldAppSubAsSecondary(s, parsed.mainDocId));
+        const filtered = applySectionFilters(adapted, { search, sub_section });
+        return paginate(filtered, page);
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn("[moderator] OldApp sub list failed:", err);
+        }
+        return paginate([], page);
+      }
+    }
+  }
+
+  // حالة 2: لا يوجد فلتر sub_section => ندمج ثانويات OldApp/Mshcat تلقائياً
+  // لتظهر في نفس قائمة الإدارة (تعديل/حذف) مثل الأقسام الفرعية.
+  const noSubFilter =
+    sub_section === undefined || sub_section === "" || sub_section === null;
+  if (noSubFilter && isMshcatConfigured()) {
+    const all = await readLevel("secondary");
+    let merged = all;
+    try {
+      const { allSecondaries } = await classifyMshcatCategories();
+      merged = [...allSecondaries.map(adaptMshcatSecondary), ...merged];
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn("[moderator] Mshcat secondary merge failed:", err);
+      }
+    }
+    if (isOldAppConfigured()) {
+      try {
+        const hostId = await getHostMainSectionId();
+        if (hostId != null) {
+          const oldMains = await listOldAppMainSections();
+          const oldSecondaries = [];
+          for (const m of oldMains) {
+            const oldSubs = await listOldAppSubSections(m.id);
+            oldSecondaries.push(
+              ...oldSubs.map((s) => adaptOldAppSubAsSecondary(s, m.id)),
+            );
+          }
+          merged = [...oldSecondaries, ...merged];
+        }
+      } catch (err) {
+        if (import.meta.env.DEV) {
+          console.warn("[moderator] OldApp secondary merge failed:", err);
+        }
+      }
+    }
+    const filtered = applySectionFilters(merged, { search, sub_section });
+    return paginate(filtered, page);
+  }
+  if (noSubFilter && isOldAppConfigured()) {
+    const all = await readLevel("secondary");
+    let merged = all;
+    try {
+      const hostId = await getHostMainSectionId();
+      if (hostId != null) {
+        const oldMains = await listOldAppMainSections();
+        const oldSecondaries = [];
+        for (const m of oldMains) {
+          const oldSubs = await listOldAppSubSections(m.id);
+          oldSecondaries.push(
+            ...oldSubs.map((s) => adaptOldAppSubAsSecondary(s, m.id)),
+          );
+        }
+        merged = [...oldSecondaries, ...all];
+      }
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn("[moderator] OldApp secondary merge failed:", err);
+      }
+    }
+    const filtered = applySectionFilters(merged, { search, sub_section });
+    return paginate(filtered, page);
+  }
+
+  // حالة 3: مسار RTDB العادي
   const all = await readLevel("secondary");
   const filtered = applySectionFilters(all, { search, sub_section });
   return paginate(filtered, page);
 }
 
 /**
- * Create a secondary sub section.
+ * Create a secondary sub section. إن كان الأب افتراضيًّا (oldapp:main:*)
+ * نُنشئ قسمًا فرعيًّا حقيقيًّا في OldApp Firestore مباشرةً.
  */
 export async function createSecondarySection(data) {
-  const db = sectionsDb();
+  const parent = data?.sub_section;
+
+  // Mshcat: الأب قسم فرعيّ من Mshcat → ننشئ فئة من المستوى الثالث.
+  if (isMshcatId(parent)) {
+    const parsed = parseMshcatId(parent);
+    if (parsed?.level === "sub") {
+      let thumbUrl = null;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "secondary-mshcat",
+          Date.now(),
+          data.thumbnail,
+        );
+      }
+      const created = await createMshcatCategory({
+        name: data?.name,
+        thumbnailUrl: thumbUrl,
+        parentDocId: parsed.docId,
+      });
+      return {
+        id: `mshcat:sec:${created.id}`,
+        name: String(data?.name || "").trim(),
+        sub_section: parent,
+        is_listed: true,
+        thumbnail: thumbUrl || null,
+        created_at: new Date().toISOString(),
+        __mshcatDocId: created.id,
+        __mshcatLevel: "sec",
+      };
+    }
+  }
+
+  if (isOldAppId(parent)) {
+    const parsed = parseOldAppId(parent);
+    if (parsed?.level === "main") {
+      let thumbUrl = null;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "secondary-oldapp",
+          Date.now(),
+          data.thumbnail,
+        );
+      }
+      return createOldAppSubSection(parsed.mainDocId, {
+        name: data?.name,
+        thumbnailUrl: thumbUrl,
+      });
+    }
+  }
+
   const id = makeSectionId();
   const thumbUrl = await uploadSectionThumbnail(
     "secondary",
@@ -971,16 +1678,51 @@ export async function createSecondarySection(data) {
     thumbnail: thumbUrl || null,
     created_at: new Date().toISOString(),
   };
-  await set(dbRef(db, `${SECTIONS_ROOT}/secondary/${id}`), payload);
+  await clientFsSetSectionRecord("secondary", id, payload);
   return payload;
 }
 
 export async function updateSecondarySection(id, data) {
-  const db = sectionsDb();
-  const currentRef = dbRef(db, `${SECTIONS_ROOT}/secondary/${id}`);
-  const snap = await get(currentRef);
-  if (!snap.exists()) throw new Error("Section not found");
-  const current = snap.val();
+  if (isMshcatId(id)) {
+    const parsed = parseMshcatId(id);
+    if (parsed?.level === "sec") {
+      let thumbUrl;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "secondary-mshcat",
+          parsed.docId,
+          data.thumbnail,
+        );
+      }
+      await updateMshcatCategory(parsed.docId, {
+        name: data?.name,
+        ...(thumbUrl !== undefined ? { thumbnailUrl: thumbUrl } : {}),
+      });
+      return { id, name: data?.name, thumbnail: thumbUrl || null };
+    }
+  }
+
+  if (isOldAppId(id)) {
+    const parsed = parseOldAppId(id);
+    if (parsed?.level === "sub") {
+      let thumbUrl;
+      if (data?.thumbnail instanceof File) {
+        thumbUrl = await uploadSectionThumbnail(
+          "secondary-oldapp",
+          parsed.subDocId,
+          data.thumbnail,
+        );
+      }
+      await updateOldAppSubSection(parsed.mainDocId, parsed.subDocId, {
+        name: data?.name,
+        ...(thumbUrl !== undefined ? { thumbnailUrl: thumbUrl } : {}),
+      });
+      return { id, name: data?.name, thumbnail: thumbUrl || null };
+    }
+  }
+
+  const current = await clientFsGetSectionRecord("secondary", id);
+  if (!current) throw new Error("Section not found");
   const patch = {
     ...(data?.name !== undefined ? { name: String(data.name).trim() } : {}),
     ...(data?.description !== undefined
@@ -1001,22 +1743,28 @@ export async function updateSecondarySection(id, data) {
     );
   }
   const next = { ...current, ...patch };
-  await set(currentRef, next);
+  await clientFsSetSectionRecord("secondary", id, next);
   return next;
 }
 
 export async function removeSecondarySection(id) {
-  const db = sectionsDb();
-  const secSnap = await get(dbRef(db, `${SECTIONS_ROOT}/secondary/${id}`));
-  const secRow = secSnap.exists() ? secSnap.val() || {} : null;
-  const filePrimary = await get(dbRef(db, `${UPLOADS_ROOT}`));
-  const fileFallback = await get(dbRef(db, `${UPLOADS_FALLBACK_ROOT}`));
-  const youtubeSnap = await get(dbRef(db, `${CONTENT_ROOT}/youtube`));
-  const fileRows = [
-    ...(filePrimary.exists() ? Object.values(filePrimary.val() || {}) : []),
-    ...(fileFallback.exists() ? Object.values(fileFallback.val() || {}) : []),
-  ];
-  const videos = youtubeSnap.exists() ? Object.values(youtubeSnap.val() || {}) : [];
+  if (isMshcatId(id)) {
+    const parsed = parseMshcatId(id);
+    if (parsed?.level === "sec") {
+      await deleteMshcatCategory(parsed.docId);
+      return true;
+    }
+  }
+  if (isOldAppId(id)) {
+    const parsed = parseOldAppId(id);
+    if (parsed?.level === "sub") {
+      await deleteOldAppSubSection(parsed.mainDocId, parsed.subDocId, { cascade: true });
+      return true;
+    }
+  }
+  const secRow = await clientFsGetSectionRecord("secondary", id);
+  const fileRows = await clientFsListFileRowsMerged();
+  const videos = await clientFsListYoutubeRecords();
   const fileRowsToDelete = fileRows.filter((row) =>
     sameSectionId(row?.metadata?.secondary_subsection, id),
   );
@@ -1024,20 +1772,17 @@ export async function removeSecondarySection(id) {
     sameSectionId(row?.metadata?.secondary_subsection, id),
   );
   await deleteStorageUrlsByValue([
-    ...collectAssetUrls(secRow),
+    ...collectAssetUrls(secRow || {}),
     ...fileRowsToDelete.flatMap(collectAssetUrls),
     ...videosToDelete.flatMap(collectAssetUrls),
   ]);
   await Promise.all(
-    fileRowsToDelete.flatMap((row) => [
-      remove(dbRef(db, `${UPLOADS_ROOT}/${row.fileId || row.id}`)),
-      remove(dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${row.fileId || row.id}`)),
-    ]),
+    fileRowsToDelete.map((row) => clientFsDeleteFileMirrorBoth(row.fileId || row.id)),
   );
   await Promise.all(
-    videosToDelete.map((row) => remove(dbRef(db, `${CONTENT_ROOT}/youtube/${row.id}`))),
+    videosToDelete.map((row) => clientFsDeleteYoutubeRecord(row.id)),
   );
-  await remove(dbRef(db, `${SECTIONS_ROOT}/secondary/${id}`));
+  await clientFsDeleteSectionRecord("secondary", id);
   return true;
 }
 
@@ -1068,18 +1813,80 @@ export async function listMyFiles({
     is_listed !== undefined;
   if (shouldSkipListing({ requireSearch, search, hasActiveFilter })) return emptyPage();
   resetPartialFailures();
-  const db = sectionsDb();
-  const uploadsSnap = await get(dbRef(db, UPLOADS_ROOT));
-  const uploadsFallbackSnap = await get(dbRef(db, UPLOADS_FALLBACK_ROOT));
-  const subSnap = await get(dbRef(db, `${SECTIONS_ROOT}/sub`));
-  const subMap = subSnap.exists() ? subSnap.val() || {} : {};
+  let list = await clientFsListFileRowsMerged();
+  const subMap = await clientFsReadSectionsSubMap();
   const listedFilter = metadata__is_listed ?? is_listed;
-  let list = [
-    ...(uploadsSnap.exists() ? Object.values(uploadsSnap.val() || {}) : []),
-    ...(uploadsFallbackSnap.exists()
-      ? Object.values(uploadsFallbackSnap.val() || {})
-      : []),
-  ];
+
+  if (isOldAppConfigured()) {
+    try {
+      const hostId = await getHostMainSectionId();
+      const shouldMergeOldApp =
+        main_section === undefined || main_section === "" || sameSectionId(main_section, hostId);
+      if (hostId != null && shouldMergeOldApp) {
+        const oldMains = await externalCache.get("oldapp:mains", () =>
+          listOldAppMainSections(),
+        );
+        const allLessons = await Promise.all(
+          oldMains.map(async (m) => {
+            try {
+              const oldSubs = await externalCache.get(
+                `oldapp:subs:${m.id}`,
+                () => listOldAppSubSections(m.id),
+              );
+              const batches = await Promise.all(
+                oldSubs.map((s) =>
+                  externalCache
+                    .get(`oldapp:lessons:${m.id}:${s.id}`, () =>
+                      listOldAppLessonsBySub(m.id, s.id),
+                    )
+                    .then((lessons) =>
+                      lessons.map((lesson) => ({ lesson, mainDocId: m.id, subDocId: s.id })),
+                    )
+                    .catch((err) => {
+                      recordPartialFailure(`OldApp lessons ${m.id}/${s.id}`, err);
+                      return [];
+                    }),
+                ),
+              );
+              return batches.flat();
+            } catch (err) {
+              recordPartialFailure(`OldApp subs ${m.id}`, err);
+              return [];
+            }
+          }),
+        );
+        for (const entry of allLessons.flat()) {
+          const asFile = adaptOldAppLessonAsFile(entry.lesson, {
+            mainDocId: entry.mainDocId,
+            subDocId: entry.subDocId,
+          });
+          if (String(asFile?.metadata?.content_type) !== "youtube") {
+            list.push(asFile);
+          }
+        }
+      }
+    } catch (err) {
+      recordPartialFailure("OldApp files merge", err);
+    }
+  }
+
+  // دمج ملفات Mshcat (books غير يوتيوب).
+  if (isMshcatConfigured()) {
+    try {
+      const books = await externalCache.get("mshcat:books:all", () =>
+        listAllMshcatBooks(),
+      );
+      for (const b of books) {
+        const f = adaptMshcatBookAsFile(b);
+        const t = String(f?.metadata?.content_type || "").toLowerCase();
+        const url = String(f?.file_url || "").toLowerCase();
+        const isYt = t === "youtube" || url.includes("youtube.com") || url.includes("youtu.be");
+        if (!isYt) list.push(f);
+      }
+    } catch (err) {
+      recordPartialFailure("Mshcat files merge", err);
+    }
+  }
 
   list = list.map((item) => {
     const createdAt =
@@ -1097,7 +1904,20 @@ export async function listMyFiles({
         ...(item.metadata || {}),
         created_at: createdAt,
       },
+      ...(item.__mshcatBookDocId ? { __mshcatBookDocId: item.__mshcatBookDocId } : {}),
+      ...(item.__mshcatCategoryDocId ? { __mshcatCategoryDocId: item.__mshcatCategoryDocId } : {}),
+      ...(item.__oldappContentDocId ? { __oldappContentDocId: item.__oldappContentDocId } : {}),
+      ...(item.__oldappMainDocId ? { __oldappMainDocId: item.__oldappMainDocId } : {}),
+      ...(item.__oldappSubDocId ? { __oldappSubDocId: item.__oldappSubDocId } : {}),
     };
+  });
+
+  // ملفات Shadow الناتجة عن رفع محتوى OldApp تُخفى من القائمة لأن العنصر
+  // الحقيقي يُدار من Firestore عبر oldapp:lesson:*.
+  list = list.filter((item) => {
+    const sub = String(item?.metadata?.subsection || "");
+    const sec = String(item?.metadata?.secondary_subsection || "");
+    return !(sub.startsWith("oldapp:main:") && sec.startsWith("oldapp:sub:"));
   });
 
   const fileTokens = tokenize(search);
@@ -1125,7 +1945,10 @@ export async function listMyFiles({
     list = list.filter((item) => {
       const subId = item?.metadata?.subsection;
       const sub = subMap[String(subId)];
-      return sameSectionId(sub?.main_section, main_section);
+      return (
+        sameSectionId(sub?.main_section, main_section) ||
+        sameSectionId(item?.__oldappMainDocId, parseOldAppId(subId)?.mainDocId)
+      );
     });
   }
   if (content_type) {
@@ -1215,17 +2038,167 @@ export async function completeFileUpload(fileId) {
   return res.json();
 }
 
+/**
+ * يحوّل سجل رفع Firebase (fileId) إلى درس حقيقي في OldApp lessons
+ * عند اختيار شجرة OldApp في شاشة رفع الملفات.
+ */
+export async function mirrorUploadedFileToOldAppLesson({
+  fileId,
+  subsectionId,
+  secondarySubsectionId,
+  fallbackMetadata = {},
+} = {}) {
+  if (!fileId) throw new Error("fileId مطلوب.");
+  const parsedSec = isOldAppId(secondarySubsectionId)
+    ? parseOldAppId(secondarySubsectionId)
+    : null;
+  const parsedSub = isOldAppId(subsectionId) ? parseOldAppId(subsectionId) : null;
+  const target =
+    parsedSec?.level === "sub"
+      ? parsedSec
+      : parsedSub?.level === "sub"
+        ? parsedSub
+        : null;
+  if (!target) return null;
+
+  const row = await clientFsGetFileRow(fileId);
+  if (!row || Object.keys(row).length === 0) {
+    throw new Error("Uploaded file record not found.");
+  }
+  const metadata = { ...(row.metadata || {}), ...(fallbackMetadata || {}) };
+  const sourceUrl =
+    row.downloadUrl || row.file_url || row.sourceUrl || metadata.file_url || "";
+
+  const created = await createOldAppLesson({
+    mainDocId: target.mainDocId,
+    subDocId: target.subDocId,
+    title: metadata.title || row.filename || fileId,
+    description: metadata.description || "",
+    author: metadata.author || "",
+    contentType: metadata.content_type || "document",
+    sourceUrl,
+    thumbnail: metadata.thumbnail || null,
+  });
+  return { id: `oldapp:lesson:${created.id}` };
+}
+
+/**
+ * يحوّل سجل رفع Firebase (fileId) إلى كتاب حقيقي في Mshcat `books`
+ * عند اختيار شجرة Mshcat في شاشة رفع الملفات.
+ */
+export async function mirrorUploadedFileToMshcatBook({
+  fileId,
+  subsectionId,
+  secondarySubsectionId,
+  fallbackMetadata = {},
+} = {}) {
+  if (!fileId) throw new Error("fileId مطلوب.");
+  const target = detectMshcatContentTarget({
+    subsectionId,
+    secondarySubsectionId,
+  });
+  if (!target) return null;
+
+  const row = await clientFsGetFileRow(fileId);
+  if (!row || Object.keys(row).length === 0) {
+    throw new Error("Uploaded file record not found.");
+  }
+  const metadata = { ...(row.metadata || {}), ...(fallbackMetadata || {}) };
+  const sourceUrl =
+    row.downloadUrl || row.file_url || row.sourceUrl || metadata.file_url || "";
+
+  const created = await createMshcatBook({
+    categoryDocId: target.docId,
+    title: metadata.title || row.filename || fileId,
+    description: metadata.description || "",
+    author: metadata.author || "",
+    contentType: metadata.content_type || "document",
+    sourceUrl,
+    thumbnail: metadata.thumbnail || null,
+  });
+  return { id: `mshcat:book:${created.id}` };
+}
+
 /** Update file metadata (PATCH). */
 export async function updateFile(fileId, data) {
-  const db = sectionsDb();
-  const primaryRef = dbRef(db, `${UPLOADS_ROOT}/${fileId}`);
-  const fallbackRef = dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${fileId}`);
-  const primarySnap = await get(primaryRef);
-  const fallbackSnap = await get(fallbackRef);
-  const itemRef = primarySnap.exists() ? primaryRef : fallbackRef;
-  const snap = primarySnap.exists() ? primarySnap : fallbackSnap;
-  if (!snap.exists()) throw new Error("File not found");
-  const current = snap.val();
+  const mshBook = parseMshcatBookId(fileId);
+  if (mshBook) {
+    const patch = {};
+    if (hasOwn(data?.metadata || {}, "title")) patch.title = asTrimmedString(data.metadata.title);
+    if (hasOwn(data?.metadata || {}, "description")) {
+      patch.description = asTrimmedString(data.metadata.description);
+    }
+    if (hasOwn(data?.metadata || {}, "author")) patch.author = asTrimmedString(data.metadata.author);
+    if (hasOwn(data?.metadata || {}, "content_type")) {
+      patch.contentType = asTrimmedString(data.metadata.content_type);
+    }
+    if (data?.thumbnail instanceof File) {
+      patch.thumbnail = await uploadSectionThumbnail(
+        "files-mshcat",
+        mshBook.bookDocId,
+        data.thumbnail,
+      );
+    } else if (hasOwn(data?.metadata || {}, "thumbnail")) {
+      patch.thumbnail = data.metadata.thumbnail;
+    }
+    const wantsMove =
+      hasOwn(data?.metadata || {}, "subsection") ||
+      hasOwn(data?.metadata || {}, "secondary_subsection");
+    if (wantsMove) {
+      const target = detectMshcatContentTarget({
+        subsectionId: data?.metadata?.subsection,
+        secondarySubsectionId: data?.metadata?.secondary_subsection,
+      });
+      if (target?.docId) patch.categoryDocId = target.docId;
+    }
+    if (data?.file instanceof File) {
+      const uploaded = await smartUpload({
+        file: data.file,
+        target: "mshcat",
+        folder: `content/files/${mshBook.bookDocId}`,
+        filename: `${Date.now()}_${String(data.file.name || "file").replace(/[^\w.\-]/g, "_")}`,
+      });
+      patch.sourceUrl = uploaded.url;
+    }
+    await updateMshcatBook(mshBook.bookDocId, patch);
+    return { id: fileId };
+  }
+
+  const oldContent = parseOldAppContentId(fileId);
+  if (oldContent) {
+    const patch = {};
+    if (hasOwn(data?.metadata || {}, "title")) patch.title = asTrimmedString(data.metadata.title);
+    if (hasOwn(data?.metadata || {}, "description")) {
+      patch.description = asTrimmedString(data.metadata.description);
+    }
+    if (hasOwn(data?.metadata || {}, "author")) patch.author = asTrimmedString(data.metadata.author);
+    if (hasOwn(data?.metadata || {}, "content_type")) {
+      patch.contentType = asTrimmedString(data.metadata.content_type);
+    }
+    if (data?.thumbnail instanceof File) {
+      patch.thumbnail = await uploadSectionThumbnail(
+        "files-oldapp",
+        oldContent.lessonDocId,
+        data.thumbnail,
+      );
+    } else if (hasOwn(data?.metadata || {}, "thumbnail")) {
+      patch.thumbnail = data.metadata.thumbnail;
+    }
+    if (data?.file instanceof File) {
+      const uploaded = await smartUpload({
+        file: data.file,
+        target: "oldapp",
+        folder: `content/files/${oldContent.lessonDocId}`,
+        filename: `${Date.now()}_${String(data.file.name || "file").replace(/[^\w.\-]/g, "_")}`,
+      });
+      patch.sourceUrl = uploaded.url;
+    }
+    await updateOldAppLesson(oldContent.lessonDocId, patch);
+    return { id: fileId };
+  }
+
+  const current = await clientFsGetFileRow(fileId);
+  if (!current || Object.keys(current).length === 0) throw new Error("File not found");
   const nextMetadata = mergeContentMetadataPreservingHierarchy(
     current.metadata || {},
     data?.metadata || {},
@@ -1259,21 +2232,25 @@ export async function updateFile(fileId, data) {
     }
   }
   Object.assign(next, buildUploadMirrorFields(next, next.metadata));
-  await set(itemRef, next);
+  await clientFsWriteFileMirrorBoth(fileId, next);
   return next;
 }
 
 /** Delete a file. */
 export async function removeFile(fileId) {
-  const db = sectionsDb();
-  const primaryRef = dbRef(db, `${UPLOADS_ROOT}/${fileId}`);
-  const fallbackRef = dbRef(db, `${UPLOADS_FALLBACK_ROOT}/${fileId}`);
-  const primarySnap = await get(primaryRef);
-  const fallbackSnap = await get(fallbackRef);
-  const itemRef = primarySnap.exists() ? primaryRef : fallbackRef;
-  const snap = primarySnap.exists() ? primarySnap : fallbackSnap;
-  if (!snap.exists()) return true;
-  const item = snap.val();
+  const mshBook = parseMshcatBookId(fileId);
+  if (mshBook) {
+    await deleteMshcatBook(mshBook.bookDocId);
+    return true;
+  }
+  const oldContent = parseOldAppContentId(fileId);
+  if (oldContent) {
+    await deleteOldAppLesson(oldContent.lessonDocId);
+    return true;
+  }
+
+  const item = await clientFsGetFileRow(fileId);
+  if (!item || Object.keys(item).length === 0) return true;
   await deleteStorageUrlsByValue(collectAssetUrls(item));
   if (item?.storagePath) {
     try {
@@ -1283,7 +2260,7 @@ export async function removeFile(fileId) {
       // Continue deleting DB entry even if file already missing in storage.
     }
   }
-  await remove(itemRef);
+  await clientFsDeleteFileMirrorBoth(fileId);
   return true;
 }
 

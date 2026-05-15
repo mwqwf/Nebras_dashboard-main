@@ -15,6 +15,8 @@
 	import { t } from '$lib/i18n/store.svelte.js';
 	import { tokenize, highlightMatches } from '$lib/utils/search.js';
 
+	import { untrack } from 'svelte';
+
 	let query = $state('');
 	let activeTab = $state('all'); // all | sections | files | videos
 	let isLoading = $state(false);
@@ -36,11 +38,13 @@
 	// يقرأ الاستعلام من URL عند فتح الصفحة ويُشغّل البحث فورًا.
 	$effect(() => {
 		const q = String($page.url.searchParams.get('q') || '').trim();
-		if (q !== query) {
-			query = q;
-			if (q) runSearch();
-			else resetAll();
-		}
+		untrack(() => {
+			if (q !== query) {
+				query = q;
+				if (q) runSearch();
+				else resetAll();
+			}
+		});
 	});
 
 	function resetAll() {

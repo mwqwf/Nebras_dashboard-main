@@ -32,6 +32,7 @@
 
 import { json } from '@sveltejs/kit';
 import { getAdminDatabase, verifyIdToken } from '$lib/server/firebaseAdmin.js';
+import { syncNebrasDashboardClaimsForUid } from '$lib/server/dashboardClaimsSync.js';
 import { isOwnerEmail } from '$lib/server/mailer.js';
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
@@ -90,6 +91,7 @@ export async function POST({ request }) {
 					createdVia: 'owner_bypass'
 				});
 			}
+			await syncNebrasDashboardClaimsForUid(uid);
 			return json({
 				authorized: true,
 				user: { ...userInfo, role: 'owner', isBlocked: false }
@@ -118,6 +120,7 @@ export async function POST({ request }) {
 				if (Object.keys(migration).length > 0) {
 					await userRef.update(migration).catch(() => {});
 				}
+				await syncNebrasDashboardClaimsForUid(uid);
 				return json({
 					authorized: false,
 					blocked: true,
@@ -128,6 +131,7 @@ export async function POST({ request }) {
 			const patch = { lastSignedInAt: Date.now(), ...migration };
 			await userRef.update(patch).catch(() => {});
 
+			await syncNebrasDashboardClaimsForUid(uid);
 			return json({
 				authorized: true,
 				user: { ...userInfo, role: effectiveRole, isBlocked: false }

@@ -1,5 +1,5 @@
 /**
- * رفع الملف إلى Firebase Storage ثم تسجيل الرابط في Realtime Database.
+ * رفع الملف إلى Firebase Storage ثم تسجيل الرابط في Cloud Firestore.
  * يُستدعى من orchestrator الرفع بدل التوقيع المباشر لـ R2.
  */
 import {
@@ -8,10 +8,12 @@ import {
   uploadBytesResumable,
   getDownloadURL,
 } from "firebase/storage";
-import { ref as dbRef, set, serverTimestamp } from "firebase/database";
-import { getFirebaseStorage, getFirebaseDatabase } from "./client.js";
+import { serverTimestamp } from "firebase/firestore";
+import { getFirebaseStorage, getNebrasFirestore } from "./client.js";
+import { clientFsWriteFileMirrorBoth } from "./nebrasUnifiedFirestoreClient.js";
+import { stripUndefinedDeep } from "$lib/nebrasUnifiedSanitize.js";
 
-/** جذر سجلات الرفع في RTDB — يمكن تقييد القواعد على هذا المسار */
+/** أسماء المجموعات السابقة في RTDB (للتوافق مع الوثائق والمراجع الخارجية) */
 export const FIREBASE_UPLOADS_RTDB_PATH = "dashboard_uploads";
 export const FIREBASE_UPLOADS_FALLBACK_RTDB_PATH = "content_unified/files";
 
@@ -48,23 +50,6 @@ export async function uploadContentThumbnail(fileId, thumbnail) {
     contentType: thumbnail.type || "image/jpeg",
   });
   return getDownloadURL(thumbRef);
-}
-
-function stripUndefinedDeep(value) {
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => stripUndefinedDeep(item))
-      .filter((item) => item !== undefined);
-  }
-  if (value && typeof value === "object") {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      const cleaned = stripUndefinedDeep(v);
-      if (cleaned !== undefined) out[k] = cleaned;
-    }
-    return out;
-  }
-  return value === undefined ? undefined : value;
 }
 
 function buildMobileCompatibleFields(metadata, downloadUrl) {
@@ -112,8 +97,8 @@ function buildMobileCompatibleFields(metadata, downloadUrl) {
 export async function firebaseUploadContentFile(file, fileId, metadata, opts) {
   const { onProgress, isAborted, onTaskCreated } = opts;
   const storage = getFirebaseStorage();
-  const db = getFirebaseDatabase();
-  if (!storage || !db) {
+  const fsdb = getNebrasFirestore();
+  if (!storage || !fsdb) {
     throw new Error(
       "Firebase غير مهيأ. تحقق من متغيرات VITE_FIREBASE_* في .env",
     );
@@ -151,7 +136,6 @@ export async function firebaseUploadContentFile(file, fileId, metadata, opts) {
   const downloadUrl = await getDownloadURL(task.snapshot.ref);
   const compatibleFields = buildMobileCompatibleFields(metadata, downloadUrl);
 
-  // Keep RTDB key = fileId so update/remove/list can target the same record reliably.
   const payload = stripUndefinedDeep({
     fileId,
     id: fileId,
@@ -165,21 +149,7 @@ export async function firebaseUploadContentFile(file, fileId, metadata, opts) {
     ...compatibleFields,
   });
 
-  try {
-    const recordRef = dbRef(db, `${FIREBASE_UPLOADS_RTDB_PATH}/${fileId}`);
-    await set(recordRef, payload);
-  } catch (err) {
-    // Some Firebase rules only allow writes under unified content paths.
-    if (err?.code === "PERMISSION_DENIED") {
-      const fallbackRef = dbRef(
-        db,
-        `${FIREBASE_UPLOADS_FALLBACK_RTDB_PATH}/${fileId}`,
-      );
-      await set(fallbackRef, payload);
-    } else {
-      throw err;
-    }
-  }
+  await clientFsWriteFileMirrorBoth(fileId, payload);
 
   return downloadUrl;
 }

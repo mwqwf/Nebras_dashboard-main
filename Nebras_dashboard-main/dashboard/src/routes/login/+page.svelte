@@ -147,7 +147,9 @@
 					// المستخدم أصبح مصرّحاً بينما كنّا نفكّر — أعد التحقّق.
 					await checkCurrentAuth();
 				} else {
-					errorKey = 'auth.error.send_failed';
+					if (!silent) {
+						errorKey = 'auth.error.send_failed';
+					}
 				}
 				return;
 			}

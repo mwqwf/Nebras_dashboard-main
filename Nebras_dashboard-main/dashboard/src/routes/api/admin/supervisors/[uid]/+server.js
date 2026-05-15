@@ -18,6 +18,7 @@
 
 import { json } from '@sveltejs/kit';
 import { getAdminDatabase } from '$lib/server/firebaseAdmin.js';
+import { syncNebrasDashboardClaimsForUid } from '$lib/server/dashboardClaimsSync.js';
 import { requireOwner } from '$lib/server/authGuard.js';
 
 function badRequest(reason) {
@@ -98,6 +99,7 @@ export async function PATCH(event) {
 		}
 
 		await ref.update(patch);
+		await syncNebrasDashboardClaimsForUid(uid);
 
 		const after = { ...value, ...patch };
 		return json({ ok: true, supervisor: sanitizeOutput(uid, after) });
@@ -129,6 +131,7 @@ export async function DELETE(event) {
 			return json({ error: 'forbidden', reason: 'cannot_remove_owner' }, { status: 403 });
 		}
 		await ref.remove();
+		await syncNebrasDashboardClaimsForUid(uid);
 		return json({ ok: true, removed: true });
 	} catch (err) {
 		console.error('[api/admin/supervisors/:uid] delete failed:', err);

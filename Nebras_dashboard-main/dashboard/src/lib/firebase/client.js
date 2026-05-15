@@ -51,6 +51,13 @@ export function getFirebaseDatabase() {
 	return getDatabase(application);
 }
 
+/** Cloud Firestore — مشروع نبراس الأساسي (المحتوى الموحّد والأقسام). */
+export function getNebrasFirestore() {
+	const application = getFirebaseApp();
+	if (!application) return undefined;
+	return getFirestore(application);
+}
+
 /** Cloud Storage — نفس storageBucket في الإعدادات */
 export function getFirebaseStorage() {
 	const application = getFirebaseApp();

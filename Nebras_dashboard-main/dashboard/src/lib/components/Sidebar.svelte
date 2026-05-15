@@ -37,6 +37,7 @@
 			{ label: t('common.sections'), href: '/moderator/sections', icon: 'sections' },
 			{ label: t('common.content'), href: '/moderator/content/files', icon: 'content' },
 			{ label: t('content.multi_upload'), href: '/moderator/content/multi', icon: 'multiUpload' },
+			{ label: 'جلب من مكتبة نور', href: '/moderator/content/import-noor', icon: 'noorImport' },
 			{ label: t('common.chat'), href: '/moderator/chat', icon: 'chat' },
 			// يظهر للمالك فقط — إدارة قائمة المشرفين وحظرهم.
 			...(authState.role === 'owner'
@@ -81,6 +82,7 @@
 		sections: 'M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10',
 		content: 'M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z',
 		multiUpload: 'M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M8 10l4-4 4 4M12 6v10',
+		noorImport: 'M4 19.5A2.5 2.5 0 016.5 17H20M4 4.5A2.5 2.5 0 016.5 2H20v20H6.5A2.5 2.5 0 014 19.5zM9 7l3 3 3-3',
 		chat: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z',
 		supervisors: 'M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6 5.87v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2m12-10a4 4 0 11-8 0 4 4 0 018 0z',
 		crawl: 'M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z'
