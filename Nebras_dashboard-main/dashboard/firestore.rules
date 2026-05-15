@@ -1,12 +1,23 @@
 rules_version = '2';
 
-// انسخ إلى Firebase Console → Firestore Database → Rules
-// القراءة عامة للمحتوى؛ الكتابة لمشرفي لوحة التحكّم فقط.
+// ════════════════════════════════════════════════════════════════════
+//  Cloud Firestore Rules — Nebras (Production-Strict)
 //
-// claim `role` ∈ { owner, supervisor } يُضبَط تلقائياً من الخادم عبر
-// `syncNebrasDashboardClaimsForUid` بعد قراءة `dashboard_users/{uid}` في RTDB
-// (مسارات /api/auth/check و /api/auth/verify-code و /api/admin/supervisors/*).
-// يجب أن يستدعي العميل `getIdToken(true)` بعد تسجيل الدخول ليحمّل التوكن المحدَّث.
+//  المبدأ:
+//    • قراءة عامّة لمحتوى التطبيق (sections + uploads + content_unified).
+//    • كتابة مقيَّدة لمشرفي لوحة التحكّم فقط، عبر Custom Claim `role`
+//      الذي يضبطه الخادم بعد قراءة `dashboard_users/{uid}` في RTDB
+//      (مسارات `/api/auth/*` و`/api/admin/supervisors/*`).
+//    • أيّ مسار آخر مرفوض افتراضياً (deny-by-default).
+//
+//  ملاحظة للعميل: بعد تسجيل الدخول وحصول الحساب على صلاحيات،
+//  يجب استدعاء `firebase/auth.getIdToken(true)` لتحديث التوكن بالـ
+//  claims الجديدة قبل أيّ كتابة (انظر src/lib/api/auth.js).
+//
+//  التعديلات السيرفريّة (Admin SDK) تتجاوز هذه القواعد طبيعيّاً،
+//  وهي خطّ الدفاع الإضافي للكتابات المباشرة من المتصفّح.
+// ════════════════════════════════════════════════════════════════════
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -21,27 +32,49 @@ service cloud.firestore {
       );
     }
 
+    // ─── Sections (sections_unified/main|sub|secondary) ─────────
+    // مستند واحد لكلّ مستوى يحوي خريطة id→record. لا نقيّد بنية الخريطة
+    // داخل Rules لأنّ ذلك يستوجب تكرار عشرات المفاتيح؛ التحقّق منها يجري
+    // في كود الواجهة قبل الإرسال (moderator.js).
     match /sections_unified/{level} {
       allow read: if true;
-      allow write: if hasDashboardWrite();
+      allow write: if hasDashboardWrite()
+        && level in ['main', 'sub', 'secondary'];
+    }
+
+    // ─── ملفّات الرفع (مرايا متماثلة) ────────────────────────────
+    // كلّ مستند يجب أن يحمل id/fileId — مطابق لقواعد RTDB القديمة.
+    function validFileDoc() {
+      return request.resource.data.keys().hasAny(['id', 'fileId']);
     }
 
     match /dashboard_uploads/{docId} {
       allow read: if true;
-      allow write: if hasDashboardWrite();
+      allow create, update: if hasDashboardWrite() && validFileDoc();
+      allow delete: if hasDashboardWrite();
     }
 
     match /content_unified_files/{docId} {
       allow read: if true;
-      allow write: if hasDashboardWrite();
+      allow create, update: if hasDashboardWrite() && validFileDoc();
+      allow delete: if hasDashboardWrite();
+    }
+
+    // ─── سجلّات YouTube ─────────────────────────────────────────
+    // يجب أن يحمل المستند id و video_url نصّيّاً (مطابق لـ RTDB).
+    function validYoutubeDoc() {
+      return request.resource.data.keys().hasAll(['id', 'video_url'])
+        && request.resource.data.video_url is string
+        && request.resource.data.video_url.size() > 0;
     }
 
     match /content_unified_youtube/{docId} {
       allow read: if true;
-      allow write: if hasDashboardWrite();
+      allow create, update: if hasDashboardWrite() && validYoutubeDoc();
+      allow delete: if hasDashboardWrite();
     }
 
-    // كلّ ما عدا المسارات أعلاه — مرفوض افتراضيّاً (يمكن لاحقاً إضافة مجموعات أخرى صراحةً).
+    // ─── deny-by-default ────────────────────────────────────────
     match /{document=**} {
       allow read, write: if false;
     }

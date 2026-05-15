@@ -143,9 +143,16 @@ export function getAdminDatabase() {
 	return getAdminRtdb(getAdminApp());
 }
 
-/** Firestore (Nebras) */
+/** Firestore (Nebras) — قاعدة Firestore في nebras-9118c مسمّاة `default`
+ *  (بدون أقواس)، فنمرّر الاسم صراحةً بدل الاعتماد على `(default)`. */
+const NEBRAS_FIRESTORE_DATABASE_ID = String(
+	env.NEBRAS_FIRESTORE_DATABASE_ID ||
+		process.env.NEBRAS_FIRESTORE_DATABASE_ID ||
+		'default'
+);
+
 export function getNebrasFirestoreAdmin() {
-	return getAdminFirestore(initNebrasApp());
+	return getAdminFirestore(initNebrasApp(), NEBRAS_FIRESTORE_DATABASE_ID);
 }
 
 /**
