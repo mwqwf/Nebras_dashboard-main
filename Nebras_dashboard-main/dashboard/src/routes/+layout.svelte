@@ -13,7 +13,7 @@
 
 <script>
 	import { onMount, onDestroy } from 'svelte';
-	import { getAuthState } from '$lib/stores/auth.svelte.js';
+	import { getAuthState, setLoading } from '$lib/stores/auth.svelte.js';
 	import { startAuthListener, completeGoogleRedirectSignIn } from '$lib/api/auth.js';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
@@ -27,6 +27,7 @@
 	const authState = getAuthState();
 	let currentDir = $derived(getDir());
 	let unsubscribe = null;
+	let bootstrapTimeoutId = null;
 
 	function isPublicPath(path) {
 		return path === '/login' || path.startsWith('/login/');
@@ -62,17 +63,38 @@
 	});
 
 	onMount(async () => {
-		await initFirebase();
-		setLanguage(getLanguage());
-		// يجب استدعاء getRedirectResult قبل onAuthStateChanged حتى لا تبقى
-		// نتيجة التحويل عالقة؛ وإلا قد يبقى isLoading=true ولا تُعرض صفحة
-		// /login أبداً فيتخطّى المستخدم استهلاك redirect بالكامل.
-		await completeGoogleRedirectSignIn();
-		unsubscribe = startAuthListener();
+		// Safety net: لو علقت أيّ خطوة (شبكة بطيئة، Firebase config مفقود،
+		// /api/auth/check لا يستجيب) لا نترك المستخدم خلف LoadingScreen
+		// إلى ما لا نهاية. 8 ثوان كافية لـ Firebase init + completeRedirect
+		// + checkAuth حتى على شبكات بطيئة.
+		bootstrapTimeoutId = setTimeout(() => {
+			if (authState.isLoading) {
+				console.warn('[auth] bootstrap timeout — forcing loading=false');
+				setLoading(false);
+			}
+		}, 8000);
+
+		try {
+			await initFirebase();
+			setLanguage(getLanguage());
+			// يجب استدعاء getRedirectResult قبل onAuthStateChanged حتى لا تبقى
+			// نتيجة التحويل عالقة؛ وإلا قد يبقى isLoading=true ولا تُعرض صفحة
+			// /login أبداً فيتخطّى المستخدم استهلاك redirect بالكامل.
+			// (يُستعمل فقط حين فشل popup ولجأنا إلى redirect.)
+			await completeGoogleRedirectSignIn();
+		} catch (err) {
+			console.error('[auth] bootstrap step failed:', err);
+		} finally {
+			unsubscribe = startAuthListener();
+		}
 	});
 
 	onDestroy(() => {
 		if (typeof unsubscribe === 'function') unsubscribe();
+		if (bootstrapTimeoutId) {
+			clearTimeout(bootstrapTimeoutId);
+			bootstrapTimeoutId = null;
+		}
 	});
 </script>
 

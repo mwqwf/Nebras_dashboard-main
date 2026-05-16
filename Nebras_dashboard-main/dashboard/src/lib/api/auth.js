@@ -18,7 +18,11 @@ import {
 	signOut as firebaseSignOut,
 	getIdToken
 } from 'firebase/auth';
-import { getFirebaseAuth, buildGoogleProvider } from '$lib/firebase/client.js';
+import {
+	getFirebaseAuth,
+	ensureFirebaseAuthReady,
+	buildGoogleProvider
+} from '$lib/firebase/client.js';
 import {
 	getAuthState,
 	setUser,
@@ -141,27 +145,18 @@ export async function checkCurrentAuth() {
 	return { signedIn: true, authorized: false, needsOwnerCode: Boolean(data.needsOwnerCode) };
 }
 
-/** @returns {boolean} */
-function isLocalDevHost() {
-	if (typeof window === 'undefined') return true;
-	const host = window.location.hostname;
-	return host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
-}
-
 /**
- * على عنوان LAN (مثل 10.x) تفشل signInWithPopup غالباً بـ unauthorized-domain
- * ما لم يُضف العنوان يدوياً في Firebase Console. نفضّل redirect هناك.
- * @returns {boolean}
+ * Popup هو السلوك الافتراضي على جميع النطاقات (localhost / Vercel / نطاق
+ * مخصّص). redirect كان يُسبّب فقدان state على Vercel و Safari ITP لأنّه
+ * يعتمد على cross-domain cookies + sessionStorage عبر إعادة تحميل الصفحة.
+ *
+ * نلجأ تلقائيّاً إلى redirect فقط لو فشل popup بـ
+ * {@link POPUP_FALLBACK_CODES} (نطاق غير مُصرَّح، popup محظور، إلخ).
  */
-function shouldPreferGoogleRedirect() {
-	return typeof window !== 'undefined' && !isLocalDevHost();
-}
-
 const POPUP_FALLBACK_CODES = new Set([
 	'auth/unauthorized-domain',
 	'auth/operation-not-supported-in-this-environment',
-	'auth/popup-blocked',
-	'auth/popup-closed-by-user' // أحياناً يظهر عند حظر النافذة المنبثقة
+	'auth/popup-blocked'
 ]);
 
 function isCancelledAuthError(code) {
@@ -174,10 +169,13 @@ function isCancelledAuthError(code) {
 
 /**
  * يُكمِل تسجيل الدخول بعد العودة من signInWithRedirect.
- * يُستدعى من صفحة /login عند التحميل.
+ * يُستدعى من +layout.svelte عند التحميل قبل startAuthListener.
+ *
+ * ننتظر اكتمال setPersistence أولاً — وإلا فقد لا يتمكّن Firebase من
+ * قراءة pending redirect state من sessionStorage.
  */
 export async function completeGoogleRedirectSignIn() {
-	const auth = getFirebaseAuth();
+	const auth = await ensureFirebaseAuthReady();
 	if (!auth) {
 		return {
 			handled: false,
@@ -250,15 +248,14 @@ async function startGoogleRedirect(auth) {
 }
 
 /**
- * يفتح نافذة Google Sign-In. عند النجاح يُحدِّث store ثمّ يُعيد نتيجة
- * التحقّق من الأهليّة (checkCurrentAuth).
- *
- * على عناوين الشبكة المحلية (غير localhost) يُستخدم redirect تلقائياً.
+ * يفتح نافذة Google Sign-In. الافتراضي popup على جميع النطاقات لأنّه
+ * يدور داخل نفس النافذة ولا يعتمد على cross-domain storage. إن فشل
+ * بسبب unauthorized-domain أو حجب popup يُلجأ تلقائيّاً إلى redirect.
  *
  * @returns {Promise<{ ok: boolean, signedIn: boolean, authorized: boolean, needsOwnerCode: boolean, pendingRedirect?: boolean, error?: string }>}
  */
 export async function signInWithGoogle() {
-	const auth = getFirebaseAuth();
+	const auth = await ensureFirebaseAuthReady();
 	if (!auth) {
 		return {
 			ok: false,
@@ -267,21 +264,6 @@ export async function signInWithGoogle() {
 			needsOwnerCode: false,
 			error: 'firebase_not_configured'
 		};
-	}
-
-	if (shouldPreferGoogleRedirect()) {
-		try {
-			return await startGoogleRedirect(auth);
-		} catch (err) {
-			console.error('[auth] signInWithRedirect failed:', err);
-			return {
-				ok: false,
-				signedIn: false,
-				authorized: false,
-				needsOwnerCode: false,
-				error: err?.code || 'unknown'
-			};
-		}
 	}
 
 	try {
@@ -423,6 +405,9 @@ export function startAuthListener() {
 		}
 		setUser(toPlainUser(firebaseUser));
 		try {
+			// أثناء completeGoogleRedirectSignIn نكون قد استدعينا checkCurrentAuth
+			// لتوّنا — لكنّه استدعاء idempotent ويضمن سلامة custom claims بعد
+			// أيّ تحديث للسجلّ في الخادم.
 			await checkCurrentAuth();
 		} finally {
 			setLoading(false);
