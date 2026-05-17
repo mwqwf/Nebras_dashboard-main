@@ -225,8 +225,7 @@ export async function firebaseDeleteStoragePath(storagePath) {
  * @param {Record<string, unknown>} metadata نفس metadata النموذج الحالي
  * @param {{ onProgress: (n: number) => void, isAborted: () => boolean, onTaskCreated?: (task: import('firebase/storage').UploadTask) => void }} opts
  *
- * (محفوظة لأغراض التوافق مع الاستدعاءات الخارجية — تُعيد تركيب
- * المرحلتين بالتسلسل كما كانت سابقاً.)
+ * محفوظة لمسار استئناف الرفع الفردي ([createResumeUploader] في fileUpload.js).
  */
 export async function firebaseUploadContentFile(file, fileId, metadata, opts) {
   const { downloadUrl, storagePath } = await firebaseUploadFileToStorage(
