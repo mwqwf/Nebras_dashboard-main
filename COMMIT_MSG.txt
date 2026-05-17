@@ -1,9 +1,0 @@
-feat(multi-upload): complete remaining plan items (v2.1)
-
-- Validate file size and extension before queue add
-- PDF first-page thumbnails via pdfjs-dist
-- Adaptive concurrency from first upload speed sample
-- Stable fileId + content_sha256 (Web Worker) for idempotent retries
-- Drag-to-reorder queue rows; progress via $state.raw map
-- Document 8MB resumable chunk target in Storage metadata
-- YouTube batch and mobile selectionOrder normalizer passthrough
