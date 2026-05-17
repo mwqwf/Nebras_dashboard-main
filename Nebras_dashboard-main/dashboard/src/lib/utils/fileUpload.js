@@ -49,7 +49,7 @@ export async function withUploadRetries(fn, { maxAttempts = MAX_UPLOAD_ATTEMPTS,
  */
 export async function uploadStoragePhase(file, metadata, thumbnail, opts = {}) {
 	const { onProgress, isAborted = () => false, onTaskCreated, fileId: presetFileId } = opts;
-	const fileId = presetFileId || `fb_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+	const fileId = presetFileId || newStableFileId();
 	if (isAborted()) throw new Error('Upload aborted');
 
 	const thumbPromise = thumbnail
@@ -284,6 +284,58 @@ export function mimeToContentType(mime) {
 /** حدود حجم الملف للرفع المتعدد */
 export const MULTI_UPLOAD_MAX_BYTES = 500 * 1024 * 1024;
 export const MULTI_UPLOAD_WARN_BYTES = 200 * 1024 * 1024;
+
+/** امتدادات مدعومة للرفع المتعدد (رفض الباقي قبل الإضافة للطابور). */
+const ALLOWED_EXTENSIONS = new Set([
+	'.pdf',
+	'.epub',
+	'.doc',
+	'.docx',
+	'.txt',
+	'.rtf',
+	'.mp3',
+	'.m4a',
+	'.wav',
+	'.ogg',
+	'.aac',
+	'.flac',
+	'.mp4',
+	'.webm',
+	'.mov',
+	'.mkv',
+	'.avi',
+	'.jpg',
+	'.jpeg',
+	'.png',
+	'.gif',
+	'.webp',
+	'.bmp',
+	'.svg'
+]);
+
+export function newStableFileId() {
+	return `fb_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * @param {File} file
+ * @returns {{ ok: boolean, error?: string, warn?: string }}
+ */
+export function validateMultiUploadFile(file) {
+	const sizeCheck = validateMultiUploadFileSize(file);
+	if (!sizeCheck.ok) return sizeCheck;
+
+	const name = String(file?.name || '').toLowerCase();
+	const dot = name.lastIndexOf('.');
+	const ext = dot >= 0 ? name.slice(dot) : '';
+	if (!ext || !ALLOWED_EXTENSIONS.has(ext)) {
+		return {
+			ok: false,
+			error: `Unsupported file type${ext ? `: ${ext}` : ''}`
+		};
+	}
+	return sizeCheck;
+}
 
 /**
  * @param {File} file

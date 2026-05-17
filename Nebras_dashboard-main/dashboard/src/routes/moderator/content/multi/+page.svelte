@@ -13,8 +13,9 @@
 	import {
 		formatFileSize,
 		mimeToContentType,
-		validateMultiUploadFileSize
+		validateMultiUploadFile
 	} from '$lib/utils/fileUpload.js';
+	import { generatePdfThumbnail } from '$lib/utils/pdfThumbnail.js';
 	import {
 		getCachedMainSections,
 		getCachedSubSections,
@@ -26,6 +27,8 @@
 		replaceItemFields,
 		removeItem,
 		moveItem,
+		reorderItem,
+		getItemProgress,
 		clearCompleted,
 		resetQueue,
 		startAll,
@@ -50,6 +53,7 @@
 	let pageTab = $state('files');
 	let isDragging = $state(false);
 	let fileSizeWarning = $state('');
+	let dragReorderFrom = $state(null);
 
 	let mainSectionsList = $state([]);
 	let youtubeUrlsText = $state('');
@@ -191,9 +195,9 @@
 		itemFormError = '';
 		const accepted = [];
 		for (const f of list) {
-			const check = validateMultiUploadFileSize(f);
+			const check = validateMultiUploadFile(f);
 			if (!check.ok) {
-				itemFormError = `${f.name}: ${t('content.file_too_large')}`;
+				itemFormError = `${f.name}: ${check.error || t('content.file_too_large')}`;
 				return;
 			}
 			if (check.warn && !fileSizeWarning) fileSizeWarning = check.warn;
@@ -282,7 +286,7 @@
 		sectionsPrefilled = false;
 	}
 
-	function saveItemToQueue() {
+	async function saveItemToQueue() {
 		itemFormError = '';
 		if (itemFiles.length === 0) {
 			itemFormError = t('content.click_select');
@@ -331,13 +335,26 @@
 					isMultiFileMode
 						? f.name.replace(/\.[^/.]+$/, '')
 						: (itemForm.title?.trim() || f.name.replace(/\.[^/.]+$/, ''));
-				addItem({
+				let thumb = itemThumbnail;
+				let thumbPreview = itemThumbnailPreview;
+				if (!thumb && f.type === 'application/pdf') {
+					const generated = await generatePdfThumbnail(f);
+					if (generated) {
+						thumb = generated.file;
+						thumbPreview = generated.preview;
+					}
+				}
+				const addedId = addItem({
 					file: f,
-					thumbnail: itemThumbnail,
-					thumbnailPreview: itemThumbnailPreview,
+					thumbnail: thumb,
+					thumbnailPreview: thumbPreview,
 					form: { ...itemForm, title: titleForFile },
 					labels
 				});
+				if (!addedId) {
+					itemFormError = multi.lastError || t('content.file_too_large');
+					return;
+				}
 			}
 			// لا نحفظ آخر أقسام إلا عند إضافة بند جديد — التعديل لا يغيّر السياق.
 			setLastSections({
@@ -352,6 +369,27 @@
 
 	function handleMoveItem(id, direction) {
 		moveItem(id, direction);
+	}
+
+	function handleQueueDragStart(idx) {
+		if (multi.isUploading) return;
+		dragReorderFrom = idx;
+	}
+
+	function handleQueueDragOver(e, idx) {
+		if (dragReorderFrom === null || multi.isUploading) return;
+		e.preventDefault();
+	}
+
+	function handleQueueDrop(e, toIdx) {
+		e.preventDefault();
+		if (dragReorderFrom === null || multi.isUploading) return;
+		reorderItem(dragReorderFrom, toIdx);
+		dragReorderFrom = null;
+	}
+
+	function handleQueueDragEnd() {
+		dragReorderFrom = null;
 	}
 
 	function handleRemoveItem(item) {
@@ -597,6 +635,9 @@
 		<p class="hint-note hint-info">• {t('content.upload_commit_order_note')}</p>
 		<p class="hint-note hint-info">• {t('content.remove_during_upload_hint')}</p>
 		<p class="hint-note hint-info">• {t('content.background_hint')}</p>
+		{#if pageTab === 'files'}
+			<p class="hint-note hint-info">• {t('content.drag_reorder_hint')}</p>
+		{/if}
 	</div>
 
 	{#if pageTab === 'youtube'}
@@ -707,11 +748,20 @@
 		{:else}
 			<ul class="queue-list">
 				{#each multi.queue as item, idx (item.id)}
+					{@const pct = getItemProgress(item.id)}
 					<li
 						class="queue-item"
 						class:is-active={item.status === 'uploading' || item.status === 'committing'}
 						class:is-completed={item.status === 'completed'}
 						class:is-failed={item.status === 'failed'}
+						class:is-dragging={dragReorderFrom === idx}
+						draggable={!multi.isUploading &&
+							item.status !== 'uploading' &&
+							item.status !== 'committing'}
+						ondragstart={() => handleQueueDragStart(idx)}
+						ondragover={(e) => handleQueueDragOver(e, idx)}
+						ondrop={(e) => handleQueueDrop(e, idx)}
+						ondragend={handleQueueDragEnd}
 					>
 						<div class="queue-order">{idx + 1}</div>
 
@@ -740,12 +790,12 @@
 								</span>
 							</div>
 
-							{#if item.status === 'uploading' || item.status === 'committing' || (item.status === 'completed' && item.progress > 0)}
+							{#if item.status === 'uploading' || item.status === 'committing' || (item.status === 'completed' && pct > 0)}
 								<div class="queue-progress">
 									<div class="queue-progress-track">
-										<div class="queue-progress-fill" style="width: {item.progress}%"></div>
+										<div class="queue-progress-fill" style="width: {pct}%"></div>
 									</div>
-									<span class="queue-progress-pct">{item.progress}%</span>
+									<span class="queue-progress-pct">{pct}%</span>
 								</div>
 							{/if}
 
@@ -1165,6 +1215,9 @@
 	.queue-item.is-completed { opacity: 0.82; }
 	.queue-item.is-completed .queue-title { color: var(--color-surface-300); }
 	.queue-item.is-failed { border-color: rgba(244,63,94,0.5); }
+	.queue-item.is-dragging { opacity: 0.55; border-style: dashed; }
+	.queue-item[draggable='true'] { cursor: grab; }
+	.queue-item[draggable='true']:active { cursor: grabbing; }
 
 	.queue-order { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; color: var(--color-surface-300); background: var(--color-surface-900); border: 1px solid var(--color-surface-700); border-radius: 50%; flex-shrink: 0; }
 	.queue-thumb { width: 48px; height: 48px; border-radius: 10px; object-fit: cover; flex-shrink: 0; background: var(--color-surface-900); border: 1px solid var(--color-surface-700); }

@@ -10,8 +10,11 @@ import {
 	createFileUploader,
 	mimeToContentType,
 	withUploadRetries,
-	compressImageFile
+	compressImageFile,
+	validateMultiUploadFile,
+	newStableFileId
 } from '$lib/utils/fileUpload.js';
+import { computeFileSha256 } from '$lib/utils/fileHash.js';
 import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 import { createCommitQueue } from '$lib/stores/multiUploadCommitQueue.js';
 import { createYoutubeVideoBatch } from '$lib/api/moderator.js';
@@ -31,6 +34,7 @@ import { createYoutubeVideoBatch } from '$lib/api/moderator.js';
  * @property {number} progress
  * @property {string} error
  * @property {number} [retryCount]
+ * @property {string|null} [fileId]
  */
 
 /**
@@ -54,8 +58,37 @@ let commitQueue = null;
 
 let selectionCounter = 0;
 let youtubeSelectionCounter = 0;
+let networkCalibrated = false;
+
+/** تقدّم الرفع خارج كائنات الطابور لتقليل إعادة التصيير ($state.raw). */
+let uploadProgressRaw = $state.raw({});
+let uploadProgressTick = $state(0);
 
 export const DEFAULT_CONCURRENCY = 3;
+
+export function getItemProgress(id) {
+	void uploadProgressTick;
+	const raw = uploadProgressRaw[id];
+	if (raw != null) return raw;
+	return multiState.queue.find((q) => q.id === id)?.progress ?? 0;
+}
+
+function setItemProgress(id, progress) {
+	uploadProgressRaw[id] = progress;
+	uploadProgressTick++;
+	const idx = multiState.queue.findIndex((it) => it.id === id);
+	if (idx !== -1) multiState.queue[idx].progress = progress;
+}
+
+function calibrateConcurrencyFromSample(bytes, durationMs) {
+	if (networkCalibrated || !bytes || durationMs < 400) return;
+	networkCalibrated = true;
+	const bps = bytes / (durationMs / 1000);
+	if (bps < 250_000) setConcurrency(1);
+	else if (bps < 800_000) setConcurrency(2);
+	else if (bps < 2_500_000) setConcurrency(3);
+	else setConcurrency(5);
+}
 
 let multiState = $state({
 	queue: [],
@@ -180,6 +213,13 @@ export function clearPersistedQueue() {
 }
 
 export function addItem({ file, thumbnail = null, thumbnailPreview = '', form, labels }) {
+	const check = validateMultiUploadFile(file);
+	if (!check.ok) {
+		multiState.lastError = check.error || 'Invalid file';
+		return null;
+	}
+	if (check.warn) multiState.lastError = '';
+
 	const id = newId();
 	const selectionIndex = selectionCounter++;
 	multiState.queue.push({
@@ -193,8 +233,10 @@ export function addItem({ file, thumbnail = null, thumbnailPreview = '', form, l
 		status: 'queued',
 		progress: 0,
 		error: '',
-		retryCount: 0
+		retryCount: 0,
+		fileId: null
 	});
+	uploadProgressRaw[id] = 0;
 	persistQueueSnapshot();
 	return id;
 }
@@ -242,6 +284,21 @@ export function moveItem(id, direction) {
 	const a = multiState.queue[idx];
 	multiState.queue[idx] = multiState.queue[target];
 	multiState.queue[target] = a;
+	reindexFileQueue();
+	persistQueueSnapshot();
+}
+
+/** إعادة ترتيب الطابور بالسحب والإفلات (قبل بدء الرفع). */
+export function reorderItem(fromIndex, toIndex) {
+	if (fromIndex === toIndex) return;
+	const q = multiState.queue;
+	if (fromIndex < 0 || toIndex < 0 || fromIndex >= q.length || toIndex >= q.length) return;
+	const item = q[fromIndex];
+	if (item.status === 'uploading' || item.status === 'committing') return;
+	const target = q[toIndex];
+	if (target?.status === 'uploading' || target?.status === 'committing') return;
+	q.splice(fromIndex, 1);
+	q.splice(toIndex, 0, item);
 	reindexFileQueue();
 	persistQueueSnapshot();
 }
@@ -306,6 +363,9 @@ export async function startAll({ concurrency } = {}) {
 	multiState.allDoneAt = 0;
 	multiState.batchId = newBatchId();
 	clearLastSections();
+	networkCalibrated = false;
+	for (const k of Object.keys(uploadProgressRaw)) delete uploadProgressRaw[k];
+	uploadProgressTick++;
 
 	commitQueue = createCommitQueue(0);
 
@@ -536,8 +596,13 @@ async function uploadOne(itemId) {
 		if (rounded < 89 && now - lastReportedAt < 80) return;
 		lastReported = rounded;
 		lastReportedAt = now;
-		updateItem(itemId, { progress: rounded });
+		setItemProgress(itemId, rounded);
 	};
+
+	const stableFileId = startSnapshot.fileId || newStableFileId();
+	if (!startSnapshot.fileId) {
+		updateItem(itemId, { fileId: stableFileId });
+	}
 
 	let finalFile = startSnapshot.file;
 	let finalThumb = startSnapshot.thumbnail;
@@ -548,15 +613,23 @@ async function uploadOne(itemId) {
 		console.warn('Compression step failed, using original files', err);
 	}
 
+	try {
+		const sha = await computeFileSha256(finalFile);
+		if (sha) metadata.content_sha256 = sha;
+	} catch {
+		/* optional */
+	}
+
 	const uploader = createFileUploader(finalFile, metadata, finalThumb, {
 		onProgress: onProgressThrottled,
 		onStatus: () => {},
 		onError: (msg) => updateItem(itemId, { error: msg })
-	});
+	}, { fileId: stableFileId });
 
 	uploaderRegistry.set(itemId, uploader);
 
 	try {
+		const storageT0 = performance.now();
 		const storageResult = await withUploadRetries(() => uploader.uploadStorage(), {
 			onRetry: (attempt) => {
 				updateItem(itemId, {
@@ -565,6 +638,7 @@ async function uploadOne(itemId) {
 				});
 			}
 		});
+		calibrateConcurrencyFromSample(finalFile.size, performance.now() - storageT0);
 
 		if (!multiState.queue.some((it) => it.id === itemId)) return;
 

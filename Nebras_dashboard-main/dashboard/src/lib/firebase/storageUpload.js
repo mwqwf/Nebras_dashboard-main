@@ -18,6 +18,9 @@ import { stripUndefinedDeep } from "$lib/nebrasUnifiedSanitize.js";
 export const FIREBASE_UPLOADS_RTDB_PATH = "dashboard_uploads";
 export const FIREBASE_UPLOADS_FALLBACK_RTDB_PATH = "content_unified/files";
 
+/** هدف حجم القطعة لرفع Firebase القابل للاستئناف (وثائقي — الـ SDK يدير التجزئة داخلياً). */
+export const FIREBASE_RESUMABLE_CHUNK_TARGET_BYTES = 8 * 1024 * 1024;
+
 function sanitizeFileSegment(name) {
   return String(name || "file")
     .replace(/[#$\[\]./]/g, "_")
@@ -114,7 +117,12 @@ export async function firebaseUploadFileToStorage(file, fileId, opts) {
   const storagePath = `dashboard/content/${fileId}/${Date.now()}_${safe}`;
   const storageRef = ref(storage, storagePath);
   const contentType = file.type || "application/octet-stream";
-  const task = uploadBytesResumable(storageRef, file, { contentType });
+  const task = uploadBytesResumable(storageRef, file, {
+    contentType,
+    customMetadata: {
+      chunkTargetBytes: String(FIREBASE_RESUMABLE_CHUNK_TARGET_BYTES),
+    },
+  });
   onTaskCreated?.(task);
 
   await new Promise((resolve, reject) => {
@@ -186,6 +194,7 @@ export async function firebaseWriteFileRecord({
       ? { selectionIndex: meta.selectionIndex }
       : {}),
     ...(meta.batchId ? { batchId: meta.batchId } : {}),
+    ...(meta.content_sha256 ? { content_sha256: meta.content_sha256 } : {}),
     ...compatibleFields,
   });
 
