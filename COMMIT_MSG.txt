@@ -1,0 +1,9 @@
+feat: implement image compression, YouTube batches, and Multi-Upload V2
+
+- Add Multi-Upload commitQueue to guarantee writing strictly follows user selectionOrder
+- Separate file storage (parallel) from Firestore insertion (sequential)
+- Add image compression via browser-image-compression for files > 2MB
+- Implement `createYoutubeVideoBatch` for processing YouTube URLs efficiently
+- Extend +page.svelte with "YouTube Batch" and drag-drop support
+- Increase section cache TTL to 5 minutes
+- Fix resume/pause states for multipart upload processes

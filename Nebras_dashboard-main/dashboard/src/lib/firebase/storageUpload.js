@@ -7,6 +7,7 @@ import {
   uploadBytes,
   uploadBytesResumable,
   getDownloadURL,
+  deleteObject,
 } from "firebase/storage";
 import { serverTimestamp } from "firebase/firestore";
 import { getFirebaseStorage, getNebrasFirestore } from "./client.js";
@@ -166,6 +167,8 @@ export async function firebaseWriteFileRecord({
 
   const compatibleFields = buildMobileCompatibleFields(metadata, downloadUrl);
 
+  const meta =
+    metadata && typeof metadata === "object" ? metadata : {};
   const payload = stripUndefinedDeep({
     fileId,
     id: fileId,
@@ -173,15 +176,38 @@ export async function firebaseWriteFileRecord({
     filename: file.name,
     fileType: file.type || null,
     fileSize: file.size,
-    metadata: metadata || {},
+    metadata: meta,
     storagePath,
     createdAt: serverTimestamp(),
+    ...(meta.selectionOrder != null
+      ? { selectionOrder: meta.selectionOrder }
+      : {}),
+    ...(meta.selectionIndex != null
+      ? { selectionIndex: meta.selectionIndex }
+      : {}),
+    ...(meta.batchId ? { batchId: meta.batchId } : {}),
     ...compatibleFields,
   });
 
   await clientFsWriteFileMirrorBoth(fileId, payload);
 
   return downloadUrl;
+}
+
+/**
+ * حذف كائن من Storage (استرداد عند فشل كتابة Firestore).
+ * @param {string} storagePath
+ */
+export async function firebaseDeleteStoragePath(storagePath) {
+  const path = String(storagePath || "").trim();
+  if (!path) return;
+  const storage = getFirebaseStorage();
+  if (!storage) return;
+  try {
+    await deleteObject(ref(storage, path));
+  } catch (err) {
+    console.warn("[storageUpload] rollback delete failed:", err);
+  }
 }
 
 /**

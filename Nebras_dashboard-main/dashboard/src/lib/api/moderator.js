@@ -24,6 +24,7 @@ import {
   clientFsDeleteSectionRecord,
   clientFsListYoutubeRecords,
   clientFsSetYoutubeRecord,
+  clientFsSetYoutubeRecordsBatch,
   clientFsGetYoutubeRecord,
   clientFsDeleteYoutubeRecord,
   clientFsListFileRowsMerged,
@@ -615,6 +616,13 @@ export async function createYoutubeVideo(data) {
     video_url: videoUrl,
     metadata,
     created_at: createdAt,
+    ...(metadata.selectionOrder != null
+      ? { selectionOrder: metadata.selectionOrder }
+      : {}),
+    ...(metadata.selectionIndex != null
+      ? { selectionIndex: metadata.selectionIndex }
+      : {}),
+    ...(metadata.batchId ? { batchId: metadata.batchId } : {}),
     ...buildYoutubeMirrorFields({
       id,
       videoUrl,
@@ -624,6 +632,54 @@ export async function createYoutubeVideo(data) {
   };
   await clientFsSetYoutubeRecord(id, payload);
   return payload;
+}
+
+/**
+ * إنشاء دفعة من روابط يوتيوب باستخدام writeBatch واحد (حتى 500 كحد أقصى للباتش).
+ * @param {Array<Object>} items
+ */
+export async function createYoutubeVideoBatch(items) {
+  const records = [];
+  const createdAt = new Date().toISOString();
+  for (const data of items) {
+    const id = makeSectionId();
+    // لا ندعم المصغرات المرفوعة (File) في الرفع الجماعي حالياً لتسريع العملية، يعتمد على الـ URL.
+    const metadata = {
+      title: String(data?.metadata?.title || "").trim(),
+      description: data?.metadata?.description ? String(data.metadata.description) : "",
+      author: data?.metadata?.author ? String(data.metadata.author) : "",
+      subsection: String(data?.metadata?.subsection),
+      secondary_subsection: data?.metadata?.secondary_subsection
+        ? String(data.metadata.secondary_subsection)
+        : null,
+      content_type: "youtube",
+      is_listed: data?.metadata?.is_listed ?? true,
+      thumbnail: null,
+      created_at: createdAt,
+    };
+    const videoUrl = String(data?.video_url || "").trim();
+    const payload = {
+      id,
+      video_url: videoUrl,
+      metadata,
+      created_at: createdAt,
+      ...(data?.metadata?.selectionOrder != null ? { selectionOrder: data.metadata.selectionOrder } : {}),
+      ...(data?.metadata?.selectionIndex != null ? { selectionIndex: data.metadata.selectionIndex } : {}),
+      ...(data?.metadata?.batchId ? { batchId: data.metadata.batchId } : {}),
+      ...buildYoutubeMirrorFields({
+        id,
+        videoUrl,
+        metadata,
+        thumbnail: null,
+      }),
+    };
+    records.push({ id, payload });
+  }
+  
+  if (records.length > 0) {
+    await clientFsSetYoutubeRecordsBatch(records);
+  }
+  return records.map((r) => r.payload);
 }
 
 /**

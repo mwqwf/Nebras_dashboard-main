@@ -1,34 +1,28 @@
 /**
  * Multi-Upload Store — Svelte 5 Reactive Store
  *
- * يعيش هذا المتجر على مستوى التطبيق كوحدة (module singleton) حتى يستمر
- * الرفع المتعدد أثناء تنقل المستخدم بين صفحات لوحة التحكم دون إعادة تحميل.
- *
- * المهام:
- *   - إدارة طابور ملفات الرفع المتعدد (queue) مع بيانات كل بند.
- *   - التحكم في بدء/إيقاف الرفع — يعمل عبر "مسبح" متوازٍ بسقف قابل
- *     للضبط مع احترام صارم لترتيب الاختيار: أوّل ملف اختاره المستخدم
- *     يبدأ رفعه أوّلاً دائماً (FIFO start). قد ينتهي ملفٌ صغير قبل
- *     ملفٍ كبير سبقه — لكنّ بدء الرفع يحترم الترتيب الذي رتّبه المستخدم.
- *   - السماح بحذف بند واحد في أي وقت — حتى أثناء رفعه فعلياً —
- *     دون التأثير على بقية البنود، مع إجهاض الرفع الخاص به تلقائياً.
- *   - يحفظ كائنات الـ uploader في Map خارج الحالة التفاعلية (غير reactive)
- *     كي لا يُجبر Svelte على إعادة التصيير مع كل تحديث تقدم.
+ * مرحلتان:
+ *   1) رفع Storage متوازٍ (3–5 ملفات) — سرعة قصوى
+ *   2) كتابة Firestore متسلسلة عبر commitQueue — ترتيب الاختيار مضمون 100%
  */
 
-import { createFileUploader, mimeToContentType } from '$lib/utils/fileUpload.js';
-import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 import {
-	mirrorUploadedFileToMshcatBook,
-	mirrorUploadedFileToOldAppLesson
-} from '$lib/api/moderator.js';
+	createFileUploader,
+	mimeToContentType,
+	withUploadRetries,
+	compressImageFile
+} from '$lib/utils/fileUpload.js';
+import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
+import { createCommitQueue } from '$lib/stores/multiUploadCommitQueue.js';
+import { createYoutubeVideoBatch } from '$lib/api/moderator.js';
 
-/** @typedef {'queued'|'uploading'|'completed'|'failed'} QueueStatus */
+/** @typedef {'queued'|'uploading'|'committing'|'completed'|'failed'} QueueStatus */
 
 /**
  * @typedef {Object} QueueItem
  * @property {string} id
- * @property {File}   file
+ * @property {number} selectionIndex
+ * @property {File} file
  * @property {File|null} thumbnail
  * @property {string} thumbnailPreview
  * @property {{ title:string, description:string, author:string, main_section:(string|number), subsection:(string|number), secondary_subsection:(string|number), is_listed:boolean }} form
@@ -36,41 +30,43 @@ import {
  * @property {QueueStatus} status
  * @property {number} progress
  * @property {string} error
+ * @property {number} [retryCount]
  */
 
-// ─── خريطة الـ uploaders الحية (غير تفاعلية) ─────────────────
-/** @type {Map<string, { start: ()=>Promise<any>, abort: ()=>void }>} */
+/**
+ * @typedef {Object} YoutubeQueueItem
+ * @property {string} id
+ * @property {number} selectionIndex
+ * @property {string} video_url
+ * @property {{ title:string, description:string, author:string, main_section:(string|number), subsection:(string|number), secondary_subsection:(string|number), is_listed:boolean }} form
+ * @property {{ main:string, sub:string, secondary:string }} labels
+ * @property {QueueStatus} status
+ * @property {string} error
+ */
+
+const STORAGE_KEY = 'nebras_multi_upload_v2';
+
+/** @type {Map<string, { start: ()=>Promise<any>, abort: ()=>void, pause?: ()=>void, resume?: ()=>void, uploadStorage?: ()=>Promise<any>, commitFirestore?: (r:any)=>Promise<any> }>} */
 const uploaderRegistry = new Map();
 
-// السقف الافتراضي لعدد الرفعات المتوازية. ٣ يوازن جيداً بين سرعة
-// الإنجاز وعدم إغراق المتصفح أو الشبكة. يمكن تجاوزه بتمرير
-// `{ concurrency }` إلى `startAll`.
+/** @type {import('$lib/stores/multiUploadCommitQueue.js').createCommitQueue extends (...a: any)=>infer R ? R : never | null} */
+let commitQueue = null;
+
+let selectionCounter = 0;
+let youtubeSelectionCounter = 0;
+
 export const DEFAULT_CONCURRENCY = 3;
 
-// ─── الحالة التفاعلية ───────────────────────────────────────
-/**
- * @type {{
- *   queue: QueueItem[],
- *   isUploading: boolean,
- *   currentId: string|null,
- *   lastError: string,
- *   allDoneAt: number,
- *   concurrency: number,
- *   lastSections: { main_section: string, subsection: string, secondary_subsection: string }
- * }}
- */
 let multiState = $state({
 	queue: [],
+	youtubeQueue: [],
 	isUploading: false,
-	// أوّل بند يبدأ الرفع في الدفعة الحالية — يُستخدم للمؤشر العائم
-	// والإبراز المرئي. مع التوازي يبقى مفهوم "نشط" مستنداً إلى
-	// حالة كل بند (`status === 'uploading'`) بدلاً من معرّف واحد.
+	isPaused: false,
 	currentId: null,
 	lastError: '',
 	allDoneAt: 0,
+	batchId: null,
 	concurrency: DEFAULT_CONCURRENCY,
-	// تُستخدم لتذكّر آخر اختيار أقسام أجراه المستخدم داخل نموذج "إضافة إلى الطابور"
-	// حتى لا يُضطرّ إلى إعادة اختيارها مع كل ملف في نفس الدفعة.
 	lastSections: { main_section: '', subsection: '', secondary_subsection: '' }
 });
 
@@ -78,13 +74,11 @@ export function getMultiUploadState() {
 	return multiState;
 }
 
-/** ضبط عدد الرفعات المتوازية القصوى (1–5). */
 export function setConcurrency(n) {
 	const v = Math.max(1, Math.min(5, Number(n) || DEFAULT_CONCURRENCY));
 	multiState.concurrency = v;
 }
 
-/** حفظ آخر اختيار أقسام ليُعاد استخدامه تلقائياً عند إضافة البند التالي. */
 export function setLastSections({ main_section = '', subsection = '', secondary_subsection = '' } = {}) {
 	multiState.lastSections = {
 		main_section: String(main_section ?? ''),
@@ -93,28 +87,104 @@ export function setLastSections({ main_section = '', subsection = '', secondary_
 	};
 }
 
-/** نسيان آخر اختيار أقسام (عند بدء الرفع أو تفريغ الطابور). */
 export function clearLastSections() {
 	multiState.lastSections = { main_section: '', subsection: '', secondary_subsection: '' };
 }
-
-// ─── إدارة البنود ────────────────────────────────────────────
 
 function newId() {
 	return `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/**
- * إضافة بند جديد إلى **نهاية** الطابور دائماً. نستخدم `push` بدلاً من
- * spread لتجنّب رتبة O(n) عند إضافة دفعة كبيرة (مثلاً ١٠٠ ملف معاً).
- * يضمن `push` بقاء ترتيب الاختيار محفوظاً، وبما أنّ مُختار البند التالي
- * في حلقة الرفع يستخدم `Array.find()` (الذي يبدأ من الفهرس 0)، فأوّل
- * بندٍ يدخل الطابور هو أوّل من يبدأ رفعه دائماً.
- */
+function newBatchId() {
+	if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+	return `batch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** إعادة ترقيم selectionIndex وفق ترتيب الطابور (قبل البدء فقط). */
+function reindexFileQueue() {
+	for (let i = 0; i < multiState.queue.length; i++) {
+		const it = multiState.queue[i];
+		if (it.status === 'queued' || it.status === 'failed') {
+			it.selectionIndex = i;
+		}
+	}
+	selectionCounter = multiState.queue.length;
+}
+
+function reindexYoutubeQueue() {
+	for (let i = 0; i < multiState.youtubeQueue.length; i++) {
+		const it = multiState.youtubeQueue[i];
+		if (it.status === 'queued' || it.status === 'failed') {
+			it.selectionIndex = i;
+		}
+	}
+	youtubeSelectionCounter = multiState.youtubeQueue.length;
+}
+
+function persistQueueSnapshot() {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		const payload = {
+			batchId: multiState.batchId,
+			queue: multiState.queue.map((it) => ({
+				id: it.id,
+				selectionIndex: it.selectionIndex,
+				status: it.status,
+				progress: it.progress,
+				error: it.error,
+				form: it.form,
+				labels: it.labels,
+				fileMeta: it.file
+					? { name: it.file.name, size: it.file.size, type: it.file.type }
+					: null,
+				thumbnailPreview: it.thumbnailPreview || ''
+			})),
+			youtubeQueue: multiState.youtubeQueue.map((it) => ({
+				id: it.id,
+				selectionIndex: it.selectionIndex,
+				status: it.status,
+				error: it.error,
+				video_url: it.video_url,
+				form: it.form,
+				labels: it.labels
+			}))
+		};
+		localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+	} catch {
+		/* ignore quota */
+	}
+}
+
+export function restoreQueueFromStorage() {
+	if (typeof localStorage === 'undefined') return false;
+	try {
+		const raw = localStorage.getItem(STORAGE_KEY);
+		if (!raw) return false;
+		const data = JSON.parse(raw);
+		if (!data?.queue?.length && !data?.youtubeQueue?.length) return false;
+		multiState.lastError =
+			'تم استعادة بيانات الطابور من الجلسة السابقة — أعد إرفاق الملفات قبل المتابعة.';
+		multiState.batchId = data.batchId || null;
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function clearPersistedQueue() {
+	try {
+		localStorage.removeItem(STORAGE_KEY);
+	} catch {
+		/* ignore */
+	}
+}
+
 export function addItem({ file, thumbnail = null, thumbnailPreview = '', form, labels }) {
 	const id = newId();
+	const selectionIndex = selectionCounter++;
 	multiState.queue.push({
 		id,
+		selectionIndex,
 		file,
 		thumbnail,
 		thumbnailPreview,
@@ -122,34 +192,24 @@ export function addItem({ file, thumbnail = null, thumbnailPreview = '', form, l
 		labels: { ...labels },
 		status: 'queued',
 		progress: 0,
-		error: ''
+		error: '',
+		retryCount: 0
 	});
+	persistQueueSnapshot();
 	return id;
 }
 
-/**
- * تحديث بند موجود **في الموضع** (in-place). هذا أرخص بكثير من إعادة
- * بناء المصفوفة كاملة، وضروري عند التوازي حيث تصل آلاف أحداث `progress`
- * في الثانية من عدّة بنود متزامنة. الحقول الداخلية مُسجّلة في `$state`
- * deep-reactive لذا يكتفي Svelte 5 بمراقبة `Object.assign`.
- */
 export function updateItem(id, patch) {
 	const idx = multiState.queue.findIndex((it) => it.id === id);
 	if (idx === -1) return;
 	Object.assign(multiState.queue[idx], patch);
+	persistQueueSnapshot();
 }
 
-/** استبدال بيانات بند كاملة (أثناء تعديل من المحرّر). */
 export function replaceItemFields(id, fields) {
 	updateItem(id, fields);
 }
 
-/**
- * حذف بند من الطابور.
- * - إن كان البند قيد الرفع الآن: يتم إجهاض رفعه فوراً، ثم يتم حذفه،
- *   وتستمر دورة المسبح في `startAll` لاختيار البند التالي طبيعياً.
- * - إن كان في الطابور فقط (queued/failed/completed): يُحذف مباشرةً.
- */
 export function removeItem(id) {
 	const up = uploaderRegistry.get(id);
 	if (up) {
@@ -161,12 +221,11 @@ export function removeItem(id) {
 		uploaderRegistry.delete(id);
 	}
 	multiState.queue = multiState.queue.filter((it) => it.id !== id);
-	if (multiState.currentId === id) {
-		multiState.currentId = null;
-	}
+	reindexFileQueue();
+	if (multiState.currentId === id) multiState.currentId = null;
+	persistQueueSnapshot();
 }
 
-/** نقل بند للأعلى/الأسفل. لا يعمل على بند قيد الرفع. */
 export function moveItem(id, direction) {
 	const idx = multiState.queue.findIndex((it) => it.id === id);
 	if (idx === -1) return;
@@ -174,106 +233,162 @@ export function moveItem(id, direction) {
 	if (target < 0 || target >= multiState.queue.length) return;
 	if (
 		multiState.queue[idx].status === 'uploading' ||
-		multiState.queue[target].status === 'uploading'
+		multiState.queue[idx].status === 'committing' ||
+		multiState.queue[target].status === 'uploading' ||
+		multiState.queue[target].status === 'committing'
 	) {
 		return;
 	}
-	// تبديل في الموضع دون إعادة بناء المصفوفة بأكملها.
 	const a = multiState.queue[idx];
 	multiState.queue[idx] = multiState.queue[target];
 	multiState.queue[target] = a;
+	reindexFileQueue();
+	persistQueueSnapshot();
 }
 
-/** إزالة جميع البنود المنتهية بنجاح. */
 export function clearCompleted() {
 	multiState.queue = multiState.queue.filter((it) => it.status !== 'completed');
+	reindexFileQueue();
+	persistQueueSnapshot();
 }
 
-/** إعادة ضبط الطابور بالكامل (مع إجهاض أي رفع جارٍ). */
 export function resetQueue() {
 	stopAll({ markUploadingAsFailed: false });
 	multiState.queue = [];
+	multiState.youtubeQueue = [];
 	multiState.lastError = '';
 	multiState.allDoneAt = 0;
+	multiState.batchId = null;
+	selectionCounter = 0;
+	youtubeSelectionCounter = 0;
+	commitQueue = null;
 	clearLastSections();
+	clearPersistedQueue();
 }
 
-// ─── الرفع المتوازي ─────────────────────────────────────────
+// ─── YouTube queue ───────────────────────────────────────────
 
-/**
- * بدء رفع جميع البنود الموجودة في الطابور عبر مسبح متوازٍ بسقف
- * `concurrency`. القاعدة الذهبية: **`pickNext` يُرجع أوّل بند في
- * الطابور صالح للرفع (status === 'queued' || 'failed')**، أي
- * `Array.find` يبدأ من الفهرس 0 دائماً. وبما أنّ `addItem` يدفع إلى
- * النهاية، فإنّ أوّل ملف اختاره المستخدم هو أوّل من يُبدأ رفعه دائماً.
- *
- * قد ينتهي ملف صغير قبل ملف كبير سبقه — هذا طبيعي ومقبول؛ المضمون
- * هو **ترتيب البدء**، لا ترتيب الانتهاء.
- *
- * @param {{ concurrency?: number }} [opts]
- */
+export function addYoutubeItem({ video_url, form, labels, title }) {
+	const id = newId();
+	const selectionIndex = youtubeSelectionCounter++;
+	multiState.youtubeQueue.push({
+		id,
+		selectionIndex,
+		video_url: String(video_url || '').trim(),
+		form: { ...form, title: title || form.title || '' },
+		labels: { ...labels },
+		status: 'queued',
+		error: ''
+	});
+	persistQueueSnapshot();
+	return id;
+}
+
+export function removeYoutubeItem(id) {
+	multiState.youtubeQueue = multiState.youtubeQueue.filter((it) => it.id !== id);
+	reindexYoutubeQueue();
+	persistQueueSnapshot();
+}
+
+export function clearCompletedYoutube() {
+	multiState.youtubeQueue = multiState.youtubeQueue.filter((it) => it.status !== 'completed');
+	reindexYoutubeQueue();
+	persistQueueSnapshot();
+}
+
+// ─── Upload control ──────────────────────────────────────────
+
 export async function startAll({ concurrency } = {}) {
 	if (multiState.isUploading) return;
 	multiState.isUploading = true;
+	multiState.isPaused = false;
 	multiState.lastError = '';
 	multiState.allDoneAt = 0;
-	// بمجرد انطلاق الرفع لم نعد بحاجة لتذكّر آخر اختيار أقسام — ننسى تلقائياً.
+	multiState.batchId = newBatchId();
 	clearLastSections();
+
+	commitQueue = createCommitQueue(0);
 
 	const limit = Math.max(
 		1,
 		Math.min(5, Number(concurrency) || multiState.concurrency || DEFAULT_CONCURRENCY)
 	);
 
-	/** @type {Set<Promise<void>>} */
 	const active = new Set();
 
 	function pickNext() {
-		// `find` يبدأ من index 0 — وهذا ما يضمن أنّ أوّل بند في
-		// الطابور (= أوّل ملف اختاره المستخدم) ينطلق أوّلاً.
-		return multiState.queue.find(
-			(it) => it.status === 'queued' || it.status === 'failed'
-		);
+		return multiState.queue.find((it) => it.status === 'queued' || it.status === 'failed');
 	}
 
 	try {
-		// حلقة "ابقَ المسبح ممتلئاً": كلّما فرغ مكانٌ نضع بنداً جديداً
-		// من رأس الطابور. ننتظر اكتمال أيّ بند للسماح بالتقاط
-		// البند التالي حسب الترتيب.
 		while (multiState.isUploading) {
-			while (multiState.isUploading && active.size < limit) {
-				const next = pickNext();
-				if (!next) break;
-				// نضع حالة 'uploading' فوراً قبل أيّ await حتى لا يلتقطه
-				// `pickNext` التالي في نفس الدورة الإستراتيجية.
-				updateItem(next.id, { status: 'uploading', progress: 0, error: '' });
-				if (!multiState.currentId) multiState.currentId = next.id;
-				const p = uploadOne(next.id).finally(() => active.delete(p));
-				active.add(p);
+			if (!multiState.isPaused) {
+				while (multiState.isUploading && active.size < limit) {
+					const next = pickNext();
+					if (!next) break;
+					updateItem(next.id, { status: 'uploading', progress: 0, error: '' });
+					if (!multiState.currentId) multiState.currentId = next.id;
+					const p = uploadOne(next.id).finally(() => active.delete(p));
+					active.add(p);
+				}
 			}
-			if (active.size === 0) break;
-			// انتظر أوّل بند ينتهي ثم أعد ملء المكان.
+			if (active.size === 0) {
+				const hasPending = multiState.queue.some(
+					(it) => it.status === 'queued' || it.status === 'failed'
+				);
+				if (!hasPending) break;
+				if (multiState.isPaused) {
+					await sleep(300);
+					continue;
+				}
+				break;
+			}
 			await Promise.race(active);
 		}
-		// إذا توقّفنا بسبب stopAll، انتظر تنظيف الأنشطة الجارية.
-		if (active.size > 0) {
-			await Promise.allSettled(active);
-		}
+		if (active.size > 0) await Promise.allSettled(active);
+		if (commitQueue) await commitQueue.flush();
 	} finally {
 		multiState.isUploading = false;
 		multiState.currentId = null;
+		commitQueue = null;
 
 		const anythingLeft = multiState.queue.length > 0;
-		const everyDone = anythingLeft && multiState.queue.every((it) => it.status === 'completed');
+		const everyDone =
+			anythingLeft && multiState.queue.every((it) => it.status === 'completed');
 		if (everyDone) {
 			multiState.allDoneAt = Date.now();
+			notifyBatchCompleteIfAllowed();
 		}
+		persistQueueSnapshot();
 	}
 }
 
-/** إيقاف كل رفع جارٍ وإعادة البنود المتأثرة إلى حالة queued. */
+function sleep(ms) {
+	return new Promise((r) => setTimeout(r, ms));
+}
+
+function notifyBatchCompleteIfAllowed() {
+	if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+	try {
+		new Notification('Nebras — Multi Upload', {
+			body: 'All files in the batch finished uploading.',
+			icon: '/favicon.png'
+		});
+	} catch {
+		/* ignore */
+	}
+}
+
+export function requestUploadNotificationPermission() {
+	if (typeof Notification === 'undefined') return;
+	if (Notification.permission === 'default') {
+		Notification.requestPermission().catch(() => {});
+	}
+}
+
 export function stopAll({ markUploadingAsFailed = false } = {}) {
 	multiState.isUploading = false;
+	multiState.isPaused = false;
 	for (const [id, up] of uploaderRegistry.entries()) {
 		try {
 			up.abort();
@@ -284,7 +399,7 @@ export function stopAll({ markUploadingAsFailed = false } = {}) {
 	}
 	for (let i = 0; i < multiState.queue.length; i++) {
 		const it = multiState.queue[i];
-		if (it.status !== 'uploading') continue;
+		if (it.status !== 'uploading' && it.status !== 'committing') continue;
 		if (markUploadingAsFailed) {
 			Object.assign(it, { status: 'failed', progress: 0, error: 'Upload stopped' });
 		} else {
@@ -292,23 +407,110 @@ export function stopAll({ markUploadingAsFailed = false } = {}) {
 		}
 	}
 	multiState.currentId = null;
+	persistQueueSnapshot();
+}
+
+export function pauseAll() {
+	multiState.isPaused = true;
+	for (const up of uploaderRegistry.values()) {
+		try {
+			up.pause?.();
+		} catch {
+			/* ignore */
+		}
+	}
+}
+
+export function resumeAll() {
+	multiState.isPaused = false;
+	for (const up of uploaderRegistry.values()) {
+		try {
+			up.resume?.();
+		} catch {
+			/* ignore */
+		}
+	}
 }
 
 /**
- * رفع بند واحد. يُحدّث الحالة والتقدم. يُسجّل uploader في السجل كي يمكن
- * إجهاضه لاحقاً من خلال removeItem أو stopAll.
- *
- * - تحديثات `progress` مخنوقة (throttled) — كلّ ≥1% أو كلّ ≥100ms —
- *   لتقليل ضغط إعادة التصيير حين تكون عدة بنود ترفع بالتوازي.
- * - عمليّات النسخ المرآة (mshcat/oldapp) تُطلَق بـ fire-and-forget بعد
- *   نجاح الرفع: الملف يصبح في Storage + RTDB فوراً، والمرآة تحدث في
- *   الخلفية. أيّ فشل في المرآة يُسجَّل في `error` كتنبيه ناعم دون
- *   انتكاسة الحالة إلى failed (لأن الرفع الأصلي نجح فعلاً).
+ * رفع دفعة روابط YouTube — كتابة متسلسلة عبر createYoutubeVideo (Nebras unified).
  */
+export async function startAllYoutube() {
+	if (multiState.isUploading) return;
+	multiState.isUploading = true;
+	multiState.lastError = '';
+	multiState.allDoneAt = 0;
+	multiState.batchId = newBatchId();
+
+	const pending = multiState.youtubeQueue.filter(
+		(it) => it.status === 'queued' || it.status === 'failed'
+	);
+	pending.sort((a, b) => a.selectionIndex - b.selectionIndex);
+
+	try {
+		// معالجة بالدفعات (chunks) مثلاً 20 في كل مرة لتقليل الضغط
+		const chunkSize = 20;
+		for (let i = 0; i < pending.length; i += chunkSize) {
+			if (!multiState.isUploading) break;
+			const chunk = pending.slice(i, i + chunkSize);
+			const batchItems = chunk.map((snap) => ({
+				video_url: snap.video_url,
+				metadata: {
+					title: snap.form.title,
+					description: snap.form.description || undefined,
+					author: snap.form.author || undefined,
+					subsection: snap.form.subsection,
+					secondary_subsection: snap.form.secondary_subsection || undefined,
+					content_type: 'youtube',
+					is_listed: snap.form.is_listed,
+					selectionOrder: snap.selectionIndex,
+					selectionIndex: snap.selectionIndex,
+					batchId: multiState.batchId
+				}
+			}));
+
+			for (const snap of chunk) {
+				snap.status = 'uploading';
+				snap.error = '';
+			}
+			persistQueueSnapshot();
+
+			try {
+				await withUploadRetries(() => createYoutubeVideoBatch(batchItems), {
+					onRetry: (attempt) => {
+						for (const snap of chunk) snap.error = `Retry ${attempt}/3…`;
+						persistQueueSnapshot();
+					}
+				});
+				for (const snap of chunk) {
+					snap.status = 'completed';
+					snap.error = '';
+				}
+			} catch (err) {
+				for (const snap of chunk) {
+					snap.status = 'failed';
+					snap.error = err?.message || 'YouTube batch upload failed';
+				}
+			}
+			persistQueueSnapshot();
+		}
+		
+		const allDone =
+			multiState.youtubeQueue.length > 0 &&
+			multiState.youtubeQueue.every((it) => it.status === 'completed');
+		if (allDone) multiState.allDoneAt = Date.now();
+	} finally {
+		multiState.isUploading = false;
+		persistQueueSnapshot();
+	}
+}
+
 async function uploadOne(itemId) {
 	const startSnapshot = multiState.queue.find((it) => it.id === itemId);
-	if (!startSnapshot) return;
+	if (!startSnapshot || !commitQueue) return;
 
+	const batchId = multiState.batchId;
+	const selectionIndex = startSnapshot.selectionIndex;
 	const contentType = mimeToContentType(startSnapshot.file.type);
 	const metadata = {
 		title: startSnapshot.form.title,
@@ -316,84 +518,77 @@ async function uploadOne(itemId) {
 		author: startSnapshot.form.author || undefined,
 		subsection: String(startSnapshot.form.subsection),
 		content_type: contentType,
-		is_listed: startSnapshot.form.is_listed
+		is_listed: startSnapshot.form.is_listed,
+		selectionOrder: selectionIndex,
+		selectionIndex,
+		batchId
 	};
 	if (startSnapshot.form.secondary_subsection) {
 		metadata.secondary_subsection = String(startSnapshot.form.secondary_subsection);
 	}
 
-	// خانق تحديثات التقدم: نُمرّر فقط حين يتغيّر النص الظاهر فعلاً.
 	let lastReported = -1;
 	let lastReportedAt = 0;
 	const onProgressThrottled = (p) => {
-		const rounded = Math.round(p);
+		const rounded = Math.min(89, Math.round(p * 0.89));
 		const now = Date.now();
-		if (rounded < 100 && rounded === lastReported && now - lastReportedAt < 100) return;
-		if (rounded < 100 && now - lastReportedAt < 80) return;
+		if (rounded < 89 && rounded === lastReported && now - lastReportedAt < 100) return;
+		if (rounded < 89 && now - lastReportedAt < 80) return;
 		lastReported = rounded;
 		lastReportedAt = now;
 		updateItem(itemId, { progress: rounded });
 	};
 
-	const uploader = createFileUploader(startSnapshot.file, metadata, startSnapshot.thumbnail, {
+	let finalFile = startSnapshot.file;
+	let finalThumb = startSnapshot.thumbnail;
+	try {
+		finalFile = await compressImageFile(finalFile);
+		if (finalThumb) finalThumb = await compressImageFile(finalThumb, 1, 1024);
+	} catch (err) {
+		console.warn('Compression step failed, using original files', err);
+	}
+
+	const uploader = createFileUploader(finalFile, metadata, finalThumb, {
 		onProgress: onProgressThrottled,
 		onStatus: () => {},
-		onError: (msg) => {
-			updateItem(itemId, { error: msg });
-		}
+		onError: (msg) => updateItem(itemId, { error: msg })
 	});
 
 	uploaderRegistry.set(itemId, uploader);
 
 	try {
-		const result = await uploader.start();
+		const storageResult = await withUploadRetries(() => uploader.uploadStorage(), {
+			onRetry: (attempt) => {
+				updateItem(itemId, {
+					error: `Retry ${attempt}/3 (storage)…`,
+					retryCount: attempt
+				});
+			}
+		});
 
-		// النجاح الفعلي: الملف وصل Storage + Firestore. نضع البند مكتملاً
-		// فوراً قبل تشغيل المرآة كي لا تحجز الواجهة أيّ شيء.
+		if (!multiState.queue.some((it) => it.id === itemId)) return;
+
+		updateItem(itemId, { status: 'committing', progress: 92, error: '' });
+
+		await commitQueue.enqueue(selectionIndex, async () => {
+			if (!multiState.queue.some((it) => it.id === itemId)) return;
+			await withUploadRetries(() => uploader.commitFirestore(storageResult), {
+				onRetry: (attempt) => {
+					updateItem(itemId, {
+						error: `Retry ${attempt}/3 (database)…`,
+						retryCount: attempt
+					});
+				}
+			});
+		});
+
 		const stillThere = multiState.queue.some((it) => it.id === itemId);
 		if (stillThere) {
 			updateItem(itemId, { status: 'completed', progress: 100, error: '' });
-		}
-
-		// نسخ مرآة في الخلفية (لا نُعطّل بقية الطابور إذا تأخّرت):
-		// مشاركة في Mshcat أو ربط درس OldApp. الفشل يُسجَّل في `error`
-		// كرسالة تحذير ناعمة دون إعادة الحالة إلى failed.
-		// ملاحظة: جسور Mshcat/OldApp مُعطَّلة (commit e4e0062) — هذه الفروع
-		// لا تُنفَّذ في الإنتاج لأنّ المعرّفات لم تعد تبدأ بـ mshcat:/oldapp:.
-		const selSub = String(startSnapshot.form?.subsection || '');
-		const selSec = String(startSnapshot.form?.secondary_subsection || '');
-		if (selSub.startsWith('mshcat:') || selSec.startsWith('mshcat:')) {
-			mirrorUploadedFileToMshcatBook({
-				fileId: result?.id,
-				subsectionId: startSnapshot.form?.subsection,
-				secondarySubsectionId: startSnapshot.form?.secondary_subsection,
-				fallbackMetadata: metadata
-			}).catch((err) => {
-				console.warn('[multiUpload] Mshcat mirror failed:', err);
-				if (multiState.queue.some((it) => it.id === itemId)) {
-					updateItem(itemId, { error: 'تمّ الرفع، لكنّ النسخ إلى Mshcat فشل.' });
-				}
-			});
-		} else if (selSec.startsWith('oldapp:sub:')) {
-			mirrorUploadedFileToOldAppLesson({
-				fileId: result?.id,
-				subsectionId: startSnapshot.form?.subsection,
-				secondarySubsectionId: startSnapshot.form?.secondary_subsection,
-				fallbackMetadata: metadata
-			}).catch((err) => {
-				console.warn('[multiUpload] OldApp mirror failed:', err);
-				if (multiState.queue.some((it) => it.id === itemId)) {
-					updateItem(itemId, { error: 'تمّ الرفع، لكنّ ربط الدرس في OldApp فشل.' });
-				}
-			});
-		}
-
-		// إشعار FCM (fire-and-forget، لا يُعطّل الطابور إن فشل).
-		if (stillThere) {
 			notifyContentAdded({
 				title: startSnapshot.form.title,
-				contentType: contentType,
-				contentId: result?.id,
+				contentType,
+				contentId: storageResult.fileId,
 				mainSectionId: startSnapshot.form?.main_section,
 				subSectionId: startSnapshot.form?.subsection,
 				secondarySectionId: startSnapshot.form?.secondary_subsection,

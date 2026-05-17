@@ -81,6 +81,18 @@ export async function clientFsSetYoutubeRecord(id, payload) {
 	);
 }
 
+export async function clientFsSetYoutubeRecordsBatch(records) {
+	const db = fs();
+	const batch = writeBatch(db);
+	for (const { id, payload } of records) {
+		batch.set(
+			doc(db, NEBRAS_FS_CONTENT_YOUTUBE, String(id)),
+			stripUndefinedDeep(payload)
+		);
+	}
+	await batch.commit();
+}
+
 export async function clientFsGetYoutubeRecord(id) {
 	const d = await getDoc(doc(fs(), NEBRAS_FS_CONTENT_YOUTUBE, String(id)));
 	if (!d.exists()) return null;
