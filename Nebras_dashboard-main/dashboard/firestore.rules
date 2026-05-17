@@ -32,6 +32,13 @@ service cloud.firestore {
       );
     }
 
+    // تحديث عدّادات المشاهدة من التطبيق — حقول محدودة فقط، بدون UID.
+    function isEngagementCounterUpdate() {
+      return resource != null
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['view_count', 'play_count', 'complete_count', 'last_played_at']);
+    }
+
     // ─── Sections (sections_unified/main|sub|secondary) ─────────
     // مستند واحد لكلّ مستوى يحوي خريطة id→record. لا نقيّد بنية الخريطة
     // داخل Rules لأنّ ذلك يستوجب تكرار عشرات المفاتيح؛ التحقّق منها يجري
@@ -56,7 +63,9 @@ service cloud.firestore {
 
     match /content_unified_files/{docId} {
       allow read: if true;
-      allow create, update: if hasDashboardWrite() && validFileDoc();
+      allow create: if hasDashboardWrite() && validFileDoc();
+      allow update: if hasDashboardWrite() && validFileDoc();
+      allow update: if isEngagementCounterUpdate();
       allow delete: if hasDashboardWrite();
     }
 
@@ -70,8 +79,16 @@ service cloud.firestore {
 
     match /content_unified_youtube/{docId} {
       allow read: if true;
-      allow create, update: if hasDashboardWrite() && validYoutubeDoc();
+      allow create: if hasDashboardWrite() && validYoutubeDoc();
+      allow update: if hasDashboardWrite() && validYoutubeDoc();
+      allow update: if isEngagementCounterUpdate();
       allow delete: if hasDashboardWrite();
+    }
+
+    // تجميع أسبوعي للشعبية — يكتبه Admin SDK فقط (POST /api/admin/aggregates/popularity).
+    match /aggregates_popular/{docId} {
+      allow read: if true;
+      allow write: if false;
     }
 
     // ─── deny-by-default ────────────────────────────────────────
