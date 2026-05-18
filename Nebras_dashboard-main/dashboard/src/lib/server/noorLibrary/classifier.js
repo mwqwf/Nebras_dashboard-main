@@ -279,7 +279,7 @@ function cleanSectionName(name, fallback) {
 }
 
 function deriveSecondaryName(bookMeta, domain) {
-	const stem = seriesStemFromTitle(bookMeta?.title || '');
+	const stem = seriesDisplayNameFromTitle(bookMeta?.title || '');
 	const stemTokens = tokenSet(stem);
 	if (stem.length >= 4 && stem.length <= 80 && stemTokens.size >= 1) {
 		const generic = ['كتاب', 'كتب', 'الاسلام', 'اسلاميه', 'اسلامي', 'عامه'];
@@ -348,6 +348,21 @@ function classifyHeuristic({ tree, index }, bookMeta) {
 /** يستخرج جذع العنوان بإزالة ترقيم الأجزاء الشائع. */
 function seriesStemFromTitle(title) {
 	let t = normalizeArabic(title);
+	if (!t) return '';
+	t = t.replace(
+		/\s+[\(\[\-–—]?\s*(?:ال)?(?:جزء|جلد|المجلد|كتاب|الكتاب|مجلد|ج|جـ)\s*[٠-٩0-9\u0660-\u0669]+\s*[\)\]]?.*$/u,
+		''
+	);
+	t = t.replace(/\s+[\/\\،,]\s*(?:ال)?(?:جزء|ج|جـ)?\s*[٠-٩0-9\u0660-\u0669]+.*$/u, '');
+	t = t.replace(/\s+[\/\\]\s*[0-9٠-٩\u0660-\u0669]+.*$/u, '');
+	return t.replace(/\s+/g, ' ').trim();
+}
+
+/** نسخة للعرض تحفظ رسم العنوان الأصلي وتزيل فقط علامات الأجزاء الشائعة. */
+function seriesDisplayNameFromTitle(title) {
+	let t = String(title || '')
+		.replace(/\s+/g, ' ')
+		.trim();
 	if (!t) return '';
 	t = t.replace(
 		/\s+[\(\[\-–—]?\s*(?:ال)?(?:جزء|جلد|المجلد|كتاب|الكتاب|مجلد|ج|جـ)\s*[٠-٩0-9\u0660-\u0669]+\s*[\)\]]?.*$/u,
