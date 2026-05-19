@@ -38,10 +38,19 @@ import {
  * من الشجرة قبل تمريرها للمصنِّف ولا يقبل أيّ كتابة من المحرّك الآلي.
  */
 export const BLACKLISTED_SECTION_NAMES = Object.freeze([
-	'دروس بتدكصهك',
-	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
 	'دروس بترخيصه'
+]);
+
+/**
+ * مقاطع نعرف أنّها أخطاء إملائية/لوحة مفاتيح في أسماء أقسام لا يجب أن
+ * يراها المحرّك. نطابقها كـ contains لا كاسم كامل لأنّ القسم قد يحمل
+ * بادئة/لاحقة حول الخطأ.
+ */
+export const TYPO_SECTION_NAME_FRAGMENTS = Object.freeze([
+	'دروس بتدكصهك',
+	'بتدكصهك',
+	'تدكصهك'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -60,6 +69,9 @@ function normalizeArabic(s) {
 const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
+const NORMALIZED_TYPO_FRAGMENTS = TYPO_SECTION_NAME_FRAGMENTS
+	.map(normalizeArabic)
+	.filter(Boolean);
 
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
@@ -69,7 +81,7 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return NORMALIZED_BLACKLIST.has(n) || NORMALIZED_TYPO_FRAGMENTS.some((part) => n.includes(part));
 }
 
 async function readLevel(level) {

@@ -30,6 +30,7 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { existsSync } from 'node:fs';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -51,12 +52,31 @@ const DEFAULT_USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
 	'(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+const COMMON_CHROME_PATHS = Object.freeze([
+	'/usr/local/bin/google-chrome',
+	'/usr/bin/google-chrome-stable',
+	'/usr/bin/google-chrome',
+	'/usr/bin/chromium',
+	'/usr/bin/chromium-browser'
+]);
+
 function readBoolEnv(name, fallback) {
 	const raw = String(env[name] ?? process.env[name] ?? '').trim().toLowerCase();
 	if (raw === '') return fallback;
 	if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
 	if (['0', 'false', 'no', 'off'].includes(raw)) return false;
 	return fallback;
+}
+
+function resolveExecutablePath() {
+	const configured = String(
+		env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || ''
+	).trim();
+	if (configured) return configured;
+	for (const p of COMMON_CHROME_PATHS) {
+		if (existsSync(p)) return p;
+	}
+	return undefined;
 }
 
 /**
@@ -139,9 +159,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = resolveExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({
