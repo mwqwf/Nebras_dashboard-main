@@ -21,7 +21,8 @@
 		resetEngine,
 		updateSeeds,
 		previewItem,
-		importItem
+		importItem,
+		diagnoseEngine
 	} from '$lib/api/internetArchive.js';
 
 	let engine = $state(/** @type {any} */ (null));
@@ -39,6 +40,25 @@
 	let manualBusy = $state(false);
 	let manualResult = $state('');
 	let manualError = $state('');
+
+	// تشخيص
+	let diagBusy = $state(false);
+	let diagReport = $state(/** @type {any} */ (null));
+	let diagError = $state('');
+
+	async function doDiagnose() {
+		diagBusy = true;
+		diagError = '';
+		diagReport = null;
+		try {
+			diagReport = await diagnoseEngine();
+		} catch (err) {
+			diagError = err?.message || 'فشل التشخيص.';
+		} finally {
+			diagBusy = false;
+			await loadStatus();
+		}
+	}
 
 	/** auto-refresh مرّة كلّ 8 ثوانٍ ما دامت الصفحة مفتوحة. */
 	let pollTimer;
@@ -251,6 +271,13 @@
 					جلب دفعة الآن
 				</button>
 				<button
+					class="rounded bg-purple-600 px-3 py-1 text-sm text-white disabled:opacity-50"
+					disabled={diagBusy}
+					onclick={doDiagnose}
+				>
+					{diagBusy ? 'جارٍ الفحص…' : 'فحص النظام'}
+				</button>
+				<button
 					class="rounded bg-gray-200 px-3 py-1 text-sm disabled:opacity-50"
 					disabled={busyAction === 'reset-cursor'}
 					onclick={() => doAction('reset-cursor')}
@@ -289,6 +316,82 @@
 					</li>
 				{/each}
 			</ul>
+		</section>
+	{/if}
+
+	<!-- ── تقرير التشخيص ────────────────────────────────────── -->
+	{#if diagError}
+		<section class="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+			فشل التشخيص: {diagError}
+		</section>
+	{/if}
+	{#if diagReport}
+		<section class="rounded-lg border border-purple-200 bg-purple-50 p-4">
+			<h2 class="mb-3 text-lg font-semibold text-purple-900">تقرير الفحص الفنّي</h2>
+			<div class="grid gap-2 text-sm md:grid-cols-2">
+				<div>
+					<strong>Firebase Admin:</strong>
+					{diagReport.firebase?.adminConfigured ? 'مهيَّأ' : 'غير مهيَّأ ❌'}
+				</div>
+				<div><strong>projectId:</strong> {diagReport.firebase?.projectId || '—'}</div>
+				<div>
+					<strong>Storage bucket:</strong>
+					{diagReport.firebase?.storageBucket || diagReport.env?.NEBRAS_STORAGE_BUCKET || 'غير مضبوط ❌'}
+				</div>
+				<div>
+					<strong>CRON_SECRET:</strong>
+					{diagReport.env?.CRON_SECRET ? 'مضبوط ✓' : 'غير مضبوط ❌'}
+				</div>
+				<div>
+					<strong>config في RTDB:</strong>
+					{diagReport.rtdb?.ia_library_engine_config_exists ? 'موجود ✓' : 'غير موجود ❌'}
+				</div>
+				<div>
+					<strong>enabled:</strong>
+					{String(diagReport.rtdb?.ia_library_engine_enabled)}
+				</div>
+				<div><strong>عدد البذور:</strong> {diagReport.rtdb?.ia_library_engine_seeds_count}</div>
+				<div>
+					<strong>عناصر مستوردة (registry):</strong>
+					{diagReport.rtdb?.ia_library_registry_count}
+				</div>
+				<div>
+					<strong>IA reachable:</strong>
+					{diagReport.ia_api?.sample_total != null
+						? `نعم (${diagReport.ia_api.sample_total} نتيجة)`
+						: 'لا ❌'}
+				</div>
+				<div>
+					<strong>أوّل identifier:</strong>
+					<code class="text-xs">{diagReport.ia_api?.sample_first_identifier || '—'}</code>
+				</div>
+			</div>
+			{#if diagReport.ia_api?.error}
+				<div class="mt-3 rounded bg-red-100 p-2 text-xs text-red-800">
+					<strong>IA API error:</strong> {diagReport.ia_api.error.message}
+				</div>
+			{/if}
+			{#if diagReport.tickError}
+				<div class="mt-3 rounded bg-red-100 p-2 text-xs text-red-800">
+					<strong>Tick error ({diagReport.tickError.reason}):</strong>
+					{diagReport.tickError.message}
+					<pre class="mt-1 overflow-auto whitespace-pre-wrap text-[10px]">{diagReport.tickError.stack}</pre>
+				</div>
+			{:else if diagReport.tickResult}
+				<div class="mt-3 rounded bg-emerald-100 p-2 text-xs text-emerald-900">
+					<strong>Tick نجح:</strong>
+					معالَج {diagReport.tickResult.processed}، تخطّى {diagReport.tickResult.skipped}،
+					فشل {diagReport.tickResult.failed}، أقسام جديدة {diagReport.tickResult.sectionsCreated}
+				</div>
+			{/if}
+			<details class="mt-3">
+				<summary class="cursor-pointer text-xs text-purple-700">JSON الكامل (للنسخ)</summary>
+				<pre class="mt-2 max-h-96 overflow-auto rounded bg-white p-2 text-[10px]" dir="ltr">{JSON.stringify(
+						diagReport,
+						null,
+						2
+					)}</pre>
+			</details>
 		</section>
 	{/if}
 

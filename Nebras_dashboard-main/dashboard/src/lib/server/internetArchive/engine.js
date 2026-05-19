@@ -97,12 +97,18 @@ export const DEFAULT_SEEDS = Object.freeze([
  * البذور الافتراضية (DEFAULT_SEEDS) تُحقن في readConfig إن غابت لكي
  * يضمن المحرّك أنّ لديه دائماً ما يجلبه.
  */
+/**
+ * إعدادات ضيّقة لـ Vercel Hobby (10s timeout):
+ *  - batchSize=1 → عنصر واحد لكل tick (تنزيل + رفع ضمن النافذة).
+ *  - scrapeCount=20 → بحث أصغر للسرعة.
+ *  - allowMissingLicenseInTrustedCollections=true لتمرير عناصر opensource.
+ */
 const DEFAULT_CONFIG = Object.freeze({
 	enabled: true,
 	seeds: [...DEFAULT_SEEDS],
 	tickIntervalMs: 12000,
-	batchSize: 2,
-	scrapeCount: 50,
+	batchSize: 1,
+	scrapeCount: 20,
 	trustedCollections: ['opensource', 'opensource_arabic', 'community_texts'],
 	allowMissingLicenseInTrustedCollections: true
 });

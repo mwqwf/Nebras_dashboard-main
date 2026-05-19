@@ -66,6 +66,14 @@ export async function bootstrapEngine() {
 	return authedJson(`${BASE}/engine/bootstrap`, { method: 'POST', body: {} });
 }
 
+/**
+ * تشخيص شامل — ينفّذ tick متزامن ويُرجع: env، Firebase، RTDB، اختبار IA API،
+ * نتيجة tick أو stack trace للخطأ. للتشخيص العملي على Vercel.
+ */
+export async function diagnoseEngine() {
+	return authedJson(`${BASE}/engine/diagnose`, { method: 'POST', body: {} });
+}
+
 export async function stopEngine() {
 	return authedJson(`${BASE}/engine/stop`, { method: 'POST', body: {} });
 }
