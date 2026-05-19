@@ -1,31 +1,26 @@
 /**
- * engine.js — محرّك Internet Archive لنبراس.
+ * engine.js — محرّك Internet Archive لنبراس (مستقلّ تماماً عن noorLibrary).
  *
  * ╔══════════════════════════════════════════════════════════════════╗
- * ║  المبدأ الذهبي:                                                  ║
- * ║    • لا اتصال مباشر من التطبيق بـ archive.org.                    ║
- * ║    • لا أزرار ولا تبويبات تفصح عن المصدر.                          ║
- * ║    • لا يدخل أيّ ملفّ التطبيق ما لم يكن:                          ║
- * ║        (1) مرخّصاً للنشر (licenseFilter).                          ║
- * ║        (2) قابلاً للتشغيل فعلاً (playabilityFilter).                ║
- * ║        (3) منزَّلاً بالكامل ومُتحقَّقاً من سلامة بايتاته.            ║
- * ║    • كلّ تصنيف/بذرة (seed) يجلب نتائجه **كاملةً** عبر cursor       ║
- * ║      Scraping API حتى نفاد النتائج، ثم ينتقل إلى البذرة التالية.   ║
+ * ║  المبدأ الذهبي — كلّ شيء آليّ، لا تدخّل بشريّ:                     ║
+ * ║                                                                  ║
+ * ║   1) لا اتصال مباشر من التطبيق بـ archive.org.                    ║
+ * ║   2) لا حقول ولا أزرار تفصح عن المصدر داخل التطبيق.                ║
+ * ║   3) لا يدخل أيّ ملفّ التطبيق ما لم يكن:                          ║
+ * ║        مرخّصاً (licenseFilter) + قابلاً للتشغيل (playabilityFilter)║
+ * ║        + مُتحقَّقاً من سلامة بايتاته (verifyDownloadedBuffer).      ║
+ * ║   4) كلّ بذرة تستنفد نتائجها كاملةً قبل التحوّل للتاليّة.            ║
+ * ║   5) التصنيف **آليّ بالكامل** — إن لم يوجد قسم مناسب يُنشئ المحرّك  ║
+ * ║      قسماً جديداً تحت main افتراضي ويكتب فيه. لا hierarchy يدويّة. ║
+ * ║   6) Bootstrap واحد (`bootstrap()`) يضع بذوراً افتراضيّة + يُفعّل   ║
+ * ║      enabled + يطلق أوّل tick فوراً.                               ║
  * ╚══════════════════════════════════════════════════════════════════╝
  *
  * مسارات RTDB:
- *   ia_library_engine/config    — { enabled, seeds[], tickIntervalMs,
- *                                   batchSize, defaultHierarchy{},
- *                                   trustedCollections[],
- *                                   allowMissingLicenseInTrustedCollections }
- *   ia_library_engine/cursor    — { seedIndex, scrapeCursor }
- *   ia_library_engine/stats     — { totalImported, totalSkipped, totalFailed,
- *                                   lastRunAt, lastError, runsCount,
- *                                   consecutiveEmptyRuns }
- *   ia_library_engine/log/{ts}  — آخر 60 إدخال
- *
- * ملاحظة Vercel: الحلقة الداخليّة لا تستمرّ على serverless — Cron خارجي
- * يستدعي POST /api/admin/internet-archive/engine/tick كلّ X دقيقة.
+ *   ia_library_engine/config   — { enabled, seeds[], tickIntervalMs, batchSize, scrapeCount, trustedCollections[], allowMissingLicenseInTrustedCollections }
+ *   ia_library_engine/cursor   — { seedIndex, scrapeCursor }
+ *   ia_library_engine/stats    — إحصائيات + consecutiveEmptyRuns
+ *   ia_library_engine/log/{ts} — آخر 60 إدخال
  */
 
 import {
@@ -34,18 +29,20 @@ import {
 	isAdminConfigured,
 	sendTopicMessage
 } from '$lib/server/firebaseAdmin.js';
-import {
-	adminFsBulkDeleteFileMirrorIds
-} from '$lib/server/nebrasUnifiedFirestoreAdmin.js';
+import { adminFsBulkDeleteFileMirrorIds } from '$lib/server/nebrasUnifiedFirestoreAdmin.js';
 import {
 	NEBRAS_FS_UPLOADS,
 	NEBRAS_FS_CONTENT_FILES
 } from '$lib/firebase/nebrasUnifiedPaths.js';
-import {
-	buildSectionsTree,
-	validateHierarchyPath
-} from '$lib/server/noorLibrary/sectionsTree.js';
 
+// كلّ الاستيرادات من داخل مجلّد internetArchive فقط — لا noorLibrary.
+import { buildSectionsTree, validateHierarchyPath } from './sectionsTree.js';
+import {
+	createMainSectionAdmin,
+	createSubSectionAdmin,
+	createSecondarySectionAdmin
+} from './sectionsCreator.js';
+import { classifyItem } from './classifier.js';
 import { scrapeOnePage, buildLuceneQuery } from './search.js';
 import { previewItem } from './fetcher.js';
 import { downloadIaFile } from './downloader.js';
@@ -65,46 +62,47 @@ const LOG_PATH = `${ENGINE_ROOT}/log`;
 const LOG_MAX_ENTRIES = 60;
 
 /**
- * @typedef {Object} IaSeed
- * @property {string} id  معرّف ثابت للبذرة (للـ cursor)
- * @property {string} label  اسم عربي للعرض
- * @property {string} [q]  استعلام حرّ
- * @property {Array<'document'|'audio'|'video'>} [nebrasTypes]
- * @property {string[]} [languages]
- * @property {string[]} [collections]
- * @property {string[]} [creators]
- * @property {{
- *   mainId: string,
- *   mainName?: string,
- *   subId: string,
- *   subName?: string,
- *   secondaryId?: string|null,
- *   secondaryName?: string|null
- * }} hierarchy  هدف التصنيف الإجباري (يدوي — لا تصنيف آلي في النسخة الأولى)
+ * بذور افتراضيّة جاهزة — تكفي لبدء الجلب الآليّ فوراً بدون أيّ JSON يدوي.
+ * كلّ بذرة بلا hierarchy ثابتة — التصنيف الآليّ يقرّر مكان كلّ عنصر.
+ *
+ * يمكن للمسؤول إضافة بذوره عبر updateSeeds؛ لكنّ هذه القائمة وحدها كافية
+ * لرؤية محتوى في التطبيق فور التشغيل.
  */
-
-/**
- * @typedef {Object} IaEngineConfig
- * @property {boolean} enabled
- * @property {IaSeed[]} seeds
- * @property {number} tickIntervalMs
- * @property {number} batchSize  عدد العناصر المعالَجة في كلّ tick
- * @property {number} scrapeCount  عدد العناصر المطلوبة من Scraping API لكلّ نداء
- * @property {string[]} trustedCollections
- * @property {boolean} allowMissingLicenseInTrustedCollections
- */
+export const DEFAULT_SEEDS = Object.freeze([
+	{
+		id: 'arabic_texts_opensource',
+		label: 'كتب عربية — مصدر مفتوح',
+		q: 'language:Arabic',
+		nebrasTypes: ['document'],
+		collections: ['opensource_arabic', 'community_texts', 'opensource']
+	},
+	{
+		id: 'arabic_audio_opensource',
+		label: 'صوتيّات عربيّة — مصدر مفتوح',
+		q: 'language:Arabic',
+		nebrasTypes: ['audio'],
+		collections: ['opensource_audio', 'opensource']
+	},
+	{
+		id: 'islamic_video_opensource',
+		label: 'فيديو إسلامي — مصدر مفتوح',
+		q: '(islamic OR إسلامي OR محاضرة)',
+		nebrasTypes: ['video'],
+		collections: ['opensource_movies', 'opensource']
+	}
+]);
 
 const DEFAULT_CONFIG = Object.freeze({
 	enabled: false,
 	seeds: [],
 	tickIntervalMs: 12000,
 	batchSize: 2,
-	scrapeCount: 100,
-	trustedCollections: [],
-	allowMissingLicenseInTrustedCollections: false
+	scrapeCount: 50,
+	trustedCollections: ['opensource', 'opensource_arabic', 'community_texts'],
+	allowMissingLicenseInTrustedCollections: true
 });
 
-// ── State (singleton in Node process, تجاوز HMR في dev) ─────────────
+// ── State singleton ─────────────────────────────────────────────────
 const GLOBAL_KEY = '__NEBRAS_IA_ENGINE__';
 function getGlobalState() {
 	if (!globalThis[GLOBAL_KEY]) {
@@ -120,21 +118,25 @@ function getGlobalState() {
 	return globalThis[GLOBAL_KEY];
 }
 
-// ── RTDB helpers ────────────────────────────────────────────────────
+// ── Seed validation ─────────────────────────────────────────────────
 function isValidSeed(seed) {
 	if (!seed || typeof seed !== 'object') return false;
 	if (!String(seed.id || '').trim()) return false;
-	if (!seed.hierarchy?.mainId || !seed.hierarchy?.subId) return false;
 	const types = Array.isArray(seed.nebrasTypes) ? seed.nebrasTypes : [];
 	for (const t of types) {
 		if (t !== 'document' && t !== 'audio' && t !== 'video') return false;
 	}
-	if (!String(seed.q || '').trim() && types.length === 0 && (!seed.collections || seed.collections.length === 0)) {
-		return false; // بذرة بلا أي تضييق = خطر
+	if (
+		!String(seed.q || '').trim() &&
+		types.length === 0 &&
+		(!seed.collections || seed.collections.length === 0)
+	) {
+		return false; // بذرة بلا أيّ تضييق = خطر
 	}
 	return true;
 }
 
+// ── RTDB helpers ────────────────────────────────────────────────────
 async function readConfig() {
 	const snap = await getAdminDatabase().ref(CONFIG_PATH).get();
 	if (!snap.exists()) return { ...DEFAULT_CONFIG };
@@ -146,10 +148,12 @@ async function readConfig() {
 		tickIntervalMs: Math.max(3000, Number(v.tickIntervalMs) || DEFAULT_CONFIG.tickIntervalMs),
 		batchSize: Math.max(1, Math.min(10, Number(v.batchSize) || DEFAULT_CONFIG.batchSize)),
 		scrapeCount: Math.max(10, Math.min(1000, Number(v.scrapeCount) || DEFAULT_CONFIG.scrapeCount)),
-		trustedCollections: Array.isArray(v.trustedCollections) ? v.trustedCollections : [],
-		allowMissingLicenseInTrustedCollections: Boolean(
-			v.allowMissingLicenseInTrustedCollections
-		)
+		trustedCollections: Array.isArray(v.trustedCollections)
+			? v.trustedCollections
+			: DEFAULT_CONFIG.trustedCollections,
+		allowMissingLicenseInTrustedCollections: v.allowMissingLicenseInTrustedCollections === undefined
+			? DEFAULT_CONFIG.allowMissingLicenseInTrustedCollections
+			: Boolean(v.allowMissingLicenseInTrustedCollections)
 	};
 }
 
@@ -190,6 +194,7 @@ async function readStats() {
 			totalImported: 0,
 			totalSkipped: 0,
 			totalFailed: 0,
+			sectionsCreated: 0,
 			lastRunAt: null,
 			lastError: null,
 			runsCount: 0,
@@ -201,6 +206,7 @@ async function readStats() {
 		totalImported: Number(v.totalImported) || 0,
 		totalSkipped: Number(v.totalSkipped) || 0,
 		totalFailed: Number(v.totalFailed) || 0,
+		sectionsCreated: Number(v.sectionsCreated) || 0,
 		lastRunAt: v.lastRunAt || null,
 		lastError: v.lastError || null,
 		runsCount: Number(v.runsCount) || 0,
@@ -216,10 +222,10 @@ async function bumpStats(patch) {
 			totalImported: Number(c.totalImported ?? 0) + Number(patch.importedDelta ?? 0),
 			totalSkipped: Number(c.totalSkipped ?? 0) + Number(patch.skippedDelta ?? 0),
 			totalFailed: Number(c.totalFailed ?? 0) + Number(patch.failedDelta ?? 0),
+			sectionsCreated: Number(c.sectionsCreated ?? 0) + Number(patch.sectionsCreatedDelta ?? 0),
 			runsCount: Number(c.runsCount ?? 0) + Number(patch.runsDelta ?? 0),
 			lastRunAt: patch.touchLastRun ? Date.now() : (c.lastRunAt ?? null),
-			lastError:
-				patch.lastError !== undefined ? (patch.lastError ?? null) : (c.lastError ?? null),
+			lastError: patch.lastError !== undefined ? (patch.lastError ?? null) : (c.lastError ?? null),
 			consecutiveEmptyRuns: Number(c.consecutiveEmptyRuns ?? 0)
 		};
 	});
@@ -229,7 +235,6 @@ async function appendLog(entry) {
 	const db = getAdminDatabase();
 	const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 	await db.ref(`${LOG_PATH}/${id}`).set({ ...entry, ts: Date.now() });
-	// تنظيف ذاتي
 	const all = await db
 		.ref(LOG_PATH)
 		.orderByChild('ts')
@@ -258,7 +263,7 @@ async function readLog(limit = 30) {
 		.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
 }
 
-// ── FCM ─────────────────────────────────────────────────────────────
+// ── FCM (إشعار حياديّ المصدر) ──────────────────────────────────────
 const FCM_DEFAULT_TOPIC = 'nebras_all_users';
 function fcmTopic() {
 	return String(process?.env?.FCM_BROADCAST_TOPIC || '').trim() || FCM_DEFAULT_TOPIC;
@@ -266,7 +271,6 @@ function fcmTopic() {
 function idToString(value) {
 	return value === null || value === undefined ? '' : String(value).trim();
 }
-
 async function notifyFcmContentAdded(info) {
 	if (!isAdminConfigured()) return;
 	const title = 'محتوى جديد في نبراس';
@@ -281,8 +285,6 @@ async function notifyFcmContentAdded(info) {
 			body,
 			data: {
 				type: 'content_added',
-				// نُبقي source محايداً — لا تذكر "internet archive" حتى في الـ FCM payload
-				// كي لا يظهر للمستخدم أيّ أثر على المصدر.
 				source: 'nebras_dashboard',
 				contentType: info?.contentType || 'document',
 				contentId: idToString(info?.contentId),
@@ -304,63 +306,141 @@ async function notifyFcmContentAdded(info) {
 	}
 }
 
-// ── Core: import one IA item end-to-end ─────────────────────────────
+// ── Core: import one item ──────────────────────────────────────────
 
 /**
- * يُنفّذ الدورة الكاملة لعنصر IA واحد. الترتيب صارم — لا كتابة في DB
- * إلا بعد التحقّق من كلّ شيء ونجاح التنزيل.
+ * يستورد عنصر IA واحد. الـ hierarchy:
+ *   - إن وُجدت hierarchy صريحة (يدوي/طارئ) — يُعتمد ما فيها بعد التحقّق.
+ *   - وإلا → classifier تلقائي + إنشاء أقسام عند الحاجة.
  *
  * @param {string} identifier
- * @param {IaSeed} seed
- * @param {IaEngineConfig} cfg
- * @returns {Promise<{
- *   fileId: string,
- *   title: string,
- *   nebrasContentType: 'document'|'audio'|'video',
- *   hierarchy: { main:{id:string,name:string}, sub:{id:string,name:string}, secondary:{id:string,name:string}|null }
- * }>}
+ * @param {{
+ *   trustedCollections?: string[],
+ *   allowMissingLicenseInTrustedCollections?: boolean,
+ *   forcedHierarchy?: { mainId:string, subId:string, secondaryId?:string|null }
+ * }} opts
  */
-export async function importItem(identifier, seed, cfg) {
-	if (!seed || !seed.hierarchy?.mainId || !seed.hierarchy?.subId) {
-		throw Object.assign(new Error('seed.hierarchy غير صالح.'), {
-			reason: 'invalid_hierarchy',
-			status: 400
-		});
-	}
-
-	// 1) قراءة شجرة الأقسام والتحقّق من الهيكلية. نستخدم نفس validator
-	//    الذي تستعمله noorLibrary لضمان توافق الكتابة.
-	const sections = await buildSectionsTree();
-	const validated = validateHierarchyPath(
-		{
-			mainId: seed.hierarchy.mainId,
-			subId: seed.hierarchy.subId,
-			secondaryId: seed.hierarchy.secondaryId || null
-		},
-		sections.index
-	);
-	if (!validated.valid) {
-		throw Object.assign(new Error(`hierarchy غير صالحة: ${validated.reason}`), {
-			reason: validated.reason,
-			status: 400
-		});
-	}
-	const main = validated.resolved.main;
-	const sub = validated.resolved.sub;
-	const secondary = validated.resolved.secondary;
-
-	// 2) preview — يفحص الترخيص ويختار أفضل ملف قابل للتشغيل.
+export async function importItem(identifier, opts = {}) {
+	// 1) preview — يفحص الترخيص + يختار أفضل ملف قابل للتشغيل.
 	const preview = await previewItem(identifier, {
-		trustedCollections: cfg.trustedCollections,
-		allowMissingLicenseInTrustedCollections: cfg.allowMissingLicenseInTrustedCollections
+		trustedCollections: opts.trustedCollections,
+		allowMissingLicenseInTrustedCollections: opts.allowMissingLicenseInTrustedCollections
 	});
 
-	// 3) تنزيل الملفّ كـ Buffer مع تحقّق magic bytes ومقاس.
+	// 2) قراءة شجرة الأقسام الحاليّة (مرّة واحدة).
+	let sections = await buildSectionsTree();
+
+	// 3) إمّا hierarchy مفروضة، أو classifier تلقائي مع إنشاء أقسام.
+	let main = null;
+	let sub = null;
+	let secondary = null;
+	const createdSectionsIds = [];
+	let sectionsCreatedDelta = 0;
+	let decisionReasoning = 'forced_hierarchy';
+	let decisionConfidence = 1.0;
+
+	if (opts.forcedHierarchy?.mainId && opts.forcedHierarchy?.subId) {
+		const v = validateHierarchyPath(
+			{
+				mainId: opts.forcedHierarchy.mainId,
+				subId: opts.forcedHierarchy.subId,
+				secondaryId: opts.forcedHierarchy.secondaryId || null
+			},
+			sections.index
+		);
+		if (!v.valid) {
+			throw Object.assign(new Error(`hierarchy غير صالحة: ${v.reason}`), {
+				reason: v.reason,
+				status: 400
+			});
+		}
+		main = v.resolved.main;
+		sub = v.resolved.sub;
+		secondary = v.resolved.secondary;
+	} else {
+		// التصنيف التلقائي الكامل — لا تدخّل بشريّ.
+		const decision = classifyItem(sections, {
+			title: preview.title,
+			author: preview.author,
+			description: preview.description,
+			subjects: preview.subjects,
+			collections: preview.collections,
+			nebrasContentType: preview.nebrasContentType
+		});
+		decisionReasoning = decision.reasoning;
+		decisionConfidence = decision.confidence;
+
+		// 3.a) إنشاء main إن لزم
+		let mainId = decision.mainId;
+		if (decision.kind === 'create_main') {
+			const created = await createMainSectionAdmin(decision.newMainName);
+			mainId = String(created.id);
+			if (!created.alreadyExisted) {
+				createdSectionsIds.push(mainId);
+				sectionsCreatedDelta += 1;
+				await appendLog({
+					level: 'success',
+					message: `قسم رئيسي جديد: "${created.name}"`,
+					sectionId: mainId,
+					kind: 'main_section_created'
+				}).catch(() => {});
+			}
+			// إنشاء sub أوّل تحته مباشرةً
+			const subCreated = await createSubSectionAdmin(mainId, decision.newSubName);
+			const subId = String(subCreated.id);
+			if (!subCreated.alreadyExisted) {
+				createdSectionsIds.push(subId);
+				sectionsCreatedDelta += 1;
+				await appendLog({
+					level: 'success',
+					message: `قسم فرعي جديد: "${subCreated.name}" تحت "${created.name}"`,
+					sectionId: subId,
+					kind: 'sub_section_created'
+				}).catch(() => {});
+			}
+			// أعد القراءة لتلتقط main+sub الجديدين
+			sections = await buildSectionsTree();
+			main = sections.index.mainsById[mainId];
+			sub = sections.index.subsById[subId];
+		} else if (decision.kind === 'create_sub') {
+			const subCreated = await createSubSectionAdmin(mainId, decision.newSubName);
+			const subId = String(subCreated.id);
+			if (!subCreated.alreadyExisted) {
+				createdSectionsIds.push(subId);
+				sectionsCreatedDelta += 1;
+				await appendLog({
+					level: 'success',
+					message: `قسم فرعي جديد: "${subCreated.name}"`,
+					sectionId: subId,
+					kind: 'sub_section_created'
+				}).catch(() => {});
+			}
+			sections = await buildSectionsTree();
+			main = sections.index.mainsById[String(mainId)];
+			sub = sections.index.subsById[subId];
+		} else {
+			// existing — فقط استعمل ما اقترحه classifier
+			main = sections.index.mainsById[String(decision.mainId)];
+			sub = sections.index.subsById[String(decision.subId)];
+			secondary = decision.secondaryId
+				? sections.index.secondariesById[String(decision.secondaryId)]
+				: null;
+		}
+	}
+
+	if (!main || !sub) {
+		throw Object.assign(new Error('فشل تحديد main/sub بعد التصنيف.'), {
+			reason: 'classification_failed',
+			status: 500
+		});
+	}
+
+	// 4) تنزيل الملفّ كـ Buffer مع تحقّق magic bytes + حدّ الحجم.
 	const downloaded = await downloadIaFile(preview.pickedFile.downloadUrl, {
 		declaredType: preview.nebrasContentType
 	});
 
-	// 4) رفع وكتابة Firestore (مرآة مزدوجة).
+	// 5) رفع + كتابة مرآة Firestore (نفس schema الرفع اليدوي).
 	const result = await adminUploadAndRegister({
 		buffer: downloaded.buffer,
 		contentType: downloaded.contentType,
@@ -393,7 +473,7 @@ export async function importItem(identifier, seed, cfg) {
 		}
 	});
 
-	// 5) سجّل في registry لمنع التكرار.
+	// 6) سجّل في registry لمنع التكرار.
 	await recordImported(identifier, {
 		fileId: result.fileId,
 		title: preview.title,
@@ -405,12 +485,17 @@ export async function importItem(identifier, seed, cfg) {
 			subId: String(sub.id),
 			secondaryId: secondary ? String(secondary.id) : null
 		},
+		createdSectionsIds,
 		pickedFileName: preview.pickedFile.name,
 		pickedFileSize: preview.pickedFile.size,
 		nebrasContentType: preview.nebrasContentType
 	});
 
-	// 6) إشعار FCM (محايد المصدر — تماماً كاليدوي).
+	if (sectionsCreatedDelta > 0) {
+		await bumpStats({ sectionsCreatedDelta }).catch(() => {});
+	}
+
+	// 7) إشعار FCM (محايد المصدر).
 	await notifyFcmContentAdded({
 		title: preview.title,
 		contentType: preview.nebrasContentType,
@@ -430,31 +515,20 @@ export async function importItem(identifier, seed, cfg) {
 		hierarchy: {
 			main: { id: String(main.id), name: String(main.name) },
 			sub: { id: String(sub.id), name: String(sub.name) },
-			secondary: secondary
-				? { id: String(secondary.id), name: String(secondary.name) }
-				: null
-		}
+			secondary: secondary ? { id: String(secondary.id), name: String(secondary.name) } : null
+		},
+		createdSectionsIds,
+		decisionReasoning,
+		decisionConfidence
 	};
 }
 
-// ── Tick: one batch on the current seed ─────────────────────────────
+// ── Tick ────────────────────────────────────────────────────────────
 
-/**
- * يُنفّذ دورة واحدة. يضمن "كلّ تصنيف يجلب محتواه بالكامل" بأنّه:
- *   - يستمرّ على نفس البذرة حتى يستنفد كلّ نتائج Scraping API (scrapeCursor = null)
- *   - لا ينتقل للبذرة التاليّة قبل ذلك
- *
- * @returns {Promise<{
- *   processed:number, skipped:number, failed:number,
- *   advancedToNextSeed:boolean,
- *   cursor:{seedIndex:number,scrapeCursor:string|null},
- *   currentSeedId:string|null
- * }>}
- */
 export async function runEngineTick() {
 	const cfg = await readConfig();
 	if (!cfg.seeds.length) {
-		throw Object.assign(new Error('لا توجد بذور (seeds) مهيَّأة في الإعدادات.'), {
+		throw Object.assign(new Error('لا توجد بذور (seeds) مهيَّأة.'), {
 			reason: 'no_seeds',
 			status: 400
 		});
@@ -466,7 +540,6 @@ export async function runEngineTick() {
 	}
 	const seed = cfg.seeds[cursor.seedIndex];
 
-	// 1) بناء الاستعلام + استرجاع صفحة من Scraping API.
 	const query = buildLuceneQuery({
 		q: seed.q,
 		nebrasTypes: seed.nebrasTypes,
@@ -480,14 +553,13 @@ export async function runEngineTick() {
 		cursor: cursor.scrapeCursor
 	});
 
-	// 2) إن لم تأتِ نتائج، أو وصلنا للنهاية مع 0 جديد، نتقدّم للبذرة التاليّة.
 	if (page.items.length === 0) {
 		const nextIndex = (cursor.seedIndex + 1) % cfg.seeds.length;
 		const nextCursor = { seedIndex: nextIndex, scrapeCursor: null };
 		await writeCursor(nextCursor);
 		await appendLog({
 			level: 'info',
-			message: `استُنفدت البذرة "${seed.label || seed.id}" — التحوّل للبذرة التاليّة.`,
+			message: `استُنفدت "${seed.label || seed.id}" — التحوّل للبذرة التاليّة.`,
 			seedId: seed.id
 		});
 		return {
@@ -500,38 +572,38 @@ export async function runEngineTick() {
 		};
 	}
 
-	// 3) فلترة العناصر المعروفة (مستوردة أو blacklisted).
 	const identifiers = page.items.map((it) => String(it?.identifier || '')).filter(Boolean);
 	const { newIds } = await partitionKnownItems(identifiers);
 	const newSet = new Set(newIds);
 	const toProcess = page.items.filter((it) => newSet.has(String(it?.identifier || '')));
 
-	// 4) معالجة batch محدود (يحترم batchSize). الباقي يبقى متاحاً عبر الـ cursor.
 	const batch = toProcess.slice(0, cfg.batchSize);
 	let processed = 0;
 	let skipped = identifiers.length - toProcess.length;
 	let failed = 0;
+	let totalSectionsCreated = 0;
 
 	for (const item of batch) {
 		const id = String(item?.identifier || '');
 		if (!id) continue;
-
-		// race-condition guard
 		if (await isItemImported(id).catch(() => false)) {
 			skipped += 1;
 			continue;
 		}
-
 		try {
-			const r = await importItem(id, seed, cfg);
+			const r = await importItem(id, {
+				trustedCollections: cfg.trustedCollections,
+				allowMissingLicenseInTrustedCollections: cfg.allowMissingLicenseInTrustedCollections
+				// لا forcedHierarchy → تصنيف آلي كامل
+			});
 			processed += 1;
+			totalSectionsCreated += r.createdSectionsIds?.length || 0;
 			await appendLog({
 				level: 'success',
-				message: `استورد "${r.title}" (${r.nebrasContentType})`,
+				message: `استورد "${r.title}" → ${r.hierarchy.main.name} › ${r.hierarchy.sub.name}${r.hierarchy.secondary ? ' › ' + r.hierarchy.secondary.name : ''}`,
 				identifier: id,
 				fileId: r.fileId,
-				seedId: seed.id,
-				hierarchy: r.hierarchy
+				seedId: seed.id
 			});
 		} catch (err) {
 			failed += 1;
@@ -551,11 +623,7 @@ export async function runEngineTick() {
 		}
 	}
 
-	// 5) تحديد cursor التالي:
-	//    - إن لم نُعالج كلّ النتائج في هذه الصفحة (بسبب batchSize) → نُبقي الـ
-	//      scrapeCursor الحالي ونعالج الباقي في tick التالي.
-	//    - وإلا نقفز إلى scrapeCursor الذي أعطاه IA؛ إن كان null فقد استنفدنا
-	//      البذرة → ننتقل للتاليّة.
+	// تحديد cursor التالي — البذرة تستنفد كاملةً قبل الانتقال.
 	let advancedToNextSeed = false;
 	let nextCursor;
 	if (batch.length < toProcess.length) {
@@ -569,7 +637,6 @@ export async function runEngineTick() {
 	}
 	await writeCursor(nextCursor);
 
-	// 6) تحديث الإحصائيات + back-off counter
 	await bumpStats({
 		importedDelta: processed,
 		skippedDelta: skipped,
@@ -596,13 +663,14 @@ export async function runEngineTick() {
 		processed,
 		skipped,
 		failed,
+		sectionsCreated: totalSectionsCreated,
 		advancedToNextSeed,
 		cursor: nextCursor,
 		currentSeedId: seed.id
 	};
 }
 
-// ── Public control surface ─────────────────────────────────────────
+// ── Control ────────────────────────────────────────────────────────
 
 export async function startEngine() {
 	const cfg = await writeConfig({ enabled: true });
@@ -612,7 +680,7 @@ export async function startEngine() {
 		return { running: true, alreadyRunning: true, config: cfg };
 	}
 	state.running = true;
-	await appendLog({ level: 'info', message: 'بدء المحرّك الآلي.' });
+	await appendLog({ level: 'info', message: 'بدء المحرّك الآليّ.' });
 	state.timer = setTimeout(() => tickLoop().catch(() => {}), 100);
 	return { running: true, alreadyRunning: false, config: cfg };
 }
@@ -629,12 +697,53 @@ export async function stopEngine() {
 	return { running: false, config: cfg };
 }
 
+/**
+ * Bootstrap — زرّ واحد يفعّل كلّ شيء آليّاً:
+ *   1) لو seeds فارغة → ضع DEFAULT_SEEDS
+ *   2) فعّل enabled
+ *   3) أعد المؤشّر إلى البداية (cursor=0, scrapeCursor=null)
+ *   4) أطلق أوّل tick فوراً
+ *
+ * بعد هذا الاستدعاء يبدأ المحتوى يظهر في التطبيق خلال ثوانٍ — بدون أيّ
+ * تدخّل بشري آخر، وبدون JSON يدوي.
+ */
+export async function bootstrap() {
+	const current = await readConfig();
+	const seeds = current.seeds.length > 0 ? current.seeds : [...DEFAULT_SEEDS];
+	const cfg = await writeConfig({ seeds, enabled: true });
+	await writeCursor({ seedIndex: 0, scrapeCursor: null });
+	await appendLog({
+		level: 'info',
+		message: `Bootstrap: ${cfg.seeds.length} بذور مُفعَّلة — بدء الجلب الآليّ الكامل.`
+	});
+
+	// شغّل أوّل tick في الخلفية (لا ننتظر اكتماله).
+	let firstTickResult = null;
+	try {
+		firstTickResult = await runEngineTick();
+	} catch (err) {
+		await appendLog({
+			level: 'warn',
+			message: `أوّل tick فشل بعد bootstrap: ${err?.message || err}`,
+			reason: err?.reason || 'bootstrap_first_tick_failed'
+		});
+	}
+
+	// كذلك أبدِ الحلقة الداخليّة (تعمل على Node adapter؛ Cron الخارجي يكفي على Vercel).
+	const state = getGlobalState();
+	if (!state.running) {
+		state.running = true;
+		state.timer = setTimeout(() => tickLoop().catch(() => {}), 100);
+	}
+
+	return { ok: true, config: cfg, firstTickResult };
+}
+
 async function tickLoop() {
 	const state = getGlobalState();
 	if (!state.running || state.currentTickInFlight) return;
 	state.currentTickInFlight = true;
 	state.lastTickStartedAt = Date.now();
-
 	try {
 		const cfg = await readConfig();
 		if (!cfg.enabled) {
@@ -696,23 +805,17 @@ export async function getEngineStatus({ logLimit = 30 } = {}) {
 	};
 }
 
-/**
- * تحديث البذور بكاملها. يُعيد المؤشّر إلى البداية.
- */
 export async function updateSeeds(seeds) {
 	const filtered = (seeds || []).filter(isValidSeed);
 	const cfg = await writeConfig({ seeds: filtered });
 	await writeCursor({ seedIndex: 0, scrapeCursor: null });
 	await appendLog({
 		level: 'info',
-		message: `تمّ تحديث البذور (${cfg.seeds.length} بذرة) — إعادة المؤشّر.`
+		message: `تمّ تحديث البذور (${cfg.seeds.length} بذرة).`
 	});
 	return cfg;
 }
 
-/**
- * إعادة تعيين المؤشّر فقط (يبدأ المحرّك من أوّل بذرة).
- */
 export async function resetCursor() {
 	await writeCursor({ seedIndex: 0, scrapeCursor: null });
 	await appendLog({ level: 'info', message: 'إعادة تعيين المؤشّر.' });
@@ -720,12 +823,13 @@ export async function resetCursor() {
 }
 
 /**
- * "إعادة ضبط المصنع": يمسح كلّ ما رفعه محرّك IA من السجلات (uploads
- * + content_files) + registry + failures + cursor. لا يمسّ:
- *   - أيّ محتوى رفعه إنسان (يُحدَّد بـ __provider !== 'internet_archive')
- *   - الأقسام (لا ننشئ أقساماً تلقائياً في هذه النسخة).
+ * Factory reset — يمسح كلّ ما رفعه/أنشأه محرّك IA. لا يلمس أيّ شيء بشريّ.
  *
- * @returns {Promise<{ ok:true, cleared:{ uploads:number, content_files:number, registry:number, failures:number } }>}
+ * يمسح:
+ *   - sections بعلامة __createdBy='ia_library_engine'
+ *   - files/uploads بعلامة __provider='internet_archive'
+ *   - registry + failures + cursor
+ *   - يصفّر stats
  */
 export async function factoryReset() {
 	const db = getAdminDatabase();
@@ -734,17 +838,30 @@ export async function factoryReset() {
 	try {
 		await stopEngine();
 	} catch {
-		// ignore
+		/* ignore */
 	}
 
-	const [registrySnap, failuresSnap, uploadsSnap, contentFilesSnap] = await Promise.all([
-		db.ref('ia_library_registry').get(),
-		db.ref('ia_library_failures').get(),
-		fs.collection(NEBRAS_FS_UPLOADS).get(),
-		fs.collection(NEBRAS_FS_CONTENT_FILES).get()
-	]);
+	// نقرأ كلّ المستويات والوثائق المعنيّة بالتوازي
+	const [registrySnap, failuresSnap, uploadsSnap, contentFilesSnap, mainSnap, subSnap, secSnap] =
+		await Promise.all([
+			db.ref('ia_library_registry').get(),
+			db.ref('ia_library_failures').get(),
+			fs.collection(NEBRAS_FS_UPLOADS).get(),
+			fs.collection(NEBRAS_FS_CONTENT_FILES).get(),
+			fs.collection('sections_unified').doc('main').get(),
+			fs.collection('sections_unified').doc('sub').get(),
+			fs.collection('sections_unified').doc('secondary').get()
+		]);
 
-	const cleared = { uploads: 0, content_files: 0, registry: 0, failures: 0 };
+	const cleared = {
+		uploads: 0,
+		content_files: 0,
+		registry: 0,
+		failures: 0,
+		mains: 0,
+		subs: 0,
+		secondaries: 0
+	};
 	const updates = {};
 
 	if (registrySnap.exists()) {
@@ -760,12 +877,14 @@ export async function factoryReset() {
 		totalImported: 0,
 		totalSkipped: 0,
 		totalFailed: 0,
+		sectionsCreated: 0,
 		runsCount: 0,
 		lastRunAt: null,
 		lastError: 'factory_reset',
 		consecutiveEmptyRuns: 0
 	};
 
+	// ملفات الـ IA — نحدّدها بـ __provider
 	const fileIdsToDelete = new Set();
 	if (!uploadsSnap.empty) {
 		for (const d of uploadsSnap.docs) {
@@ -784,14 +903,61 @@ export async function factoryReset() {
 		}
 	}
 
+	// أقسام المحرّك — نحدّدها بـ __createdBy
+	const iaMainIds = new Set();
+	const iaSubIds = new Set();
+	const iaSecIds = new Set();
+	if (mainSnap.exists) {
+		for (const [id, val] of Object.entries(mainSnap.data() || {})) {
+			if (val?.__createdBy === 'ia_library_engine') {
+				iaMainIds.add(String(id));
+				cleared.mains += 1;
+			}
+		}
+	}
+	if (subSnap.exists) {
+		for (const [id, val] of Object.entries(subSnap.data() || {})) {
+			const parent = String(val?.main_section ?? '');
+			if (val?.__createdBy === 'ia_library_engine' || iaMainIds.has(parent)) {
+				iaSubIds.add(String(id));
+				cleared.subs += 1;
+			}
+		}
+	}
+	if (secSnap.exists) {
+		for (const [id, val] of Object.entries(secSnap.data() || {})) {
+			const parent = String(val?.sub_section ?? '');
+			if (val?.__createdBy === 'ia_library_engine' || iaSubIds.has(parent)) {
+				iaSecIds.add(String(id));
+				cleared.secondaries += 1;
+			}
+		}
+	}
+
 	if (Object.keys(updates).length > 0) await db.ref().update(updates);
 	await adminFsBulkDeleteFileMirrorIds([...fileIdsToDelete]);
+
+	// حذف الأقسام: نُفرّغ الحقول واحدة واحدة عبر update مع FieldValue.delete()
+	if (iaMainIds.size + iaSubIds.size + iaSecIds.size > 0) {
+		const { FieldValue } = await import('firebase-admin/firestore');
+		const buildDelete = (ids) => {
+			const obj = {};
+			for (const id of ids) obj[String(id)] = FieldValue.delete();
+			return obj;
+		};
+		const batch = fs.batch();
+		if (iaMainIds.size > 0) batch.update(fs.collection('sections_unified').doc('main'), buildDelete(iaMainIds));
+		if (iaSubIds.size > 0) batch.update(fs.collection('sections_unified').doc('sub'), buildDelete(iaSubIds));
+		if (iaSecIds.size > 0) batch.update(fs.collection('sections_unified').doc('secondary'), buildDelete(iaSecIds));
+		await batch.commit().catch(() => {});
+	}
 
 	await appendLog({
 		level: 'warn',
 		message:
-			`إعادة ضبط المصنع — حُذف ${cleared.uploads + cleared.content_files} عنصر، ` +
-			`${cleared.registry} سجلّ في registry.`,
+			`Factory reset — حُذف ${cleared.uploads + cleared.content_files} عنصر، ` +
+			`${cleared.mains + cleared.subs + cleared.secondaries} قسم، ` +
+			`${cleared.registry} سجلّ.`,
 		reason: 'factory_reset'
 	}).catch(() => {});
 

@@ -58,6 +58,14 @@ export async function startEngine() {
 	return authedJson(`${BASE}/engine/start`, { method: 'POST', body: {} });
 }
 
+/**
+ * زرّ "تشغيل تلقائي كامل" — يضع بذور افتراضية إن لم توجد، يُفعِّل المحرّك،
+ * ويطلق أوّل دورة فوراً. لا حاجة لـ JSON أو تصنيف يدوي بعد ذلك.
+ */
+export async function bootstrapEngine() {
+	return authedJson(`${BASE}/engine/bootstrap`, { method: 'POST', body: {} });
+}
+
 export async function stopEngine() {
 	return authedJson(`${BASE}/engine/stop`, { method: 'POST', body: {} });
 }
