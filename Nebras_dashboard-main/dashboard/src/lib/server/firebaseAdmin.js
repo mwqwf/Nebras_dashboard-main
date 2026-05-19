@@ -109,7 +109,12 @@ function initNebrasApp() {
 
 		const bucketEnv = readEnv('NEBRAS_STORAGE_BUCKET') || readEnv('FIREBASE_STORAGE_BUCKET');
 		const bucketFromSa = typeof sa.storage_bucket === 'string' ? sa.storage_bucket : '';
-		const bucket = bucketEnv || bucketFromSa || (sa.project_id ? `${sa.project_id}.appspot.com` : '');
+		// Firebase changed the default bucket naming for projects created after
+		// October 2024: <project>.firebasestorage.app instead of <project>.appspot.com.
+		// nebras-9118c falls in this new naming. We default to the new format and
+		// require NEBRAS_STORAGE_BUCKET env to override if the project uses the
+		// legacy appspot.com bucket.
+		const bucket = bucketEnv || bucketFromSa || (sa.project_id ? `${sa.project_id}.firebasestorage.app` : '');
 		if (bucket) options.storageBucket = bucket;
 
 		const app = initializeApp(options);
