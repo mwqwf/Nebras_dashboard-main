@@ -55,9 +55,11 @@ export async function partitionKnownItems(identifiers) {
 	const ids = (identifiers || []).map(safeKey).filter(Boolean);
 	const db = getAdminDatabase();
 
-	const [regSnap, failSnap] = await Promise.all([
+	const [regSnap, failSnap, dmcaSnap] = await Promise.all([
 		db.ref(REGISTRY_ROOT).get(),
-		db.ref(FAILURES_ROOT).get()
+		db.ref(FAILURES_ROOT).get(),
+		// ⚖️ DMCA blacklist — أي عنصر هنا لا يُستورد أبداً (تنفيذ takedown)
+		db.ref('ia_library_dmca_blacklist').get()
 	]);
 
 	const known = new Set(regSnap.exists() ? Object.keys(regSnap.val() || {}) : []);
@@ -65,8 +67,13 @@ export async function partitionKnownItems(identifiers) {
 		const failures = failSnap.val() || {};
 		for (const [id, rec] of Object.entries(failures)) {
 			const count = Number(rec?.count || 0);
-			if (count >= FAILURE_BLACKLIST_THRESHOLD) known.add(id);
+			// permanent flag = من DMCA takedown → blacklist فوري
+			if (rec?.permanent === true) known.add(id);
+			else if (count >= FAILURE_BLACKLIST_THRESHOLD) known.add(id);
 		}
+	}
+	if (dmcaSnap.exists()) {
+		for (const id of Object.keys(dmcaSnap.val() || {})) known.add(id);
 	}
 
 	if (ids.length === 0) return { knownIds: known, newIds: [] };

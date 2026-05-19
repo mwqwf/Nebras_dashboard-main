@@ -31,6 +31,41 @@ const ALLOWED_LICENSE_PATTERNS = Object.freeze([
 ]);
 
 /**
+ * أنماط تشير صراحةً إلى حقوق طبع محفوظة — نرفضها فوراً حتى لو كان العنصر
+ * في مجموعة موثوقة. هذا حارس الامتثال لـ Google Play / DMCA.
+ *
+ * أي عنصر يحوي licenseurl أو rights يطابق هذه الأنماط = رفض قطعي،
+ * يُسجَّل في failures registry كـ blacklist دائم.
+ */
+const COPYRIGHT_DENY_PATTERNS = Object.freeze([
+	/all\s*rights?\s*reserved/i,
+	/copyright(ed)?/i,
+	/\bcr\b/i, // rights:CR (IA shorthand)
+	/proprietary/i,
+	/non\s*commercial/i, // CC-BY-NC — Google Play لا يقبل القيود التجاريّة
+	/no\s*derivatives/i, // CC-BY-ND
+	/-nc-/i, // أي CC variant فيه NC
+	/-nd-/i, // أي CC variant فيه ND
+	/-nc$/i,
+	/-nd$/i
+]);
+
+/**
+ * يفحص إن كان النصّ يدلّ صراحةً على حقوق طبع محفوظة. حارس Google Play.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function looksLikeCopyrighted(text) {
+	if (!text) return false;
+	const s = String(text).trim();
+	if (!s) return false;
+	for (const pat of COPYRIGHT_DENY_PATTERNS) {
+		if (pat.test(s)) return true;
+	}
+	return false;
+}
+
+/**
  * مجموعات IA معروفة بمحتوى عامّ آمن للنشر (allowlist تشغيلي).
  * مسمّيات IA الفعليّة — تحقّقنا منها بـ Scrape API. القائمة القديمة كانت
  * تحوي مسمّيات وهميّة (community_texts/opensource_arabic) لا تُعيد نتائج.
@@ -62,7 +97,13 @@ export const DEFAULT_TRUSTED_COLLECTIONS = Object.freeze([
  */
 /** أسباب فشل لا تُعاد محاولتها (blacklist فوري). */
 export const PERMANENT_FAILURE_REASONS = Object.freeze(
-	new Set(['license_not_allowed', 'license_missing', 'license_missing_and_not_trusted'])
+	new Set([
+		'license_not_allowed',
+		'license_missing',
+		'license_missing_and_not_trusted',
+		'license_copyrighted_explicit', // ⚠ حارس Google Play — لا يُعاد المحاولة
+		'license_rights_copyrighted_explicit'
+	])
 );
 
 /**
@@ -91,7 +132,30 @@ export function evaluateLicense(item, opts = {}) {
 	);
 	const allowMissingInTrusted = Boolean(opts.allowMissingLicenseInTrustedCollections);
 
-	const licenseRaw = pickString(item?.licenseurl, item?.license, item?.['rights']);
+	const licenseUrl = String(item?.licenseurl || '').trim();
+	const licenseField = String(item?.license || '').trim();
+	const rightsField = String(item?.rights || '').trim();
+
+	// ───────── 🚨 HARD GATE — رفض صريح للمحتوى المحميّ ─────────
+	// (Google Play / DMCA compliance — لا نخاطر بأيّ عنصر يحوي إشارة
+	//  واضحة لحقوق محفوظة، حتى لو كان أيضاً في مجموعة موثوقة).
+	if (looksLikeCopyrighted(licenseUrl) || looksLikeCopyrighted(licenseField)) {
+		return {
+			ok: false,
+			reason: 'license_copyrighted_explicit',
+			licenseMatched: licenseUrl || licenseField
+		};
+	}
+	if (looksLikeCopyrighted(rightsField)) {
+		return {
+			ok: false,
+			reason: 'license_rights_copyrighted_explicit',
+			licenseMatched: rightsField
+		};
+	}
+
+	// ───────── ✅ ALLOWED — ترخيص صريح PD/CC ─────────
+	const licenseRaw = pickString(licenseUrl, licenseField, rightsField);
 	const licenseStr = String(licenseRaw || '').trim();
 
 	if (licenseStr) {
@@ -103,7 +167,10 @@ export function evaluateLicense(item, opts = {}) {
 		return { ok: false, reason: 'license_not_allowed', licenseMatched: licenseStr };
 	}
 
+	// ───────── ⚠️ TRUSTED COLLECTION FALLBACK ─────────
 	// لا يوجد ترخيص صريح — هل العنصر ضمن مجموعة موثوقة + الوضع المسموح؟
+	// نقبله مشروطاً، ونصنّفه `community_collection` (وليس verified PD)
+	// حتى نستطيع تمييزه في Firestore + متجر التطبيق لاحقاً.
 	if (!allowMissingInTrusted) {
 		return { ok: false, reason: 'license_missing' };
 	}
@@ -115,7 +182,14 @@ export function evaluateLicense(item, opts = {}) {
 	for (const c of collections) {
 		const cn = String(c || '').toLowerCase();
 		if (trusted.has(cn)) {
-			return { ok: true, reason: 'trusted_collection_fallback', collection: cn };
+			return {
+				ok: true,
+				reason: 'trusted_collection_fallback',
+				collection: cn,
+				// تصنيف license مخفّض — يستعمله adminUploader لوسم الوثيقة
+				// في Firestore بـ __license_status: 'community_collection'
+				licenseTier: 'community_collection'
+			};
 		}
 	}
 	return { ok: false, reason: 'license_missing_and_not_trusted' };

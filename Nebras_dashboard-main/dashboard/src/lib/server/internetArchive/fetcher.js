@@ -140,7 +140,10 @@ export async function previewItem(identifier, opts = {}) {
 		},
 		licenseInfo: {
 			licenseMatched: lic.licenseMatched,
-			collection: lic.collection
+			collection: lic.collection,
+			// 'verified_open_license' لو وُجد ترخيص صريح PD/CC،
+			// 'community_collection' لو قبلناه عبر fallback المجموعة الموثوقة.
+			licenseTier: lic.licenseTier || (lic.licenseMatched ? 'verified_open_license' : null)
 		},
 		iaSourceUrl: `https://archive.org/details/${encodeURIComponent(id)}`,
 		subjects: asStringArray(metadata?.subject),

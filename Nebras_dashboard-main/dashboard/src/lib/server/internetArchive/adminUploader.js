@@ -256,6 +256,23 @@ export async function adminUploadAndRegister(args) {
 		__iaImportedAt: new Date().toISOString(),
 		__iaOriginalFilename: String(filename || ''),
 
+		// ────────── ⚖️ Google Play / DMCA compliance metadata ──────────
+		// كل وثيقة محفوظة في Firestore تحوي هذا التوقيع القانوني، بحيث
+		// نستطيع أن نُثبِت لـ Google Play أنّ كل عنصر إمّا:
+		//   (1) ترخيص PD/CC صريح، أو
+		//   (2) من مجموعة موثوقة + قابل للحذف الفوري عند DMCA.
+		// نقرأ هذه الحقول لاحقاً من /admin/internet-archive (DMCA panel)
+		// ومن mobile guard لاستبعاد عناصر بدون license_status.
+		__license_status: iaInfo?.licenseTier === 'community_collection'
+			? 'community_collection'
+			: (iaInfo?.license ? 'verified_open_license' : 'unknown'),
+		__license_url: String(iaInfo?.license || ''),
+		__license_collection: String(iaInfo?.collection || ''),
+		__attribution_url: String(iaInfo?.iaSourceUrl || ''),
+		__source_provider: 'archive.org',
+		__compliance_version: '2026.05',
+		__verified_at: new Date().toISOString(),
+
 		created_at: createdAtIso,
 		...compatible
 	});

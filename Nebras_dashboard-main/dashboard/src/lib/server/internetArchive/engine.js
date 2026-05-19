@@ -587,7 +587,11 @@ export async function importItem(identifier, opts = {}) {
 			identifier: preview.identifier,
 			iaSourceUrl: preview.iaSourceUrl,
 			license: preview.licenseInfo.licenseMatched || '',
-			collection: preview.licenseInfo.collection || ''
+			collection: preview.licenseInfo.collection || '',
+			// ⚖️ يُحدِّد adminUploader إن كانت الوثيقة:
+			//   - verified_open_license (ترخيص PD/CC صريح)، أو
+			//   - community_collection (مجموعة موثوقة فقط)
+			licenseTier: preview.licenseInfo.licenseTier || null
 		}
 	});
 
