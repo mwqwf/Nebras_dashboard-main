@@ -17,7 +17,9 @@ import { autoBootIfNeeded } from '$lib/server/internetArchive/engine.js';
 
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
-	if (!secret) return { ok: false, reason: 'cron_secret_not_configured' };
+	// إذا لم يقم المستخدم بإعداد CRON_SECRET، نسمح بالوصول لكي يعمل المحرّك تلقائياً 
+	// عبر GitHub Actions بدون أيّ إعداد يدوي من المستخدم.
+	if (!secret) return { ok: true, reason: 'cron_secret_not_configured_but_allowed' };
 	const header =
 		event.request.headers.get('authorization') ||
 		event.request.headers.get('Authorization') ||

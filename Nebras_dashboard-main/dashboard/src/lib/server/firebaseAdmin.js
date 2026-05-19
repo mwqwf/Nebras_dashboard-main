@@ -109,7 +109,7 @@ function initNebrasApp() {
 
 		const bucketEnv = readEnv('NEBRAS_STORAGE_BUCKET') || readEnv('FIREBASE_STORAGE_BUCKET');
 		const bucketFromSa = typeof sa.storage_bucket === 'string' ? sa.storage_bucket : '';
-		const bucket = bucketEnv || bucketFromSa;
+		const bucket = bucketEnv || bucketFromSa || (sa.project_id ? `${sa.project_id}.appspot.com` : '');
 		if (bucket) options.storageBucket = bucket;
 
 		const app = initializeApp(options);
