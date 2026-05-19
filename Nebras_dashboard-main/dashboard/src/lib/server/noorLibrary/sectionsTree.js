@@ -61,6 +61,28 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+function editDistanceWithin(a, b, maxDistance) {
+	if (Math.abs(a.length - b.length) > maxDistance) return false;
+	let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+	for (let i = 1; i <= a.length; i += 1) {
+		const current = [i];
+		let rowMin = current[0];
+		for (let j = 1; j <= b.length; j += 1) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			const next = Math.min(
+				previous[j] + 1,
+				current[j - 1] + 1,
+				previous[j - 1] + cost
+			);
+			current[j] = next;
+			if (next < rowMin) rowMin = next;
+		}
+		if (rowMin > maxDistance) return false;
+		previous = current;
+	}
+	return previous[b.length] <= maxDistance;
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +91,12 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (n === blocked || n.includes(blocked)) return true;
+		const maxDistance = Math.max(2, Math.floor(blocked.length * 0.25));
+		if (editDistanceWithin(n, blocked, maxDistance)) return true;
+	}
+	return false;
 }
 
 async function readLevel(level) {

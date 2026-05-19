@@ -31,6 +31,7 @@
  */
 
 import { env } from '$env/dynamic/private';
+import { existsSync } from 'node:fs';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
 
@@ -41,6 +42,7 @@ function getGlobalState() {
 			browserPromise: null,
 			puppeteerModule: null,
 			puppeteerEnabled: null, // unknown until first probe
+			stealthMode: false,
 			lastError: null
 		};
 	}
@@ -79,19 +81,30 @@ async function loadPuppeteer() {
 		puppeteerExtra.use(StealthPlugin());
 		state.puppeteerModule = puppeteerExtra;
 		state.puppeteerEnabled = true;
+		state.stealthMode = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		const allowPlainFallback = readBoolEnv('NOOR_ALLOW_PLAIN_PUPPETEER_FALLBACK', false);
+		if (!allowPlainFallback) {
+			state.puppeteerEnabled = false;
+			state.stealthMode = false;
+			state.lastError =
+				'تعذّر تحميل puppeteer-extra أو stealth plugin. المحرّك يتطلّب Stealth Mode؛ ثبّت الحزم أو اضبط NOOR_ALLOW_PLAIN_PUPPETEER_FALLBACK=true للتشخيص فقط.';
+			return null;
+		}
+
+		// fallback تشخيصي فقط عند تفعيله صراحةً — الإنتاج يجب أن يعمل بـ stealth.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
 			state.puppeteerEnabled = true;
+			state.stealthMode = false;
 			state.lastError =
-				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
+				'NOOR_ALLOW_PLAIN_PUPPETEER_FALLBACK=true — استعمال puppeteer العاديّ بدون stealth للتشخيص فقط.';
 			return state.puppeteerModule;
 		} catch (errPlain) {
 			state.puppeteerEnabled = false;
+			state.stealthMode = false;
 			state.lastError =
 				'لا puppeteer ولا puppeteer-extra مثبّتَيْن. شغّل: npm i -D puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
 			return null;
@@ -142,6 +155,12 @@ async function getBrowser() {
 	const executablePath =
 		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
 		undefined;
+	if (executablePath && !existsSync(executablePath)) {
+		throw Object.assign(
+			new Error(`PUPPETEER_EXECUTABLE_PATH غير صالح أو غير موجود: ${executablePath}`),
+			{ reason: 'puppeteer_executable_not_found', status: 501 }
+		);
+	}
 
 	state.browserPromise = puppeteer
 		.launch({
