@@ -185,7 +185,8 @@ export function evaluateIaFile(iaFile) {
  *   size?: number
  * }}
  */
-export function chooseBestPlayableFile(files, item) {
+export function chooseBestPlayableFile(files, item, opts = {}) {
+	const preferSmallest = Boolean(opts.preferSmallest);
 	if (!Array.isArray(files) || files.length === 0) {
 		return { ok: false, reason: 'no_files' };
 	}
@@ -214,7 +215,9 @@ export function chooseBestPlayableFile(files, item) {
 			const aOrig = (a.file.source || '').toLowerCase() === 'original' ? 0 : 1;
 			const bOrig = (b.file.source || '').toLowerCase() === 'original' ? 0 : 1;
 			if (aOrig !== bOrig) return aOrig - bOrig;
-			return (Number(b.eval.size || 0) - Number(a.eval.size || 0));
+			const aSize = Number(a.eval.size || 0);
+			const bSize = Number(b.eval.size || 0);
+			return preferSmallest ? aSize - bSize : bSize - aSize;
 		});
 
 		const winner = candidates[0];

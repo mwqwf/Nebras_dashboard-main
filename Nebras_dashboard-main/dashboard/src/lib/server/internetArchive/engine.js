@@ -47,12 +47,18 @@ import { scrapeOnePage, buildLuceneQuery } from './search.js';
 import { previewItem } from './fetcher.js';
 import { downloadIaFile } from './downloader.js';
 import { adminUploadAndRegister } from './adminUploader.js';
+import { filterScrapeItemsByLicense } from './licenseFilter.js';
 import {
 	isItemImported,
 	partitionKnownItems,
 	recordImported,
 	recordFailure
 } from './registry.js';
+
+/** محاولات استيراد لكل tick (فشل سريع بالترخيص/الصيغة ثم عنصر تالي). */
+const MAX_IMPORT_ATTEMPTS_PER_TICK = 12;
+/** مهلة تنزيل ضمن نافذة Cron (~30–60 ثانية على Vercel). */
+const CRON_DOWNLOAD_TIMEOUT_MS = 45_000;
 
 const ENGINE_ROOT = 'ia_library_engine';
 const CONFIG_PATH = `${ENGINE_ROOT}/config`;
@@ -72,23 +78,26 @@ export const DEFAULT_SEEDS = Object.freeze([
 	{
 		id: 'arabic_texts_opensource',
 		label: 'كتب عربية — مصدر مفتوح',
-		q: 'language:Arabic',
+		q: '(islam OR إسلام OR قرآن OR حديث OR فقه OR تفسير OR سيرة)',
+		languages: ['Arabic', 'ara'],
 		nebrasTypes: ['document'],
-		collections: ['opensource_arabic', 'community_texts', 'opensource']
+		collections: ['opensource_arabic', 'community_texts', 'arabicliterature']
 	},
 	{
 		id: 'arabic_audio_opensource',
 		label: 'صوتيّات عربيّة — مصدر مفتوح',
-		q: 'language:Arabic',
+		q: '(قرآن OR تلاوة OR محاضرة OR درس)',
+		languages: ['Arabic', 'ara'],
 		nebrasTypes: ['audio'],
 		collections: ['opensource_audio', 'opensource']
 	},
 	{
 		id: 'islamic_video_opensource',
 		label: 'فيديو إسلامي — مصدر مفتوح',
-		q: '(islamic OR إسلامي OR محاضرة)',
+		q: '(islamic OR إسلامي OR محاضرة OR خطبة)',
+		languages: ['Arabic', 'ara'],
 		nebrasTypes: ['video'],
-		collections: ['opensource_movies', 'opensource']
+		collections: ['opensource_movies']
 	}
 ]);
 
@@ -140,18 +149,33 @@ export const SEARCH_QUERY_ROTATION = Object.freeze([
  * يضمن المحرّك أنّ لديه دائماً ما يجلبه.
  */
 /**
- * إعدادات ضيّقة لـ Vercel Hobby (10s timeout):
- *  - batchSize=1 → عنصر واحد لكل tick (تنزيل + رفع ضمن النافذة).
- *  - scrapeCount=20 → بحث أصغر للسرعة.
+ * إعدادات الإنتاج — مضبوطة للعمل على GitHub Action (60s timeout) + Vercel Pro/Hobby:
+ *  - batchSize=5  → 5 عناصر بحدّ أقصى لكل tick (نجاحات؛ فشل سريع لا يُحتسب).
+ *  - scrapeCount=200 → نطاق أوسع للمرشّحين قبل تطبيق الفلاتر.
  *  - allowMissingLicenseInTrustedCollections=true لتمرير عناصر opensource.
+ *  - trustedCollections موسَّعة لتشمل المجموعات الإسلاميّة/العربيّة الرئيسيّة.
  */
 const DEFAULT_CONFIG = Object.freeze({
 	enabled: true,
 	seeds: [...DEFAULT_SEEDS],
 	tickIntervalMs: 12000,
-	batchSize: 1,
-	scrapeCount: 100,
-	trustedCollections: ['opensource', 'opensource_arabic', 'community_texts'],
+	batchSize: 5,
+	scrapeCount: 200,
+	trustedCollections: [
+		'opensource_arabic',
+		'community_texts',
+		'arabicliterature',
+		'arabicliteratureandlinguistics',
+		'islamicbooks_archive',
+		'islamic-books',
+		'islamicpdfbooks',
+		'shamela',
+		'opensource',
+		'opensource_audio',
+		'opensource_movies',
+		'audio_religion',
+		'lecturesandtalks'
+	],
 	allowMissingLicenseInTrustedCollections: true
 });
 
@@ -395,7 +419,8 @@ export async function importItem(identifier, opts = {}) {
 	// 1) preview — يفحص الترخيص + يختار أفضل ملف قابل للتشغيل.
 	const preview = await previewItem(identifier, {
 		trustedCollections: opts.trustedCollections,
-		allowMissingLicenseInTrustedCollections: opts.allowMissingLicenseInTrustedCollections
+		allowMissingLicenseInTrustedCollections: opts.allowMissingLicenseInTrustedCollections,
+		preferSmallestFile: Boolean(opts.preferSmallestFile)
 	});
 
 	// 2) قراءة شجرة الأقسام الحاليّة (مرّة واحدة).
@@ -508,7 +533,8 @@ export async function importItem(identifier, opts = {}) {
 
 	// 4) تنزيل الملفّ كـ Buffer مع تحقّق magic bytes + حدّ الحجم.
 	const downloaded = await downloadIaFile(preview.pickedFile.downloadUrl, {
-		declaredType: preview.nebrasContentType
+		declaredType: preview.nebrasContentType,
+		...(opts.downloadTimeoutMs ? { timeoutMs: opts.downloadTimeoutMs } : {})
 	});
 
 	// 5) رفع + كتابة مرآة Firestore (نفس schema الرفع اليدوي).
@@ -597,6 +623,111 @@ export async function importItem(identifier, opts = {}) {
 // ── Tick ────────────────────────────────────────────────────────────
 
 /**
+ * يجرّب استيراد عدّة عناصر حتّى:
+ *   • تحقيق batchSize نجاحاً، أو
+ *   • استنفاد MAX_IMPORT_ATTEMPTS_PER_TICK محاولة (نجاحاً أو فشلاً).
+ *
+ * هذا يجعل batchSize يتحكّم فعلياً بعدد العناصر التي تصل التطبيق في كلّ tick.
+ */
+async function tryImportsFromPage(page, cfg, logCtx = {}) {
+	const licenseOpts = {
+		trustedCollections: cfg.trustedCollections,
+		allowMissingLicenseInTrustedCollections: cfg.allowMissingLicenseInTrustedCollections
+	};
+	const beforeFilterCount = page.items.length;
+	const licensed = filterScrapeItemsByLicense(page.items, licenseOpts);
+	const licenseRejected = beforeFilterCount - licensed.length;
+	const identifiers = licensed.map((it) => String(it?.identifier || '')).filter(Boolean);
+	const { newIds } = await partitionKnownItems(identifiers);
+	const newSet = new Set(newIds);
+	const candidates = licensed.filter((it) => newSet.has(String(it?.identifier || '')));
+
+	// لوغ تشخيصي: لماذا تخلّى المحرّك عن أوّل 3 عناصر فشلت بالفلتر — يكشف
+	// الأسباب الفعليّة (license_missing, license_not_allowed, …) بدون
+	// الحاجة لقراءة الـ failures registry يدوياً.
+	if (licenseRejected > 0 && licensed.length === 0) {
+		const samples = page.items.slice(0, 3).map((it) => ({
+			id: String(it?.identifier || '?'),
+			license: String(it?.licenseurl || it?.license || '—').slice(0, 80),
+			collection: Array.isArray(it?.collection)
+				? it.collection.slice(0, 3).join(',')
+				: String(it?.collection || '—')
+		}));
+		await appendLog({
+			level: 'warn',
+			message: `الفلتر رفض ${licenseRejected}/${beforeFilterCount}: ${JSON.stringify(samples)}`,
+			reason: 'license_filter_rejected_all',
+			seedId: logCtx.seedId,
+			mode: logCtx.mode
+		}).catch(() => {});
+	}
+
+	let processed = 0;
+	let skipped = licenseRejected + (identifiers.length - newIds.length);
+	let failed = 0;
+	let totalSectionsCreated = 0;
+
+	const targetSuccess = Math.max(1, Number(cfg.batchSize) || 1);
+	let attempts = 0;
+
+	for (const item of candidates) {
+		if (processed >= targetSuccess) break;
+		if (attempts >= MAX_IMPORT_ATTEMPTS_PER_TICK) break;
+		attempts += 1;
+
+		const id = String(item?.identifier || '');
+		if (!id) continue;
+		if (await isItemImported(id).catch(() => false)) {
+			skipped += 1;
+			continue;
+		}
+		try {
+			const r = await importItem(id, {
+				...licenseOpts,
+				preferSmallestFile: true,
+				downloadTimeoutMs: CRON_DOWNLOAD_TIMEOUT_MS
+			});
+			processed += 1;
+			totalSectionsCreated += r.createdSectionsIds?.length || 0;
+			await appendLog({
+				level: 'success',
+				message: logCtx.successMessage
+					? logCtx.successMessage(r, id)
+					: `استورد "${r.title}"`,
+				identifier: id,
+				fileId: r.fileId,
+				seedId: logCtx.seedId,
+				mode: logCtx.mode
+			});
+		} catch (err) {
+			failed += 1;
+			const reason = err?.reason || 'unknown';
+			await recordFailure(id, {
+				reason,
+				message: err?.message || String(err),
+				iaSourceUrl: `https://archive.org/details/${id}`
+			}).catch(() => {});
+			await appendLog({
+				level: 'error',
+				message: `فشل "${id}": ${err?.message || err}`,
+				identifier: id,
+				seedId: logCtx.seedId,
+				reason,
+				mode: logCtx.mode
+			});
+		}
+	}
+
+	return {
+		processed,
+		skipped,
+		failed,
+		totalSectionsCreated,
+		candidateCount: candidates.length
+	};
+}
+
+/**
  * دورة بحث بعنوان/موضوع — تملأ Firestore بما يطابق بحث التطبيق لاحقاً.
  */
 async function runSearchQueryTick(cfg, cursor) {
@@ -608,43 +739,11 @@ async function runSearchQueryTick(cfg, cursor) {
 	const idx = cursor.queryIndex % queries.length;
 	const q = queries[idx];
 	const lucene = buildLuceneQuery({ q, nebrasTypes: ['document'], languages: ['Arabic'] });
-	const page = await scrapeOnePage({ query: lucene, count: 100 });
-	const identifiers = page.items.map((it) => String(it?.identifier || '')).filter(Boolean);
-	const { newIds } = await partitionKnownItems(identifiers);
-	const newSet = new Set(newIds);
-
-	let processed = 0;
-	let skipped = identifiers.length - newIds.length;
-	let failed = 0;
-	let totalSectionsCreated = 0;
-
-	for (const item of page.items) {
-		const id = String(item?.identifier || '');
-		if (!id || !newSet.has(id)) continue;
-		try {
-			const r = await importItem(id, {
-				trustedCollections: cfg.trustedCollections,
-				allowMissingLicenseInTrustedCollections: cfg.allowMissingLicenseInTrustedCollections
-			});
-			processed = 1;
-			totalSectionsCreated += r.createdSectionsIds?.length || 0;
-			await appendLog({
-				level: 'success',
-				message: `بحث "${q}" → استورد "${r.title}"`,
-				identifier: id,
-				fileId: r.fileId,
-				mode: 'search'
-			});
-			break;
-		} catch (err) {
-			failed += 1;
-			await recordFailure(id, {
-				reason: err?.reason || 'unknown',
-				message: err?.message || String(err),
-				iaSourceUrl: `https://archive.org/details/${id}`
-			}).catch(() => {});
-		}
-	}
+	const page = await scrapeOnePage({ query: lucene, count: cfg.scrapeCount });
+	const { processed, skipped, failed, totalSectionsCreated } = await tryImportsFromPage(page, cfg, {
+		mode: 'search',
+		successMessage: (r) => `بحث "${q}" → استورد "${r.title}"`
+	});
 
 	const nextCursor = {
 		seedIndex: cursor.seedIndex,
@@ -732,61 +831,19 @@ export async function runEngineTick() {
 		};
 	}
 
-	const identifiers = page.items.map((it) => String(it?.identifier || '')).filter(Boolean);
-	const { newIds } = await partitionKnownItems(identifiers);
-	const newSet = new Set(newIds);
-	const toProcess = page.items.filter((it) => newSet.has(String(it?.identifier || '')));
-
-	const batch = toProcess.slice(0, cfg.batchSize);
-	let processed = 0;
-	let skipped = identifiers.length - toProcess.length;
-	let failed = 0;
-	let totalSectionsCreated = 0;
-
-	for (const item of batch) {
-		const id = String(item?.identifier || '');
-		if (!id) continue;
-		if (await isItemImported(id).catch(() => false)) {
-			skipped += 1;
-			continue;
-		}
-		try {
-			const r = await importItem(id, {
-				trustedCollections: cfg.trustedCollections,
-				allowMissingLicenseInTrustedCollections: cfg.allowMissingLicenseInTrustedCollections
-				// لا forcedHierarchy → تصنيف آلي كامل
-			});
-			processed += 1;
-			totalSectionsCreated += r.createdSectionsIds?.length || 0;
-			await appendLog({
-				level: 'success',
-				message: `استورد "${r.title}" → ${r.hierarchy.main.name} › ${r.hierarchy.sub.name}${r.hierarchy.secondary ? ' › ' + r.hierarchy.secondary.name : ''}`,
-				identifier: id,
-				fileId: r.fileId,
-				seedId: seed.id
-			});
-		} catch (err) {
-			failed += 1;
-			const reason = err?.reason || 'unknown';
-			await recordFailure(id, {
-				reason,
-				message: err?.message || String(err),
-				iaSourceUrl: `https://archive.org/details/${id}`
-			}).catch(() => {});
-			await appendLog({
-				level: 'error',
-				message: `فشل "${id}": ${err?.message || err}`,
-				identifier: id,
-				seedId: seed.id,
-				reason
-			});
-		}
-	}
+	const { processed, skipped, failed, totalSectionsCreated, candidateCount } =
+		await tryImportsFromPage(page, cfg, {
+			seedId: seed.id,
+			mode: 'catalog',
+			successMessage: (r, id) =>
+				`استورد "${r.title}" → ${r.hierarchy.main.name} › ${r.hierarchy.sub.name}${r.hierarchy.secondary ? ' › ' + r.hierarchy.secondary.name : ''}`
+		});
 
 	// تحديد cursor التالي — البذرة تستنفد كاملةً قبل الانتقال.
 	let advancedToNextSeed = false;
 	let nextCursor;
-	if (batch.length < toProcess.length) {
+	const moreCandidatesOnPage = candidateCount > MAX_IMPORT_ATTEMPTS_PER_TICK;
+	if (processed === 0 && moreCandidatesOnPage) {
 		nextCursor = {
 			seedIndex: cursor.seedIndex,
 			scrapeCursor: cursor.scrapeCursor,
@@ -977,7 +1034,8 @@ export async function autoBootIfNeeded(opts = {}) {
 	if (!cfgSnap.exists()) {
 		await db.ref(CONFIG_PATH).set({
 			...DEFAULT_CONFIG,
-			seeds: [...DEFAULT_SEEDS]
+			seeds: [...DEFAULT_SEEDS],
+			scrapeCount: 100
 		});
 		await db.ref(CURSOR_PATH).set({
 			seedIndex: 0,
@@ -992,6 +1050,37 @@ export async function autoBootIfNeeded(opts = {}) {
 	}
 
 	let cfg = await readConfig();
+	// ترقية إعدادات RTDB القديمة:
+	//   - scrapeCount < 200  (القديم كان 20 أو 100، الجديد 200)
+	//   - batchSize < 3      (القديم كان 1، الجديد 5)
+	//   - seeds معطوبة بـ q:language:Arabic بدون languages[]
+	//   - trustedCollections لا تحوي المجموعات الجديدة
+	const rawCfg = cfgSnap.exists() ? cfgSnap.val() || {} : {};
+	const seedsStale =
+		!Array.isArray(rawCfg.seeds) ||
+		rawCfg.seeds.length === 0 ||
+		rawCfg.seeds.some(
+			(s) =>
+				String(s?.q || '').trim() === 'language:Arabic' &&
+				(!Array.isArray(s.languages) || s.languages.length === 0)
+		);
+	const collectionsStale =
+		!Array.isArray(rawCfg.trustedCollections) ||
+		rawCfg.trustedCollections.length < DEFAULT_CONFIG.trustedCollections.length;
+	if (
+		Number(rawCfg.scrapeCount) < 200 ||
+		Number(rawCfg.batchSize) < 3 ||
+		seedsStale ||
+		collectionsStale
+	) {
+		cfg = await writeConfig({
+			scrapeCount: 200,
+			batchSize: 5,
+			seeds: [...DEFAULT_SEEDS],
+			trustedCollections: DEFAULT_CONFIG.trustedCollections
+		});
+	}
+
 	if (!cfg.enabled) {
 		if (forceTick) {
 			cfg = await writeConfig({ enabled: true });

@@ -79,7 +79,10 @@ async function uploadExternalThumbnail(thumbnailUrl, fileId, ctx) {
 	let res;
 	try {
 		res = await fetch(thumbnailUrl, {
-			headers: { 'User-Agent': 'NebrasDashboard/1.0' },
+			headers: {
+				'User-Agent':
+					'NebrasDashboard/1.0 (https://nebras.app; contact: dashboard@nebras.app) NebrasIAEngine'
+			},
 			redirect: 'follow'
 		});
 	} catch {

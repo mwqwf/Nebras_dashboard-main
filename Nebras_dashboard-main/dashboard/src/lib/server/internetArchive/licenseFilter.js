@@ -35,7 +35,6 @@ const ALLOWED_LICENSE_PATTERNS = Object.freeze([
  * كاحتياط حين تفقد العناصر حقل license. غير مفعّل إلا إن صرّح المسؤول.
  */
 export const DEFAULT_TRUSTED_COLLECTIONS = Object.freeze([
-	'opensource',
 	'opensource_arabic',
 	'community_texts',
 	'arabicliterature',
@@ -57,6 +56,28 @@ export const DEFAULT_TRUSTED_COLLECTIONS = Object.freeze([
  * }} [opts]
  * @returns {{ ok: boolean, reason: string, licenseMatched?: string, collection?: string }}
  */
+/** أسباب فشل لا تُعاد محاولتها (blacklist فوري). */
+export const PERMANENT_FAILURE_REASONS = Object.freeze(
+	new Set(['license_not_allowed', 'license_missing', 'license_missing_and_not_trusted'])
+);
+
+/**
+ * فحص سريع على صفّ نتيجة scrape (يحتوي licenseurl/rights/collection).
+ * @param {Record<string, unknown>} scrapeRow
+ * @param {Parameters<typeof evaluateLicense>[1]} [opts]
+ */
+export function isLicenseAllowedScrapeItem(scrapeRow, opts = {}) {
+	return evaluateLicense(scrapeRow, opts).ok;
+}
+
+/**
+ * @param {Array<Record<string, unknown>>} items
+ * @param {Parameters<typeof evaluateLicense>[1]} [opts]
+ */
+export function filterScrapeItemsByLicense(items, opts = {}) {
+	return (items || []).filter((row) => isLicenseAllowedScrapeItem(row, opts));
+}
+
 export function evaluateLicense(item, opts = {}) {
 	const trusted = new Set(
 		(opts.trustedCollections && opts.trustedCollections.length

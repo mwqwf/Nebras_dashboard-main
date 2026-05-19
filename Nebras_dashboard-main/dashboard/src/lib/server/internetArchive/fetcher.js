@@ -108,7 +108,9 @@ export async function previewItem(identifier, opts = {}) {
 	}
 
 	// 2) فلتر الصيغ — لا يدخل التطبيق إلا ما يستطيع تشغيله
-	const choice = chooseBestPlayableFile(files, metadata);
+	const choice = chooseBestPlayableFile(files, metadata, {
+		preferSmallest: Boolean(opts.preferSmallestFile)
+	});
 	if (!choice.ok) {
 		throw Object.assign(
 			new Error(`لا يوجد ملفّ قابل للتشغيل في "${id}": ${choice.reason}.`),

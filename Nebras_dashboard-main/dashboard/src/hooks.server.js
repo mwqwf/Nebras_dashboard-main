@@ -38,6 +38,22 @@ import {
 } from '$lib/server/firebaseAdmin.js';
 import { isOwnerEmail } from '$lib/server/mailer.js';
 import { normalizeDashboardRole } from '$lib/server/dashboardRoles.js';
+import { autoBootIfNeeded } from '$lib/server/internetArchive/engine.js';
+
+// إقلاع تلقائي لمحرّك Internet Archive عند أوّل طلب لكلّ Node process. يضمن
+// أنّ المحرّك يقلع بدون أيّ تدخّل بشري ولا حتى ضغط زر في الواجهة. نُطلقه
+// في الخلفية ولا ننتظره (fire-and-forget) كي لا نُبطئ أوّل طلب.
+let __iaAutoBootFired = false;
+function fireAutoBootOnce() {
+	if (__iaAutoBootFired) return;
+	__iaAutoBootFired = true;
+	if (!isAdminConfigured()) return; // لا Service Account → سيُسجَّل الفشل في الـ log الداخلي
+	// fire-and-forget: لا await — لا يجب أن يُبطئ أي طلب
+	autoBootIfNeeded({ runInlineTick: false }).catch((err) => {
+		// نسجّل على console فقط — الأخطاء التفصيليّة تُكتب في RTDB log داخل المحرّك
+		console.warn('[ia-autoBoot] silent failure:', err?.message || String(err));
+	});
+}
 // قائمة البادئات المحميّة. أيّ طلب لمسار /api/* مطابق لأحد هذه البادئات
 // يُفحَص للهوية والصلاحيّة قبل تمريره. المسار /api/auth/* مقصود عمداً
 // خارج الحماية لأنّه يتكفّل بإنشاء الجلسة (OTP + verify-code) قبل أن
@@ -97,6 +113,9 @@ async function loadAuthorization(idToken) {
 /** @type {import('@sveltejs/kit').Handle} */
 export async function handle({ event, resolve }) {
 	const path = event.url.pathname;
+
+	// إقلاع IA Engine في الخلفية على أوّل طلب. fire-and-forget لا يُبطئ شيئاً.
+	fireAutoBootOnce();
 
 	// الجدار يعمل على نقاط الـ API الحسّاسة فقط:
 	//   /api/admin/*   → إدارة المشرفين والإشعارات الإداريّة.

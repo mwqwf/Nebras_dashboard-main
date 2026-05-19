@@ -15,6 +15,11 @@ import { env } from '$env/dynamic/private';
 import { isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import { autoBootIfNeeded } from '$lib/server/internetArchive/engine.js';
 
+/** Vercel Pro: حتى 300s؛ Hobby: 10s — نطلب 60 حيث يُسمح. */
+export const config = {
+	maxDuration: 60
+};
+
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
 	// إذا لم يقم المستخدم بإعداد CRON_SECRET، نسمح بالوصول لكي يعمل المحرّك تلقائياً 

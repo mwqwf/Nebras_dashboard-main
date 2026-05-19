@@ -13,4 +13,4 @@ jobs:
       - name: Hit Vercel Cron Endpoint
         run: |
           # نرسل طلب GET لنقطة الـ API لضمان عمل المحرّك وتجاوز قيود Vercel Hobby
-          curl -sSf -m 30 "https://nebras-dashboard-main.vercel.app/api/cron/internet-archive-tick" || true
+          curl -sSf -m 90 "https://nebras-dashboard-main.vercel.app/api/cron/internet-archive-tick" || true

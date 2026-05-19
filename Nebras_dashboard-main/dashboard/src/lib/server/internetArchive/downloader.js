@@ -16,7 +16,9 @@
 
 import { MAX_SIZE_BYTES, verifyDownloadedBuffer } from './playabilityFilter.js';
 
-const USER_AGENT = 'NebrasDashboard/1.0 (+self-hosted; contact: admin@nebras.local)';
+// User-Agent مع contact email — توصية رسميّة من Internet Archive.
+const USER_AGENT =
+	'NebrasDashboard/1.0 (https://nebras.app; contact: dashboard@nebras.app) NebrasIAEngine';
 
 /**
  * يُنزّل الملفّ ويُرجع Buffer بعد فحص الـ magic bytes والحجم.

@@ -16,6 +16,7 @@
  */
 
 import { getAdminDatabase } from '$lib/server/firebaseAdmin.js';
+import { PERMANENT_FAILURE_REASONS } from './licenseFilter.js';
 
 const REGISTRY_ROOT = 'ia_library_registry';
 const FAILURES_ROOT = 'ia_library_failures';
@@ -125,13 +126,21 @@ export async function recordFailure(identifier, info = {}) {
 	const key = safeKey(identifier);
 	if (!key) return;
 	const ref = getAdminDatabase().ref(`${FAILURES_ROOT}/${key}`);
+	const reason = String(info?.reason || 'unknown').slice(0, 80);
+	const reasonKey = reason.replace(/^license_/, '');
+	const bump =
+		PERMANENT_FAILURE_REASONS.has(reasonKey) || reason.startsWith('license_')
+			? FAILURE_BLACKLIST_THRESHOLD
+			: 1;
+
 	await ref.transaction((current) => {
 		const c = current || { count: 0, firstFailedAt: Date.now() };
+		const nextCount = Math.max(Number(c.count || 0) + bump, bump);
 		return {
-			count: Number(c.count || 0) + 1,
+			count: nextCount,
 			firstFailedAt: c.firstFailedAt || Date.now(),
 			lastFailedAt: Date.now(),
-			lastReason: String(info?.reason || 'unknown').slice(0, 80),
+			lastReason: reason,
 			lastMessage: String(info?.message || '').slice(0, 300),
 			iaSourceUrl: String(info?.iaSourceUrl || c.iaSourceUrl || '').slice(0, 1000)
 		};

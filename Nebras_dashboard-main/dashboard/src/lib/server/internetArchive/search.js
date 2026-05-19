@@ -18,7 +18,56 @@
  */
 
 const SCRAPE_ENDPOINT = 'https://archive.org/services/search/v1/scrape';
-const USER_AGENT = 'NebrasDashboard/1.0 (+self-hosted; contact: admin@nebras.local)';
+// User-Agent مع contact email — توصية رسميّة من Internet Archive
+// (https://archive.org/developers/index-apis.html). يساعد فريق الـ Archive
+// على التواصل إن سبّب bot ضغطاً عاليّاً.
+const USER_AGENT =
+	'NebrasDashboard/1.0 (https://nebras.app; contact: dashboard@nebras.app) NebrasIAEngine';
+
+/**
+ * Sleep utility (لتطبيق backoff).
+ * @param {number} ms
+ */
+function sleep(ms) {
+	return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * fetch مع retry تلقائي على 429/503/504 — backoff تصاعدي حسب توصية IA
+ * (https://archive.org/developers/index-apis.html: "double wait time on 503").
+ *
+ * @param {string} url
+ * @param {RequestInit} init
+ * @param {{ maxRetries?: number, baseDelayMs?: number, label?: string }} [opts]
+ */
+async function fetchWithRetry(url, init, opts = {}) {
+	const maxRetries = Math.max(0, Math.min(5, opts.maxRetries ?? 3));
+	const baseDelay = Math.max(200, opts.baseDelayMs ?? 800);
+	let lastError = null;
+
+	for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+		try {
+			const res = await fetch(url, init);
+			// 429 (too many requests) / 503 (service unavailable) / 504 (gateway timeout)
+			if (res.status === 429 || res.status === 503 || res.status === 504) {
+				if (attempt === maxRetries) return res;
+				const retryAfterHeader = Number(res.headers.get('retry-after')) || 0;
+				const wait = retryAfterHeader > 0
+					? retryAfterHeader * 1000
+					: baseDelay * Math.pow(2, attempt);
+				await sleep(Math.min(wait, 30_000));
+				continue;
+			}
+			return res;
+		} catch (err) {
+			lastError = err;
+			if (attempt === maxRetries) throw err;
+			await sleep(baseDelay * Math.pow(2, attempt));
+		}
+	}
+	if (lastError) throw lastError;
+	throw new Error(`fetchWithRetry exhausted retries for ${url}`);
+}
 
 /**
  * الحقول التي نطلب IA إرجاعها — قاصرة على ما يحتاجه المعالج التالي،
@@ -47,6 +96,11 @@ const MEDIATYPE_MAP = Object.freeze({
 	video: 'movies'
 });
 
+/** يضيّق نتائج IA إلى تراخيص آمنة للنشر في التطبيق (لا NC/ND). */
+const LICENSE_SAFE_LUCENE = Object.freeze(
+	'(licenseurl:*publicdomain* OR licenseurl:*creativecommons.org/publicdomain* OR licenseurl:*creativecommons.org/licenses/by/* OR licenseurl:*creativecommons.org/licenses/by-sa/*)'
+);
+
 /**
  * يبني سلسلة Lucene query من قطع نظيفة. النمط:
  *   (q) AND mediatype:(texts OR audio OR movies) AND language:Arabic AND collection:(a OR b)
@@ -56,7 +110,8 @@ const MEDIATYPE_MAP = Object.freeze({
  *   nebrasTypes?: Array<'document'|'audio'|'video'>,
  *   languages?: string[],
  *   collections?: string[],
- *   creators?: string[]
+ *   creators?: string[],
+ *   licenseSafe?: boolean
  * }} parts
  * @returns {string}
  */
@@ -81,6 +136,8 @@ export function buildLuceneQuery(parts = {}) {
 
 	const creators = (parts.creators || []).map(quoteField).filter(Boolean);
 	if (creators.length > 0) segments.push(`creator:(${creators.join(' OR ')})`);
+
+	if (parts.licenseSafe !== false) segments.push(LICENSE_SAFE_LUCENE);
 
 	return segments.join(' AND ');
 }
@@ -140,11 +197,15 @@ export async function scrapeOnePage({
 	if (cursor) params.set('cursor', cursor);
 
 	const url = `${SCRAPE_ENDPOINT}?${params.toString()}`;
-	const res = await fetch(url, {
-		method: 'GET',
-		headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-		redirect: 'follow'
-	});
+	const res = await fetchWithRetry(
+		url,
+		{
+			method: 'GET',
+			headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+			redirect: 'follow'
+		},
+		{ label: 'ia_scrape' }
+	);
 
 	if (!res.ok) {
 		const body = await res.text().catch(() => '');
@@ -194,10 +255,14 @@ export async function fetchItemMetadata(identifier) {
 	if (!id) throw Object.assign(new Error('identifier فارغ.'), { reason: 'empty_identifier' });
 
 	const url = `https://archive.org/metadata/${encodeURIComponent(id)}`;
-	const res = await fetch(url, {
-		headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-		redirect: 'follow'
-	});
+	const res = await fetchWithRetry(
+		url,
+		{
+			headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+			redirect: 'follow'
+		},
+		{ label: 'ia_metadata' }
+	);
 	if (!res.ok) {
 		throw Object.assign(new Error(`IA metadata HTTP ${res.status}`), {
 			reason: 'metadata_http_error',
