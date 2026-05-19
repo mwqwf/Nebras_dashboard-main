@@ -390,14 +390,28 @@ async function processBook({ url, bookId, sections }) {
 	let subId = decision.subId || null;
 	let secondaryId = decision.secondaryId || null;
 	const createdSectionsIds = [];
+	const createdSections = [];
 	let sectionsCreatedDelta = 0;
+	let pendingSecondaryParentName = '';
+
+	function recordCreatedSection(level, id, name, parentId = '', parentName = '') {
+		const rec = {
+			level,
+			id: String(id),
+			name: String(name || ''),
+			parentId: parentId ? String(parentId) : '',
+			parentName: String(parentName || '')
+		};
+		createdSectionsIds.push(rec.id);
+		createdSections.push(rec);
+	}
 
 	if (decision.kind === 'create_main') {
 		// أعلى مستوى من الإنشاء — main + sub أوّل تحته في عمليّة واحدة.
 		const createdMain = await createMainSectionAdmin(decision.newMainName);
 		mainId = String(createdMain.id);
 		if (!createdMain.alreadyExisted) {
-			createdSectionsIds.push(mainId);
+			recordCreatedSection('main', mainId, createdMain.name);
 			sectionsCreatedDelta += 1;
 			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
 			await notifyFcmSectionCreated({
@@ -417,8 +431,9 @@ async function processBook({ url, bookId, sections }) {
 
 		const createdSub = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(createdSub.id);
+		pendingSecondaryParentName = createdSub.name;
 		if (!createdSub.alreadyExisted) {
-			createdSectionsIds.push(subId);
+			recordCreatedSection('sub', subId, createdSub.name, mainId, createdMain.name);
 			sectionsCreatedDelta += 1;
 			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
 			await notifyFcmSectionCreated({
@@ -439,13 +454,14 @@ async function processBook({ url, bookId, sections }) {
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
+		pendingSecondaryParentName = created.name;
 		if (!created.alreadyExisted) {
-			createdSectionsIds.push(subId);
+			const parentMain = sections.index.mainsById[mainId];
+			recordCreatedSection('sub', subId, created.name, mainId, parentMain?.name || '');
 			sectionsCreatedDelta += 1;
 			// تحديث الإحصائيات فوراً لأنّ القسم أُنشئ فعلاً في DB. لا ننتظر
 			// نجاح الكتاب — لو فشل التنزيل يبقى القسم محسوباً.
 			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-			const parentMain = sections.index.mainsById[mainId];
 			await notifyFcmSectionCreated({
 				level: 'sub',
 				name: created.name,
@@ -463,13 +479,14 @@ async function processBook({ url, bookId, sections }) {
 		}
 	} else if (decision.kind === 'create_secondary') {
 		subId = decision.subId;
+		const parentSub = sections.index.subsById[subId];
+		pendingSecondaryParentName = parentSub?.name || '';
 		const created = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
 		secondaryId = String(created.id);
 		if (!created.alreadyExisted) {
-			createdSectionsIds.push(secondaryId);
+			recordCreatedSection('secondary', secondaryId, created.name, subId, parentSub?.name || '');
 			sectionsCreatedDelta += 1;
 			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-			const parentSub = sections.index.subsById[subId];
 			await notifyFcmSectionCreated({
 				level: 'secondary',
 				name: created.name,
@@ -480,6 +497,32 @@ async function processBook({ url, bookId, sections }) {
 			await appendLog({
 				level: 'success',
 				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSub?.name || ''}"`,
+				sectionId: created.id,
+				parentId: subId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
+	}
+
+	if (!secondaryId && decision.newSecondaryName && subId) {
+		const parentSub = sections.index.subsById[subId];
+		const parentSubName = parentSub?.name || pendingSecondaryParentName || '';
+		const created = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
+		secondaryId = String(created.id);
+		if (!created.alreadyExisted) {
+			recordCreatedSection('secondary', secondaryId, created.name, subId, parentSubName);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName: parentSubName,
+				sectionId: created.id,
+				parentId: subId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSubName}"`,
 				sectionId: created.id,
 				parentId: subId,
 				kind: 'secondary_section_created'
@@ -578,6 +621,7 @@ async function processBook({ url, bookId, sections }) {
 			secondary: secondary ? { id: String(secondary.id), name: secondary.name } : null
 		},
 		createdSectionsIds,
+		createdSections,
 		sectionsCreatedDelta,
 		decisionKind: decision.kind,
 		decisionConfidence: decision.confidence,
@@ -599,7 +643,7 @@ async function processBook({ url, bookId, sections }) {
  *   failed: number,
  *   advancedToNextSeed: boolean,
  *   cursor: { seedIndex:number, page:number },
- *   sample: Array<{ fileId?:string, title:string, url:string, status:'ok'|'skip'|'fail', error?:string }>
+ *   sample: Array<{ fileId?:string, title:string, url:string, status:'ok'|'skip'|'fail', error?:string, createdSections?:Array<any> }>
  * }>}
  */
 export async function runEngineTick() {
@@ -693,6 +737,7 @@ export async function runEngineTick() {
 				status: 'ok',
 				hierarchy: r.hierarchy,
 				createdSectionsIds: r.createdSectionsIds,
+				createdSections: r.createdSections,
 				decision: r.decisionKind,
 				confidence: r.decisionConfidence
 			});
@@ -704,6 +749,7 @@ export async function runEngineTick() {
 				fileId: r.fileId,
 				hierarchy: r.hierarchy,
 				createdSectionsIds: r.createdSectionsIds,
+				createdSections: r.createdSections,
 				decision: r.decisionKind
 			});
 		} catch (err) {
