@@ -12,8 +12,8 @@ rules_version = '2';
 //  الخادم، الذي يتجاوز هذه القواعد. القواعد هنا تحمي الكتابات المباشرة
 //  من Web SDK (المتصفّح) فقط (Defense-in-depth).
 //
-//  ⛔ تمّ إلغاء جميع جسور المشاريع الخارجيّة (Mshcat / OldApp / Internet
-//  Archive / IslamHouse). لم تعد هناك مسارات api/mshcat، api/oldapp.
+//  ⛔ جسور Mshcat / OldApp / IslamHouse معطّلة. استيراد Internet Archive
+//  يمرّ عبر Admin SDK فقط (/api/admin/internet-archive) — لا من التطبيق.
 // ════════════════════════════════════════════════════════════════════
 
 service firebase.storage {
@@ -51,6 +51,12 @@ service firebase.storage {
 
     // ملفات سكريبت Noor Library (المحرّك الآلي)
     match /dashboard/noor-library/{bookId}/{allPaths=**} {
+      allow read: if true;
+      allow write: if hasOwnerOrSupervisor() && isValidUpload();
+    }
+
+    // ملفات محرّك Internet Archive (استيراد خادمي فقط)
+    match /dashboard/internet-archive/{fileId}/{allPaths=**} {
       allow read: if true;
       allow write: if hasOwnerOrSupervisor() && isValidUpload();
     }

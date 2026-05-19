@@ -7,6 +7,10 @@
     {
       "path": "/api/cron/aggregates-popularity",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/internet-archive-tick",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

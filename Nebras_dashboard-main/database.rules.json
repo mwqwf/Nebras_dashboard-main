@@ -84,6 +84,24 @@
       ".write": "auth != null && root.child('dashboard_users').child(auth.uid).child('role').val() === 'owner'"
     },
 
+    "ia_library_engine": {
+      ".read":  "auth != null && (root.child('dashboard_users').child(auth.uid).child('role').val() === 'owner' || root.child('dashboard_users').child(auth.uid).child('role').val() === 'supervisor')",
+      ".write": "auth != null && (root.child('dashboard_users').child(auth.uid).child('role').val() === 'owner' || root.child('dashboard_users').child(auth.uid).child('role').val() === 'supervisor')",
+      "log": {
+        ".indexOn": ["ts"]
+      }
+    },
+
+    "ia_library_registry": {
+      ".read":  "auth != null && (root.child('dashboard_users').child(auth.uid).child('role').val() === 'owner' || root.child('dashboard_users').child(auth.uid).child('role').val() === 'supervisor')",
+      ".write": "auth != null && (root.child('dashboard_users').child(auth.uid).child('role').val() === 'owner' || root.child('dashboard_users').child(auth.uid).child('role').val() === 'supervisor')"
+    },
+
+    "ia_library_failures": {
+      ".read":  "auth != null && (root.child('dashboard_users').child(auth.uid).child('role').val() === 'owner' || root.child('dashboard_users').child(auth.uid).child('role').val() === 'supervisor')",
+      ".write": "auth != null && (root.child('dashboard_users').child(auth.uid).child('role').val() === 'owner' || root.child('dashboard_users').child(auth.uid).child('role').val() === 'supervisor')"
+    },
+
     "dashboard_owner_codes": {
       ".read": false,
       ".write": false
