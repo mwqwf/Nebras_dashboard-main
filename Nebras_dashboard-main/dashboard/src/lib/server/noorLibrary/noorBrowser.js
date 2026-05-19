@@ -20,6 +20,7 @@
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
  *                                          true إن كانت الحزمة موجودة).
+ *       NOOR_REQUIRE_STEALTH=true|false — اشتراط stealth-plugin (افتراضي true).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
  *
@@ -31,6 +32,7 @@
  */
 
 import { env } from '$env/dynamic/private';
+import { accessSync, constants } from 'node:fs';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
 
@@ -40,6 +42,7 @@ function getGlobalState() {
 			browser: null,
 			browserPromise: null,
 			puppeteerModule: null,
+			stealthEnabled: false,
 			puppeteerEnabled: null, // unknown until first probe
 			lastError: null
 		};
@@ -78,14 +81,22 @@ async function loadPuppeteer() {
 		]);
 		puppeteerExtra.use(StealthPlugin());
 		state.puppeteerModule = puppeteerExtra;
+		state.stealthEnabled = true;
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		if (readBoolEnv('NOOR_REQUIRE_STEALTH', true)) {
+			state.puppeteerEnabled = false;
+			state.stealthEnabled = false;
+			state.lastError =
+				'تعذّر تحميل puppeteer-extra-plugin-stealth، وNOOR_REQUIRE_STEALTH=true. ثبّت puppeteer-extra وstealth-plugin لتشغيل محرك Noor.';
+			return null;
+		}
+		// retry with plain puppeteer only when explicitly allowed.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
+			state.stealthEnabled = false;
 			state.puppeteerEnabled = true;
 			state.lastError =
 				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
@@ -97,6 +108,43 @@ async function loadPuppeteer() {
 			return null;
 		}
 	}
+}
+
+function canExecute(path) {
+	if (!path) return false;
+	try {
+		accessSync(path, constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function resolveChromeExecutablePath() {
+	const configured = String(
+		env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || ''
+	).trim();
+	if (configured) {
+		if (!canExecute(configured)) {
+			throw Object.assign(
+				new Error(`PUPPETEER_EXECUTABLE_PATH غير صالح أو غير قابل للتنفيذ: ${configured}`),
+				{ reason: 'puppeteer_executable_not_found', status: 501 }
+			);
+		}
+		return configured;
+	}
+
+	for (const candidate of [
+		'/usr/bin/google-chrome',
+		'/usr/bin/google-chrome-stable',
+		'/usr/local/bin/google-chrome',
+		'/usr/bin/chromium',
+		'/usr/bin/chromium-browser',
+		'/snap/bin/chromium'
+	]) {
+		if (canExecute(candidate)) return candidate;
+	}
+	return undefined;
 }
 
 /**
@@ -139,9 +187,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = resolveChromeExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({
