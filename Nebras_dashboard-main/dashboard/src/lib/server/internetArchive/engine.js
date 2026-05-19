@@ -649,6 +649,12 @@ export async function importItem(identifier, opts = {}) {
  *   • استنفاد MAX_IMPORT_ATTEMPTS_PER_TICK محاولة (نجاحاً أو فشلاً).
  *
  * هذا يجعل batchSize يتحكّم فعلياً بعدد العناصر التي تصل التطبيق في كلّ tick.
+ *
+ * @returns {Promise<{
+ *   processed:number, skipped:number, failed:number,
+ *   totalSectionsCreated:number, candidateCount:number,
+ *   failureSamples: Array<{ id:string, reason:string, message:string }>
+ * }>}
  */
 async function tryImportsFromPage(page, cfg, logCtx = {}) {
 	const licenseOpts = {
@@ -687,6 +693,7 @@ async function tryImportsFromPage(page, cfg, logCtx = {}) {
 	let skipped = licenseRejected + (identifiers.length - newIds.length);
 	let failed = 0;
 	let totalSectionsCreated = 0;
+	const failureSamples = [];
 
 	const targetSuccess = Math.max(1, Number(cfg.batchSize) || 1);
 	let attempts = 0;
@@ -723,14 +730,18 @@ async function tryImportsFromPage(page, cfg, logCtx = {}) {
 		} catch (err) {
 			failed += 1;
 			const reason = err?.reason || 'unknown';
+			const message = (err?.message || String(err)).slice(0, 200);
+			if (failureSamples.length < 6) {
+				failureSamples.push({ id, reason, message });
+			}
 			await recordFailure(id, {
 				reason,
-				message: err?.message || String(err),
+				message,
 				iaSourceUrl: `https://archive.org/details/${id}`
 			}).catch(() => {});
 			await appendLog({
 				level: 'error',
-				message: `فشل "${id}": ${err?.message || err}`,
+				message: `فشل "${id}": ${message}`,
 				identifier: id,
 				seedId: logCtx.seedId,
 				reason,
@@ -744,7 +755,8 @@ async function tryImportsFromPage(page, cfg, logCtx = {}) {
 		skipped,
 		failed,
 		totalSectionsCreated,
-		candidateCount: candidates.length
+		candidateCount: candidates.length,
+		failureSamples
 	};
 }
 
@@ -767,7 +779,7 @@ async function runSearchQueryTick(cfg, cursor) {
 		licenseSafe: false
 	});
 	const page = await scrapeOnePage({ query: lucene, count: cfg.scrapeCount });
-	const { processed, skipped, failed, totalSectionsCreated } = await tryImportsFromPage(page, cfg, {
+	const { processed, skipped, failed, totalSectionsCreated, failureSamples } = await tryImportsFromPage(page, cfg, {
 		mode: 'search',
 		successMessage: (r) => `بحث "${q}" → استورد "${r.title}"`
 	});
@@ -796,7 +808,8 @@ async function runSearchQueryTick(cfg, cursor) {
 		sectionsCreated: totalSectionsCreated,
 		mode: 'search',
 		searchQuery: q,
-		cursor: nextCursor
+		cursor: nextCursor,
+		failureSamples
 	};
 }
 
@@ -865,7 +878,7 @@ export async function runEngineTick() {
 		};
 	}
 
-	const { processed, skipped, failed, totalSectionsCreated, candidateCount } =
+	const { processed, skipped, failed, totalSectionsCreated, candidateCount, failureSamples } =
 		await tryImportsFromPage(page, cfg, {
 			seedId: seed.id,
 			mode: 'catalog',
@@ -932,7 +945,8 @@ export async function runEngineTick() {
 		sectionsCreated: totalSectionsCreated,
 		advancedToNextSeed,
 		cursor: nextCursor,
-		currentSeedId: seed.id
+		currentSeedId: seed.id,
+		failureSamples
 	};
 }
 
