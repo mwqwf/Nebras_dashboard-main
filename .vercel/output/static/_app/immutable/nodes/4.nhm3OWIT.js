@@ -1,1 +1,0 @@
-import"../chunks/DsnmJJEf.js";import"../chunks/DTGGUPC8.js";import{e as a,$ as e}from"../chunks/CsRnS6_b.js";import{h as r}from"../chunks/UZNOxbvD.js";import{L as t}from"../chunks/P2Vcmfof.js";function f(o){r("1uha8ag",m=>{a(()=>{e.title="Nebras Dashboard"})}),t(o,{message:"Loading"})}export{f as component};

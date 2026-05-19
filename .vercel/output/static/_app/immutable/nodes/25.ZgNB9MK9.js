@@ -1,1 +1,0 @@
-import{R as r}from"../chunks/BUApaBEI.js";function o(e,t){throw new r(e,t.toString())}function n(){o(307,"/admin/internet-archive")}const a=Object.freeze(Object.defineProperty({__proto__:null,load:n},Symbol.toStringTag,{value:"Module"}));export{a as universal};
