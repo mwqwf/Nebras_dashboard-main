@@ -58,7 +58,8 @@ function kickIaEngine() {
 	//   - زرّ "جلب دفعة الآن" في `/admin/internet-archive`
 	//   - تلقائياً عند فتح صفحة `/admin/internet-archive` أوّل مرّة
 	if (isAdminConfigured()) {
-		iaAutoBoot({ runInlineTick: false }).catch(() => {});
+		// tick متزامن واحد عند إقلاع العملية (ضمن حدّ 10s على Vercel) — يبدأ الجلب فور فتح اللوحة.
+		iaAutoBoot({ runInlineTick: true }).catch(() => {});
 	}
 }
 

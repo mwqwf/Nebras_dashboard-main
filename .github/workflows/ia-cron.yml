@@ -1,0 +1,17 @@
+name: Internet Archive Auto-Tick
+
+on:
+  schedule:
+    # كل 5 دقائق — يكمّل Vercel Hobby (cron يومي فقط)
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  hit-cron:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger IA engine tick on Vercel
+        run: |
+          curl -sSf --max-time 55 \
+            "https://nebras-dashboard-main.vercel.app/api/cron/internet-archive-tick" \
+            || echo "tick request finished (check Vercel logs if imports stay at 0)"

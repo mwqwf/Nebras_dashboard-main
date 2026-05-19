@@ -847,6 +847,14 @@ export async function autoBootIfNeeded(opts = {}) {
 
 	let inlineTickResult = null;
 	if (runInline && !state.currentTickInFlight) {
+		// لا نُكرّر tick متزامناً أكثر من مرّة كل دقيقتين (حماية من إغراق Vercel).
+		const stats = await readStats().catch(() => null);
+		const lastRun = Number(stats?.lastRunAt) || 0;
+		const sinceLastMs = lastRun ? Date.now() - lastRun : Infinity;
+		if (sinceLastMs < 120_000) {
+			return { booted: true, inlineTickResult: null, skippedInlineTick: true, sinceLastMs };
+		}
+
 		state.currentTickInFlight = true;
 		state.lastTickStartedAt = Date.now();
 		try {
