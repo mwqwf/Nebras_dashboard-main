@@ -738,7 +738,13 @@ async function runSearchQueryTick(cfg, cursor) {
 
 	const idx = cursor.queryIndex % queries.length;
 	const q = queries[idx];
-	const lucene = buildLuceneQuery({ q, nebrasTypes: ['document'], languages: ['Arabic'] });
+	// licenseSafe: false — راجع الشرح في runEngineTick.
+	const lucene = buildLuceneQuery({
+		q,
+		nebrasTypes: ['document'],
+		languages: ['Arabic'],
+		licenseSafe: false
+	});
 	const page = await scrapeOnePage({ query: lucene, count: cfg.scrapeCount });
 	const { processed, skipped, failed, totalSectionsCreated } = await tryImportsFromPage(page, cfg, {
 		mode: 'search',
@@ -794,12 +800,17 @@ export async function runEngineTick() {
 
 	const seed = cfg.seeds[cursor.seedIndex];
 
+	// licenseSafe: false — لأنّ IA لا يفهرس licenseurl لجميع العناصر.
+	// نعتمد على licenseFilter.js (post-scrape) الذي يستعمل trustedCollections
+	// fallback عند غياب الترخيص الصريح. إبقاء licenseSafe=true كان يستبعد
+	// ~95% من المحتوى العربيّ من IA لأنّه يفتقد حقل licenseurl المفهرس.
 	const query = buildLuceneQuery({
 		q: seed.q,
 		nebrasTypes: seed.nebrasTypes,
 		languages: seed.languages,
 		collections: seed.collections,
-		creators: seed.creators
+		creators: seed.creators,
+		licenseSafe: false
 	});
 	const page = await scrapeOnePage({
 		query,
@@ -817,9 +828,11 @@ export async function runEngineTick() {
 		};
 		await writeCursor(nextCursor);
 		await appendLog({
-			level: 'info',
-			message: `استُنفدت "${seed.label || seed.id}" — التحوّل للبذرة التاليّة.`,
-			seedId: seed.id
+			level: 'warn',
+			message: `IA لم يُرجع أيّ نتيجة لـ "${seed.label || seed.id}". الاستعلام: ${query.slice(0, 200)}`,
+			seedId: seed.id,
+			reason: 'scrape_empty_result',
+			total: page.total
 		});
 		return {
 			processed: 0,
