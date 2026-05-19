@@ -38,10 +38,17 @@ import {
  * من الشجرة قبل تمريرها للمصنِّف ولا يقبل أيّ كتابة من المحرّك الآلي.
  */
 export const BLACKLISTED_SECTION_NAMES = Object.freeze([
-	'دروس بتدكصهك',
-	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
 	'دروس بترخيصه'
+]);
+
+/**
+ * أسماء أقسام ظاهرة في البيانات لكنها تحمل أخطاء إملائية/كتابة واضحة.
+ * لا نصحّحها آلياً لأنّ ذلك يغيّر بيانات أنشأها بشر؛ نُخفيها فقط عن
+ * مصنّف Noor ونمنع الكتابة تحتها.
+ */
+export const TYPO_SECTION_NAMES = Object.freeze([
+	'دروس بتدكصهك'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -60,6 +67,7 @@ function normalizeArabic(s) {
 const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
+const NORMALIZED_TYPOS = new Set(TYPO_SECTION_NAMES.map(normalizeArabic).filter(Boolean));
 
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
@@ -70,6 +78,26 @@ export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
 	return NORMALIZED_BLACKLIST.has(n);
+}
+
+/**
+ * يفحص الأخطاء الإملائية/الكتابية المعروفة في أسماء الأقسام.
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isTypoSectionName(name) {
+	const n = normalizeArabic(name);
+	if (!n) return false;
+	return NORMALIZED_TYPOS.has(n);
+}
+
+/**
+ * أي اسم مرفوض (blacklist أو typo) يُحذف من الشجرة ويُمنع وقت الكتابة.
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isRejectedSectionName(name) {
+	return isBlacklistedSectionName(name) || isTypoSectionName(name);
 }
 
 async function readLevel(level) {
@@ -92,19 +120,19 @@ async function readLevel(level) {
 export function computeBlacklistedIds({ mains, subs, secondaries }) {
 	const mainIds = new Set();
 	for (const m of mains) {
-		if (isBlacklistedSectionName(m?.name)) mainIds.add(String(m.id));
+		if (isRejectedSectionName(m?.name)) mainIds.add(String(m.id));
 	}
 
 	const subIds = new Set();
 	for (const s of subs) {
-		const isNameBlocked = isBlacklistedSectionName(s?.name);
+		const isNameBlocked = isRejectedSectionName(s?.name);
 		const parentBlocked = mainIds.has(String(s?.main_section ?? ''));
 		if (isNameBlocked || parentBlocked) subIds.add(String(s.id));
 	}
 
 	const secondaryIds = new Set();
 	for (const sec of secondaries) {
-		const isNameBlocked = isBlacklistedSectionName(sec?.name);
+		const isNameBlocked = isRejectedSectionName(sec?.name);
 		const parentBlocked = subIds.has(String(sec?.sub_section ?? ''));
 		if (isNameBlocked || parentBlocked) secondaryIds.add(String(sec.id));
 	}

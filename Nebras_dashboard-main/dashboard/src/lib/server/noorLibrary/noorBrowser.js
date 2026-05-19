@@ -22,6 +22,7 @@
  *                                          true إن كانت الحزمة موجودة).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
+ *       PUPPETEER_REQUIRE_STEALTH      — اجعل stealth إلزامياً (افتراضي true).
  *
  * الواجهة العامّة:
  *   - isPuppeteerEnabled() → boolean
@@ -30,6 +31,7 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { existsSync } from 'node:fs';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -51,12 +53,34 @@ const DEFAULT_USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
 	'(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+const DEFAULT_EXECUTABLE_CANDIDATES = Object.freeze([
+	'/usr/local/bin/google-chrome',
+	'/usr/bin/google-chrome',
+	'/usr/bin/google-chrome-stable',
+	'/usr/bin/chromium',
+	'/usr/bin/chromium-browser'
+]);
+
 function readBoolEnv(name, fallback) {
 	const raw = String(env[name] ?? process.env[name] ?? '').trim().toLowerCase();
 	if (raw === '') return fallback;
 	if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
 	if (['0', 'false', 'no', 'off'].includes(raw)) return false;
 	return fallback;
+}
+
+function resolveExecutablePath() {
+	const explicit =
+		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim();
+	if (explicit) return explicit;
+	for (const candidate of DEFAULT_EXECUTABLE_CANDIDATES) {
+		try {
+			if (existsSync(candidate)) return candidate;
+		} catch {
+			// تجاهل مشاكل صلاحية fs؛ Puppeteer سيحاول مساره الافتراضي.
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -81,6 +105,13 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		const requireStealth = readBoolEnv('PUPPETEER_REQUIRE_STEALTH', true);
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'Stealth Mode مطلوب لمحرّك Noor، لكن puppeteer-extra أو stealth-plugin غير متاح. ثبّت optionalDependencies أو اضبط PUPPETEER_REQUIRE_STEALTH=false للتشخيص فقط.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {
@@ -139,9 +170,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = resolveExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({
