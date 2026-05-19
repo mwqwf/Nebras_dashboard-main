@@ -35,6 +35,7 @@ import {
 } from '$lib/server/nebrasUnifiedFirestoreAdmin.js';
 import {
 	isBlacklistedSectionName,
+	isIgnoredSectionRecord,
 	computeBlacklistedIds
 } from './sectionsTree.js';
 
@@ -76,6 +77,7 @@ async function findMainSectionByName(name) {
 	if (!target) return null;
 	const mains = await adminFsReadSectionsLevel('main');
 	for (const main of mains) {
+		if (isIgnoredSectionRecord(main)) continue;
 		if (String(main.name || '').trim().toLowerCase() === target) {
 			return { id: Number(main.id), name: String(main.name) };
 		}
@@ -95,6 +97,7 @@ export async function findSubSectionByName(mainSectionId, name) {
 	if (!target) return null;
 	const subs = await adminFsReadSectionsLevel('sub');
 	for (const sub of subs) {
+		if (isIgnoredSectionRecord(sub)) continue;
 		if (
 			String(sub.main_section ?? '') === String(mainSectionId) &&
 			String(sub.name || '').trim().toLowerCase() === target
@@ -117,6 +120,7 @@ export async function findSecondarySectionByName(subSectionId, name) {
 	if (!target) return null;
 	const secondaries = await adminFsReadSectionsLevel('secondary');
 	for (const sec of secondaries) {
+		if (isIgnoredSectionRecord(sec)) continue;
 		if (
 			String(sec.sub_section ?? '') === String(subSectionId) &&
 			String(sec.name || '').trim().toLowerCase() === target
@@ -227,6 +231,7 @@ export async function createSubSectionAdmin(mainSectionId, name) {
 		id,
 		name: cleanedName,
 		main_section: mainNum,
+		order_index: 0,
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
@@ -290,6 +295,7 @@ export async function createSecondarySectionAdmin(subSectionId, name) {
 		id,
 		name: cleanedName,
 		sub_section: subNum,
+		order_index: 0,
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),

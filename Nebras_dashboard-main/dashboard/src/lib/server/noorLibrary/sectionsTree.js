@@ -61,6 +61,12 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+const BLACKLISTED_SECTION_PATTERNS = Object.freeze([
+	/^دروس\s+بترخيصه?ا?$/u,
+	/^دروس\s+بتدكصهك$/u,
+	/تدكص/u
+]);
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +75,18 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return NORMALIZED_BLACKLIST.has(n) || BLACKLISTED_SECTION_PATTERNS.some((re) => re.test(n));
+}
+
+/**
+ * فلتر مركزي للأقسام التي يجب ألا يراها محرّك Noor:
+ * - أي اسم في القائمة السوداء أو أحد typos المعروفة.
+ * - أي قسم غير منشور في اللوحة (`is_listed === false`).
+ */
+export function isIgnoredSectionRecord(section) {
+	if (!section) return true;
+	if (isBlacklistedSectionName(section?.name)) return true;
+	return section?.is_listed === false;
 }
 
 async function readLevel(level) {
@@ -92,19 +109,19 @@ async function readLevel(level) {
 export function computeBlacklistedIds({ mains, subs, secondaries }) {
 	const mainIds = new Set();
 	for (const m of mains) {
-		if (isBlacklistedSectionName(m?.name)) mainIds.add(String(m.id));
+		if (isIgnoredSectionRecord(m)) mainIds.add(String(m.id));
 	}
 
 	const subIds = new Set();
 	for (const s of subs) {
-		const isNameBlocked = isBlacklistedSectionName(s?.name);
+		const isNameBlocked = isIgnoredSectionRecord(s);
 		const parentBlocked = mainIds.has(String(s?.main_section ?? ''));
 		if (isNameBlocked || parentBlocked) subIds.add(String(s.id));
 	}
 
 	const secondaryIds = new Set();
 	for (const sec of secondaries) {
-		const isNameBlocked = isBlacklistedSectionName(sec?.name);
+		const isNameBlocked = isIgnoredSectionRecord(sec);
 		const parentBlocked = subIds.has(String(sec?.sub_section ?? ''));
 		if (isNameBlocked || parentBlocked) secondaryIds.add(String(sec.id));
 	}

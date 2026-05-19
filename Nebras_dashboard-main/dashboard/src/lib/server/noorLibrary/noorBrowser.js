@@ -31,6 +31,7 @@
  */
 
 import { env } from '$env/dynamic/private';
+import { accessSync, constants } from 'node:fs';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
 
@@ -59,11 +60,43 @@ function readBoolEnv(name, fallback) {
 	return fallback;
 }
 
+const CHROME_EXECUTABLE_CANDIDATES = Object.freeze([
+	'/usr/local/bin/google-chrome',
+	'/usr/bin/google-chrome-stable',
+	'/usr/bin/google-chrome',
+	'/usr/bin/chromium',
+	'/usr/bin/chromium-browser',
+	'/snap/bin/chromium'
+]);
+
+function canExecute(path) {
+	if (!path) return false;
+	try {
+		accessSync(path, constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function resolveExecutablePath() {
+	const configured = String(
+		env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || ''
+	).trim();
+	if (configured) {
+		if (canExecute(configured)) return configured;
+		throw Object.assign(
+			new Error(`PUPPETEER_EXECUTABLE_PATH غير صالح أو غير قابل للتنفيذ: ${configured}`),
+			{ reason: 'invalid_chrome_executable_path', status: 500 }
+		);
+	}
+	return CHROME_EXECUTABLE_CANDIDATES.find(canExecute) || undefined;
+}
+
 /**
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
- * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
- *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * null دون رمي خطأ. لا نرجع إلى Puppeteer العاديّ لأن محرك Noor يجب أن
+ * يعمل في Stealth Mode فقط.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,21 +114,10 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
-		try {
-			const mod = await import('puppeteer');
-			state.puppeteerModule = mod.default || mod;
-			state.puppeteerEnabled = true;
-			state.lastError =
-				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
-			return state.puppeteerModule;
-		} catch (errPlain) {
-			state.puppeteerEnabled = false;
-			state.lastError =
-				'لا puppeteer ولا puppeteer-extra مثبّتَيْن. شغّل: npm i -D puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
-			return null;
-		}
+		state.puppeteerEnabled = false;
+		state.lastError =
+			'Stealth Mode غير متاح: تأكّد من تثبيت puppeteer-extra و puppeteer-extra-plugin-stealth. لن يعمل محرك Noor بدون stealth.';
+		return null;
 	}
 }
 
@@ -139,9 +161,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = resolveExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({
