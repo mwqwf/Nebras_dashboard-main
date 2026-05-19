@@ -348,7 +348,7 @@ async function notifyFcmSectionCreated(info) {
  *   2) ✋ تحقُّق fileUrl — إن غاب، نرمي فوراً قبل أيّ كتابة (لا قسم، لا تصنيف)
  *   3) ✋ تنزيل الملفّ كـ Buffer في الذاكرة — إن فشل، نرمي قبل أيّ كتابة
  *   4) فقط الآن: تصنيف محليّ (مطابقة نصّيّة على شجرة الأقسام)
- *   5) فقط الآن: create sections إن لزم (نحن متأكّدون أنّ الكتاب جاهز)
+ *   5) فقط الآن: create sections إن لزم مع الالتزام الصارم بـ main→sub→secondary
  *   6) upload + write to RTDB
  *   7) register + FCM notify
  *
@@ -436,6 +436,30 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+
+		if (decision.newSecondaryName) {
+			const createdSec = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
+			secondaryId = String(createdSec.id);
+			if (!createdSec.alreadyExisted) {
+				createdSectionsIds.push(secondaryId);
+				sectionsCreatedDelta += 1;
+				await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+				await notifyFcmSectionCreated({
+					level: 'secondary',
+					name: createdSec.name,
+					parentName: createdSub.name,
+					sectionId: createdSec.id,
+					parentId: subId
+				});
+				await appendLog({
+					level: 'success',
+					message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSec.name}" تحت "${createdSub.name}"`,
+					sectionId: createdSec.id,
+					parentId: subId,
+					kind: 'secondary_section_created'
+				}).catch(() => {});
+			}
+		}
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
@@ -460,6 +484,30 @@ async function processBook({ url, bookId, sections }) {
 				parentId: mainId,
 				kind: 'sub_section_created'
 			}).catch(() => {});
+		}
+
+		if (decision.newSecondaryName) {
+			const createdSec = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
+			secondaryId = String(createdSec.id);
+			if (!createdSec.alreadyExisted) {
+				createdSectionsIds.push(secondaryId);
+				sectionsCreatedDelta += 1;
+				await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+				await notifyFcmSectionCreated({
+					level: 'secondary',
+					name: createdSec.name,
+					parentName: created.name,
+					sectionId: createdSec.id,
+					parentId: subId
+				});
+				await appendLog({
+					level: 'success',
+					message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSec.name}" تحت "${created.name}"`,
+					sectionId: createdSec.id,
+					parentId: subId,
+					kind: 'secondary_section_created'
+				}).catch(() => {});
+			}
 		}
 	} else if (decision.kind === 'create_secondary') {
 		subId = decision.subId;
@@ -506,6 +554,15 @@ async function processBook({ url, bookId, sections }) {
 			status: 500
 		});
 	}
+	if (!secondary) {
+		throw Object.assign(
+			new Error('فشل تحديد قسم ثانوي بعد التصنيف — محرك Noor لا يرفع محتوى خارج الهيكل الثلاثي الكامل.'),
+			{
+				reason: 'secondary_section_required',
+				status: 500
+			}
+		);
+	}
 
 	// (الخطوتان 2-3: GATE A/B تمّتا فوق قبل أيّ كتابة في DB.
 	//  الـ buffer جاهز في `downloaded` ونحن متأكّدون أنّ الكتاب صالح.)
@@ -522,12 +579,8 @@ async function processBook({ url, bookId, sections }) {
 		main_section_name: String(main.name || ''),
 		subsection: String(sub.id),
 		subsection_name: String(sub.name || ''),
-		...(secondary
-			? {
-					secondary_subsection: String(secondary.id),
-					secondary_subsection_name: String(secondary.name || '')
-				}
-			: { secondary_subsection: null })
+		secondary_subsection: String(secondary.id),
+		secondary_subsection_name: String(secondary.name || '')
 	};
 
 	const result = await adminUploadAndRegister({
