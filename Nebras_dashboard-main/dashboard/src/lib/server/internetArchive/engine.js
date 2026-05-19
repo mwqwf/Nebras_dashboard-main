@@ -326,10 +326,19 @@ async function bumpStats(patch) {
 	});
 }
 
+/** يُزيل الحقول ذات القيمة undefined — Firebase RTDB يرفضها كلّيّاً. */
+function stripUndefined(obj) {
+	const out = {};
+	for (const [k, v] of Object.entries(obj || {})) {
+		if (v !== undefined) out[k] = v;
+	}
+	return out;
+}
+
 async function appendLog(entry) {
 	const db = getAdminDatabase();
 	const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-	await db.ref(`${LOG_PATH}/${id}`).set({ ...entry, ts: Date.now() });
+	await db.ref(`${LOG_PATH}/${id}`).set(stripUndefined({ ...entry, ts: Date.now() }));
 	const all = await db
 		.ref(LOG_PATH)
 		.orderByChild('ts')
