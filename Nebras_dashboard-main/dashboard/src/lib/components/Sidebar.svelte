@@ -30,26 +30,22 @@
 	}
 
 	// ─── Menu Items ────────────────────────────────────────
-
-	let menuItems = $derived(
-		[
+	// getAuthState() داخل $derived.by لضمان إعادة بناء القائمة عند تحديث role/authorized.
+	let menuItems = $derived.by(() => {
+		const { role } = getAuthState();
+		return [
 			{ label: t('common.dashboard'), href: '/moderator', icon: 'dashboard' },
 			{ label: t('common.sections'), href: '/moderator/sections', icon: 'sections' },
 			{ label: t('common.content'), href: '/moderator/content/files', icon: 'content' },
 			{ label: t('content.multi_upload'), href: '/moderator/content/multi', icon: 'multiUpload' },
 			{ label: 'جلب من مكتبة نور', href: '/moderator/content/import-noor', icon: 'noorImport' },
-			...(authState.role === 'owner' || authState.role === 'supervisor'
-				? [
-						{
-							label: 'استيراد أرشيف الإنترنت',
-							href: '/admin/internet-archive',
-							icon: 'archiveImport'
-						}
-					]
-				: []),
+			{
+				label: 'استيراد أرشيف الإنترنت',
+				href: '/admin/internet-archive',
+				icon: 'archiveImport'
+			},
 			{ label: t('common.chat'), href: '/moderator/chat', icon: 'chat' },
-			// يظهر للمالك فقط — إدارة قائمة المشرفين وحظرهم.
-			...(authState.role === 'owner'
+			...(role === 'owner'
 				? [
 						{
 							label: 'إدارة المشرفين',
@@ -63,8 +59,8 @@
 						}
 					]
 				: [])
-		]
-	);
+		];
+	});
 
 	function isActive(href) {
 		if (!href) return false;

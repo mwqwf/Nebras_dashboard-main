@@ -79,8 +79,21 @@ export function setNeedsOwnerCode(value) {
 	authState.needsOwnerCode = Boolean(value);
 }
 
+/** @param {string|null|undefined} role */
 export function setRole(role) {
-	authState.role = role === 'owner' || role === 'supervisor' ? role : null;
+	if (role === 'owner') {
+		authState.role = 'owner';
+		return;
+	}
+	if (
+		role === 'supervisor' ||
+		role === 'admin' ||
+		role === 'moderator'
+	) {
+		authState.role = 'supervisor';
+		return;
+	}
+	authState.role = null;
 }
 
 export function setBlocked(value) {

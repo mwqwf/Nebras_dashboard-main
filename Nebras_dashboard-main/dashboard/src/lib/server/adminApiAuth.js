@@ -4,6 +4,7 @@
 
 import { json } from '@sveltejs/kit';
 import { isAdminConfigured } from '$lib/server/firebaseAdmin.js';
+import { isAdminPanelRole } from '$lib/server/dashboardRoles.js';
 
 /**
  * @param {{ locals?: { auth?: { role?: string } } }} event
@@ -14,7 +15,7 @@ export function requireAdminRole(event) {
 	if (!auth) {
 		return { ok: false, response: json({ error: 'unauthenticated' }, { status: 401 }) };
 	}
-	if (auth.role !== 'owner' && auth.role !== 'supervisor') {
+	if (!isAdminPanelRole(auth.role)) {
 		return { ok: false, response: json({ error: 'forbidden', reason: 'role_not_allowed' }, { status: 403 }) };
 	}
 	return { ok: true, auth };

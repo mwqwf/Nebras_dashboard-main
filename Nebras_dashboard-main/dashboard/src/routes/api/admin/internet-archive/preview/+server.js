@@ -20,13 +20,14 @@
  */
 
 import { json } from '@sveltejs/kit';
+import { isAdminPanelRole } from '$lib/server/dashboardRoles.js';
 import { previewItem } from '$lib/server/internetArchive/fetcher.js';
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function POST(event) {
 	const auth = event.locals?.auth;
 	if (!auth) return json({ error: 'unauthenticated' }, { status: 401 });
-	if (auth.role !== 'owner' && auth.role !== 'supervisor') {
+	if (!isAdminPanelRole(auth.role)) {
 		return json({ error: 'forbidden', reason: 'role_not_allowed' }, { status: 403 });
 	}
 

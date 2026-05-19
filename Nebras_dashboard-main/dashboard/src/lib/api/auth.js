@@ -123,7 +123,7 @@ export async function checkCurrentAuth() {
 	}
 
 	if (data.authorized) {
-		const role = data?.user?.role === 'owner' ? 'owner' : 'supervisor';
+		const role = data?.user?.role || 'supervisor';
 		setAuthorized(true);
 		setNeedsOwnerCode(false);
 		setRole(role);
@@ -357,7 +357,7 @@ export async function verifyOwnerCode(code) {
 		return { ok: false, reason: data?.reason || data?.error || `http_${status}` };
 	}
 	if (data?.ok) {
-		const role = data?.user?.role === 'owner' ? 'owner' : 'supervisor';
+		const role = data?.user?.role || 'supervisor';
 		setAuthorized(true);
 		setNeedsOwnerCode(false);
 		setRole(role);

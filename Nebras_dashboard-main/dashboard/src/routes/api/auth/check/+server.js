@@ -34,6 +34,7 @@ import { json } from '@sveltejs/kit';
 import { getAdminDatabase, verifyIdToken } from '$lib/server/firebaseAdmin.js';
 import { syncNebrasDashboardClaimsForUid } from '$lib/server/dashboardClaimsSync.js';
 import { isOwnerEmail } from '$lib/server/mailer.js';
+import { normalizeDashboardRole } from '$lib/server/dashboardRoles.js';
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function POST({ request }) {
@@ -109,7 +110,9 @@ export async function POST({ request }) {
 			if (val.role === 'admin') migration.role = 'supervisor';
 			if (typeof val.isBlocked !== 'boolean') migration.isBlocked = false;
 
-			const effectiveRole = migration.role || val.role || 'supervisor';
+			const effectiveRole = normalizeDashboardRole(email, {
+				role: migration.role || val.role
+			});
 			const effectiveBlocked =
 				typeof val.isBlocked === 'boolean' ? val.isBlocked : false;
 

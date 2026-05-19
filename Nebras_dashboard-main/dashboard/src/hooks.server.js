@@ -37,6 +37,7 @@ import {
 	verifyIdToken
 } from '$lib/server/firebaseAdmin.js';
 import { isOwnerEmail } from '$lib/server/mailer.js';
+import { normalizeDashboardRole } from '$lib/server/dashboardRoles.js';
 import { autoBootIfNeeded as iaAutoBoot } from '$lib/server/internetArchive/engine.js';
 
 /**
@@ -104,8 +105,7 @@ async function loadAuthorization(idToken) {
 	}
 
 	const v = snap.val() || {};
-	// الدور الفعلي بعد احتساب ترقية المالك (كمقياس احتياطي).
-	const effectiveRole = isOwnerEmail(email) ? 'owner' : v.role === 'admin' ? 'supervisor' : v.role || 'supervisor';
+	const effectiveRole = normalizeDashboardRole(email, v);
 	const isBlocked = isOwnerEmail(email) ? false : v.isBlocked === true;
 
 	return {
@@ -130,7 +130,14 @@ export async function handle({ event, resolve }) {
 	//   /api/admin/*   → إدارة المشرفين والإشعارات الإداريّة.
 	//   /api/notify/*  → إرسال إشعارات FCM (يجب أن تكون محمية أيضاً).
 	if (!isProtectedPath(path)) {
-		return resolve(event);
+		const response = await resolve(event);
+		// منع تخزين shell الـ SPA قديماً بعد نشر جديد (رابط Sidebar وغيره).
+		const accept = event.request.headers.get('accept') || '';
+		if (accept.includes('text/html')) {
+			response.headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+			response.headers.set('Pragma', 'no-cache');
+		}
+		return response;
 	}
 
 	const idToken = extractBearer(event.request);
@@ -167,5 +174,6 @@ export async function handle({ event, resolve }) {
 	}
 
 	event.locals.auth = auth;
-	return resolve(event);
+	const response = await resolve(event);
+	return response;
 }

@@ -9,11 +9,12 @@
  */
 import { json } from '@sveltejs/kit';
 import { runEngineTick } from '$lib/server/internetArchive/engine.js';
+import { isAdminPanelRole } from '$lib/server/dashboardRoles.js';
 
 export async function POST(event) {
 	const auth = event.locals?.auth;
 	if (!auth) return json({ error: 'unauthenticated' }, { status: 401 });
-	if (auth.role !== 'owner' && auth.role !== 'supervisor') {
+	if (!isAdminPanelRole(auth.role)) {
 		return json({ error: 'forbidden', reason: 'role_not_allowed' }, { status: 403 });
 	}
 	try {

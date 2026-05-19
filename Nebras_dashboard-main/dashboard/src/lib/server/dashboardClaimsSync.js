@@ -44,7 +44,10 @@ export async function syncNebrasDashboardClaimsForUid(uid) {
 		return;
 	}
 
-	const rawRole = v.role === 'admin' ? 'supervisor' : v.role || 'supervisor';
+	const rawRole =
+		v.role === 'admin' || v.role === 'moderator'
+			? 'supervisor'
+			: v.role || 'supervisor';
 	if (rawRole === 'owner') {
 		try {
 			await auth.setCustomUserClaims(id, { role: 'owner' });
