@@ -1,20 +1,19 @@
 /**
  * GET /api/cron/internet-archive-tick
  *
- * Vercel Cron entrypoint للمحرّك. يعمل **فقط** إن:
- *   1) صحّ سرّ CRON_SECRET
- *   2) `ia_library_engine/config/enabled === true` (وإلا يخرج بدون عمل)
+ * Vercel Cron entrypoint للمحرّك الآلي. السلوك:
+ *   1) يتحقّق من Bearer $CRON_SECRET.
+ *   2) يستدعي autoBootIfNeeded() — يضمن أنّ DEFAULT_CONFIG مكتوب في RTDB.
+ *   3) ينفّذ runEngineTick() مباشرة — لا يتوقّف عند enabled=false إلا إن
+ *      كان المستخدم أوقفه يدوياً عبر stopEngine (الذي يضع enabled=false).
+ *      وإن غاب enabled كاملاً، autoBoot يضعه true ⇒ Cron يستمرّ.
  *
- * يقرأ enabled من DB قبل runEngineTick() لأنّ runEngineTick نفسه لا يفحص
- * enabled (يفترض أنّ المستدعي تحقّق منه). على Vercel serverless الدورة
- * تموت بعد كلّ tick؛ Cron يستدعي هذا المسار كلّ X دقيقة.
- *
- * لا يمرّ عبر hooks.server.js لأنّ المسار تحت /api/cron/* وليس /api/admin/*.
+ * هذا يضمن: حتى بدون أيّ طلب admin، Vercel Cron وحده كافٍ لإطعام التطبيق.
  */
 import { json } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { getAdminDatabase, isAdminConfigured } from '$lib/server/firebaseAdmin.js';
-import { runEngineTick } from '$lib/server/internetArchive/engine.js';
+import { autoBootIfNeeded, runEngineTick } from '$lib/server/internetArchive/engine.js';
 
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
@@ -40,11 +39,18 @@ export async function GET(event) {
 	}
 
 	try {
-		const cfgSnap = await getAdminDatabase().ref('ia_library_engine/config/enabled').get();
-		const enabled = Boolean(cfgSnap.exists() && cfgSnap.val() === true);
+		// إقلاع آلي (يكتب DEFAULT_CONFIG إن لم يوجد config أصلاً).
+		await autoBootIfNeeded();
+
+		// قراءة enabled — لو المستخدم أوقفه صراحةً نحترم القرار.
+		const enabledSnap = await getAdminDatabase()
+			.ref('ia_library_engine/config/enabled')
+			.get();
+		const enabled = enabledSnap.exists() ? enabledSnap.val() !== false : true;
 		if (!enabled) {
-			return json({ ok: true, skipped: true, reason: 'engine_disabled' });
+			return json({ ok: true, skipped: true, reason: 'engine_disabled_by_user' });
 		}
+
 		const r = await runEngineTick();
 		return json({ ok: true, cron: true, ...r });
 	} catch (err) {

@@ -92,9 +92,14 @@ export const DEFAULT_SEEDS = Object.freeze([
 	}
 ]);
 
+/**
+ * ⚠️ enabled=true بالافتراض. النظام يقلع آلياً بدون أي تدخّل بشريّ.
+ * البذور الافتراضية (DEFAULT_SEEDS) تُحقن في readConfig إن غابت لكي
+ * يضمن المحرّك أنّ لديه دائماً ما يجلبه.
+ */
 const DEFAULT_CONFIG = Object.freeze({
-	enabled: false,
-	seeds: [],
+	enabled: true,
+	seeds: [...DEFAULT_SEEDS],
 	tickIntervalMs: 12000,
 	batchSize: 2,
 	scrapeCount: 50,
@@ -137,13 +142,23 @@ function isValidSeed(seed) {
 }
 
 // ── RTDB helpers ────────────────────────────────────────────────────
+/**
+ * يقرأ الإعدادات من RTDB مع دمج DEFAULT_CONFIG بحيث:
+ *  - لو لا يوجد config أصلاً → نُعيد DEFAULT_CONFIG (enabled=true + بذور).
+ *  - لو يوجد config لكنّ seeds فارغة → نحقن DEFAULT_SEEDS تلقائياً.
+ *  - لو enabled غير محدّد في RTDB → نعتبره true (للإقلاع التلقائي الأوّل).
+ *
+ * النتيجة: لا توجد حالة يبدأ فيها المحرّك بلا بذور أو بـ enabled=false
+ * من تلقاء نفسه. التعطيل يحتاج أمراً صريحاً (stopEngine).
+ */
 async function readConfig() {
 	const snap = await getAdminDatabase().ref(CONFIG_PATH).get();
-	if (!snap.exists()) return { ...DEFAULT_CONFIG };
+	if (!snap.exists()) return { ...DEFAULT_CONFIG, seeds: [...DEFAULT_SEEDS] };
 	const v = snap.val() || {};
-	const seeds = Array.isArray(v.seeds) ? v.seeds.filter(isValidSeed) : [];
+	const validSeeds = Array.isArray(v.seeds) ? v.seeds.filter(isValidSeed) : [];
+	const seeds = validSeeds.length > 0 ? validSeeds : [...DEFAULT_SEEDS];
 	return {
-		enabled: Boolean(v.enabled),
+		enabled: v.enabled === undefined ? true : Boolean(v.enabled),
 		seeds,
 		tickIntervalMs: Math.max(3000, Number(v.tickIntervalMs) || DEFAULT_CONFIG.tickIntervalMs),
 		batchSize: Math.max(1, Math.min(10, Number(v.batchSize) || DEFAULT_CONFIG.batchSize)),
@@ -151,9 +166,10 @@ async function readConfig() {
 		trustedCollections: Array.isArray(v.trustedCollections)
 			? v.trustedCollections
 			: DEFAULT_CONFIG.trustedCollections,
-		allowMissingLicenseInTrustedCollections: v.allowMissingLicenseInTrustedCollections === undefined
-			? DEFAULT_CONFIG.allowMissingLicenseInTrustedCollections
-			: Boolean(v.allowMissingLicenseInTrustedCollections)
+		allowMissingLicenseInTrustedCollections:
+			v.allowMissingLicenseInTrustedCollections === undefined
+				? DEFAULT_CONFIG.allowMissingLicenseInTrustedCollections
+				: Boolean(v.allowMissingLicenseInTrustedCollections)
 	};
 }
 
@@ -771,15 +787,46 @@ async function tickLoop() {
 	}
 }
 
+/**
+ * الإقلاع التلقائي الكامل — يُستدعى من hooks.server.js على أوّل طلب،
+ * ومن /engine/status. مرّة واحدة فقط لكلّ Node process.
+ *
+ * السلوك:
+ *  1) إن لم يوجد config في RTDB → يكتب DEFAULT_CONFIG (enabled=true + بذور).
+ *  2) إن كان enabled=true ولا حلقة قيد التشغيل → يطلق tickLoop فوراً.
+ *  3) إن كان enabled=false (المستخدم أوقفه صراحةً) → يحترم القرار ولا يعيد.
+ *
+ * النتيجة: حالما أوّل طلب HTTP يصل، يبدأ المحرّك يجلب محتوى — دون أيّ
+ * زرّ يضغطه أحد.
+ */
 export async function autoBootIfNeeded() {
 	const state = getGlobalState();
 	if (state.autoBootAttempted) return;
 	state.autoBootAttempted = true;
+
+	const db = getAdminDatabase();
+	const cfgSnap = await db.ref(CONFIG_PATH).get();
+	if (!cfgSnap.exists()) {
+		// أوّل إقلاع — اكتب DEFAULT_CONFIG كاملاً.
+		await db.ref(CONFIG_PATH).set({
+			...DEFAULT_CONFIG,
+			seeds: [...DEFAULT_SEEDS]
+		});
+		await appendLog({
+			level: 'info',
+			message: 'إقلاع أوّليّ: تمّ كتابة DEFAULT_CONFIG (enabled=true + بذور).'
+		}).catch(() => {});
+	}
+
 	const cfg = await readConfig();
 	if (cfg.enabled && !state.running) {
 		state.running = true;
-		await appendLog({ level: 'info', message: 'إعادة تشغيل تلقائي بعد إقلاع الخادم.' });
-		state.timer = setTimeout(() => tickLoop().catch(() => {}), 500);
+		await appendLog({
+			level: 'info',
+			message: 'بدء المحرّك تلقائياً عند إقلاع الخادم.'
+		}).catch(() => {});
+		// أوّل tick فوراً (لا تأخير).
+		state.timer = setTimeout(() => tickLoop().catch(() => {}), 50);
 	}
 }
 

@@ -31,8 +31,31 @@
  */
 
 import { json } from '@sveltejs/kit';
-import { getAdminDatabase, verifyIdToken } from '$lib/server/firebaseAdmin.js';
+import {
+	getAdminDatabase,
+	isAdminConfigured,
+	verifyIdToken
+} from '$lib/server/firebaseAdmin.js';
 import { isOwnerEmail } from '$lib/server/mailer.js';
+import { autoBootIfNeeded as iaAutoBoot } from '$lib/server/internetArchive/engine.js';
+
+/**
+ * يطلق محرّك Internet Archive تلقائيّاً عند أوّل طلب يصل بعد إقلاع الخادم.
+ * fire-and-forget — لا يُؤخّر الطلب الذي حرّكه. كلّ Node process يستدعي
+ * autoBootIfNeeded مرّة واحدة فقط (يضمن ذلك flag داخلي في الـ engine).
+ *
+ * هذا هو ما يجعل تجربة المستخدم: "لا أضغط أيّ زرّ — حالما أفتح أيّ صفحة
+ * يبدأ المحتوى يصل إلى Firestore وأراه في التطبيق فوراً".
+ */
+let iaAutoBootKicked = false;
+function kickIaEngine() {
+	if (iaAutoBootKicked) return;
+	iaAutoBootKicked = true;
+	// لا ننتظر — fire and forget. إن فشل، سيُسجَّل في log المحرّك.
+	if (isAdminConfigured()) {
+		iaAutoBoot().catch(() => {});
+	}
+}
 
 // قائمة البادئات المحميّة. أيّ طلب لمسار /api/* مطابق لأحد هذه البادئات
 // يُفحَص للهوية والصلاحيّة قبل تمريره. المسار /api/auth/* مقصود عمداً
@@ -94,6 +117,10 @@ async function loadAuthorization(idToken) {
 /** @type {import('@sveltejs/kit').Handle} */
 export async function handle({ event, resolve }) {
 	const path = event.url.pathname;
+
+	// إقلاع محرّك Internet Archive عند أوّل طلب في حياة العملية.
+	// يحدث هنا قبل أيّ منطق آخر، fire-and-forget، لا يُؤخّر هذا الطلب.
+	kickIaEngine();
 
 	// الجدار يعمل على نقاط الـ API الحسّاسة فقط:
 	//   /api/admin/*   → إدارة المشرفين والإشعارات الإداريّة.

@@ -10,7 +10,7 @@
     },
     {
       "path": "/api/cron/internet-archive-tick",
-      "schedule": "*/15 * * * *"
+      "schedule": "*/2 * * * *"
     }
   ]
 }
