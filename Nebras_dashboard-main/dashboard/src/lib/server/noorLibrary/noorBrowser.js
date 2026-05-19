@@ -30,6 +30,7 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { existsSync } from 'node:fs';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -81,6 +82,12 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		if (readBoolEnv('PUPPETEER_REQUIRE_STEALTH', true)) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'puppeteer-extra أو stealth-plugin غير متاحَيْن، و PUPPETEER_REQUIRE_STEALTH=true.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {
@@ -97,6 +104,29 @@ async function loadPuppeteer() {
 			return null;
 		}
 	}
+}
+
+function resolveExecutablePath() {
+	const configured = String(
+		env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || ''
+	).trim();
+	if (configured) {
+		if (existsSync(configured)) return configured;
+		throw Object.assign(
+			new Error(`PUPPETEER_EXECUTABLE_PATH غير صالح أو غير موجود: ${configured}`),
+			{ reason: 'puppeteer_executable_not_found', status: 500 }
+		);
+	}
+	for (const candidate of [
+		'/usr/local/bin/google-chrome',
+		'/usr/bin/google-chrome',
+		'/usr/bin/chromium',
+		'/usr/bin/chromium-browser',
+		'/snap/bin/chromium'
+	]) {
+		if (existsSync(candidate)) return candidate;
+	}
+	return undefined;
 }
 
 /**
@@ -139,9 +169,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = resolveExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({

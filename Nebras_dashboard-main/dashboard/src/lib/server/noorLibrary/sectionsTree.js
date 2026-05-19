@@ -61,6 +61,26 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+function levenshteinDistance(a, b) {
+	const left = normalizeArabic(a);
+	const right = normalizeArabic(b);
+	if (!left) return right.length;
+	if (!right) return left.length;
+	const dp = Array.from({ length: left.length + 1 }, (_, i) => [i]);
+	for (let j = 1; j <= right.length; j++) dp[0][j] = j;
+	for (let i = 1; i <= left.length; i++) {
+		for (let j = 1; j <= right.length; j++) {
+			const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+			dp[i][j] = Math.min(
+				dp[i - 1][j] + 1,
+				dp[i][j - 1] + 1,
+				dp[i - 1][j - 1] + cost
+			);
+		}
+	}
+	return dp[left.length][right.length];
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +89,17 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (n === blocked || n.includes(blocked)) return true;
+		if (n.length >= 8 && blocked.includes(n)) return true;
+	}
+	const tokens = n.split(' ').filter(Boolean);
+	const hasLessonsWord = tokens.includes('دروس');
+	if (!hasLessonsWord) return false;
+	return tokens.some((token) => {
+		if (token.includes('بتدكص') || token.includes('ترخيص')) return true;
+		return levenshteinDistance(token, 'بترخيصها') <= 3;
+	});
 }
 
 async function readLevel(level) {
