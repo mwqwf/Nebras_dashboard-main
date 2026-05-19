@@ -40,19 +40,20 @@ import { isOwnerEmail } from '$lib/server/mailer.js';
 import { normalizeDashboardRole } from '$lib/server/dashboardRoles.js';
 import { autoBootIfNeeded } from '$lib/server/internetArchive/engine.js';
 
-// إقلاع تلقائي لمحرّك Internet Archive عند أوّل طلب لكلّ Node process. يضمن
-// أنّ المحرّك يقلع بدون أيّ تدخّل بشري ولا حتى ضغط زر في الواجهة. نُطلقه
-// في الخلفية ولا ننتظره (fire-and-forget) كي لا نُبطئ أوّل طلب.
-let __iaAutoBootFired = false;
-function fireAutoBootOnce() {
-	if (__iaAutoBootFired) return;
-	__iaAutoBootFired = true;
-	if (!isAdminConfigured()) return; // لا Service Account → سيُسجَّل الفشل في الـ log الداخلي
-	// fire-and-forget: لا await — لا يجب أن يُبطئ أي طلب
-	autoBootIfNeeded({ runInlineTick: false }).catch((err) => {
-		// نسجّل على console فقط — الأخطاء التفصيليّة تُكتب في RTDB log داخل المحرّك
+// إقلاع تلقائي لمحرّك Internet Archive عند أوّل طلب لكلّ Node process.
+// على Vercel serverless يجب await الـ tick قبل إرجاع الاستجابة — وإلّا تُجمَّد
+// الدالة ولا يُستورد شيء (setTimeout لا يعمل بعد الـ return).
+let __iaAutoBootPromise = null;
+function autoBootOnce() {
+	if (__iaAutoBootPromise) return __iaAutoBootPromise;
+	if (!isAdminConfigured()) {
+		__iaAutoBootPromise = Promise.resolve();
+		return __iaAutoBootPromise;
+	}
+	__iaAutoBootPromise = autoBootIfNeeded({ runInlineTick: true }).catch((err) => {
 		console.warn('[ia-autoBoot] silent failure:', err?.message || String(err));
 	});
+	return __iaAutoBootPromise;
 }
 // قائمة البادئات المحميّة. أيّ طلب لمسار /api/* مطابق لأحد هذه البادئات
 // يُفحَص للهوية والصلاحيّة قبل تمريره. المسار /api/auth/* مقصود عمداً
@@ -114,8 +115,8 @@ async function loadAuthorization(idToken) {
 export async function handle({ event, resolve }) {
 	const path = event.url.pathname;
 
-	// إقلاع IA Engine في الخلفية على أوّل طلب. fire-and-forget لا يُبطئ شيئاً.
-	fireAutoBootOnce();
+	// أوّل طلب في العملية: tick متزامن (مرّة واحدة؛ يتخطّى إن كان آخر tick < 90ث).
+	await autoBootOnce();
 
 	// الجدار يعمل على نقاط الـ API الحسّاسة فقط:
 	//   /api/admin/*   → إدارة المشرفين والإشعارات الإداريّة.
