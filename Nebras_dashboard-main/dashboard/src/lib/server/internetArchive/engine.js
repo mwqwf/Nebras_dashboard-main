@@ -93,6 +93,48 @@ export const DEFAULT_SEEDS = Object.freeze([
 ]);
 
 /**
+ * عبارات بحث دوّارة — تُغذّي فهرس Firestore بعناوين يبحث عنها المستخدمون في التطبيق
+ * (التطبيق يقرأ Firestore فقط؛ الجلب من IA يحدث هنا خلفياً).
+ */
+export const SEARCH_QUERY_ROTATION = Object.freeze([
+	'تفسير القرآن',
+	'سيرة النبي',
+	'الفقه الإسلامي',
+	'حديث نبوي',
+	'العقيدة الإسلامية',
+	'تربية إسلامية',
+	'اللغة العربية',
+	'تاريخ إسلامي',
+	'ابن كثير',
+	'النووي',
+	'ابن تيمية',
+	'الغزالي',
+	'ابن القيم',
+	'محمد بن عبد الوهاب',
+	'كتاب التوحيد',
+	'رياض الصالحين',
+	'صحيح البخاري',
+	'صحيح مسلم',
+	'تفسير ابن كثير',
+	'الأذكار',
+	'فقه السنة',
+	'السيرة النبوية',
+	'علوم القرآن',
+	'أصول الفقه',
+	'الحديث الشريف',
+	'الزهد',
+	'الرقائق',
+	'الفتاوى',
+	'المنهاج',
+	'شرح العقيدة',
+	'التفسير',
+	'القرآن الكريم',
+	'محاضرة إسلامية',
+	'درس ديني',
+	'خطبة جمعة'
+]);
+
+/**
  * ⚠️ enabled=true بالافتراض. النظام يقلع آلياً بدون أي تدخّل بشريّ.
  * البذور الافتراضية (DEFAULT_SEEDS) تُحقن في readConfig إن غابت لكي
  * يضمن المحرّك أنّ لديه دائماً ما يجلبه.
@@ -191,11 +233,16 @@ async function writeConfig(patch) {
 
 async function readCursor() {
 	const snap = await getAdminDatabase().ref(CURSOR_PATH).get();
-	if (!snap.exists()) return { seedIndex: 0, scrapeCursor: null };
+	if (!snap.exists()) {
+		return { seedIndex: 0, scrapeCursor: null, queryIndex: 0, tickMode: 'catalog' };
+	}
 	const v = snap.val() || {};
+	const tickMode = v.tickMode === 'search' ? 'search' : 'catalog';
 	return {
 		seedIndex: Math.max(0, Number(v.seedIndex) || 0),
-		scrapeCursor: typeof v.scrapeCursor === 'string' && v.scrapeCursor ? v.scrapeCursor : null
+		scrapeCursor: typeof v.scrapeCursor === 'string' && v.scrapeCursor ? v.scrapeCursor : null,
+		queryIndex: Math.max(0, Number(v.queryIndex) || 0),
+		tickMode
 	};
 }
 
@@ -205,6 +252,8 @@ async function writeCursor(cursor) {
 		.set({
 			seedIndex: cursor.seedIndex,
 			scrapeCursor: cursor.scrapeCursor || null,
+			queryIndex: Math.max(0, Number(cursor.queryIndex) || 0),
+			tickMode: cursor.tickMode === 'search' ? 'search' : 'catalog',
 			updatedAt: { '.sv': 'timestamp' }
 		});
 }
@@ -547,6 +596,84 @@ export async function importItem(identifier, opts = {}) {
 
 // ── Tick ────────────────────────────────────────────────────────────
 
+/**
+ * دورة بحث بعنوان/موضوع — تملأ Firestore بما يطابق بحث التطبيق لاحقاً.
+ */
+async function runSearchQueryTick(cfg, cursor) {
+	const queries = SEARCH_QUERY_ROTATION;
+	if (!queries.length) {
+		return { processed: 0, skipped: 0, failed: 0, mode: 'search' };
+	}
+
+	const idx = cursor.queryIndex % queries.length;
+	const q = queries[idx];
+	const lucene = buildLuceneQuery({ q, nebrasTypes: ['document'], languages: ['Arabic'] });
+	const page = await scrapeOnePage({ query: lucene, count: 15 });
+	const identifiers = page.items.map((it) => String(it?.identifier || '')).filter(Boolean);
+	const { newIds } = await partitionKnownItems(identifiers);
+	const newSet = new Set(newIds);
+
+	let processed = 0;
+	let skipped = identifiers.length - newIds.length;
+	let failed = 0;
+	let totalSectionsCreated = 0;
+
+	for (const item of page.items) {
+		const id = String(item?.identifier || '');
+		if (!id || !newSet.has(id)) continue;
+		try {
+			const r = await importItem(id, {
+				trustedCollections: cfg.trustedCollections,
+				allowMissingLicenseInTrustedCollections: cfg.allowMissingLicenseInTrustedCollections
+			});
+			processed = 1;
+			totalSectionsCreated += r.createdSectionsIds?.length || 0;
+			await appendLog({
+				level: 'success',
+				message: `بحث "${q}" → استورد "${r.title}"`,
+				identifier: id,
+				fileId: r.fileId,
+				mode: 'search'
+			});
+			break;
+		} catch (err) {
+			failed += 1;
+			await recordFailure(id, {
+				reason: err?.reason || 'unknown',
+				message: err?.message || String(err),
+				iaSourceUrl: `https://archive.org/details/${id}`
+			}).catch(() => {});
+		}
+	}
+
+	const nextCursor = {
+		seedIndex: cursor.seedIndex,
+		scrapeCursor: cursor.scrapeCursor,
+		queryIndex: (idx + 1) % queries.length,
+		tickMode: 'catalog'
+	};
+	await writeCursor(nextCursor);
+
+	await bumpStats({
+		importedDelta: processed,
+		skippedDelta: skipped,
+		failedDelta: failed,
+		runsDelta: 1,
+		touchLastRun: true,
+		lastError: failed > 0 && !processed ? `بحث "${q}": لا تطابق قابل للاستيراد` : null
+	});
+
+	return {
+		processed,
+		skipped,
+		failed,
+		sectionsCreated: totalSectionsCreated,
+		mode: 'search',
+		searchQuery: q,
+		cursor: nextCursor
+	};
+}
+
 export async function runEngineTick() {
 	const cfg = await readConfig();
 	if (!cfg.seeds.length) {
@@ -558,8 +685,14 @@ export async function runEngineTick() {
 
 	let cursor = await readCursor();
 	if (cursor.seedIndex >= cfg.seeds.length) {
-		cursor = { seedIndex: 0, scrapeCursor: null };
+		cursor = { ...cursor, seedIndex: 0, scrapeCursor: null };
 	}
+
+	// بالتناوب: دورة فهرسة كتالوجية + دورة بعبارة بحث (لتغطية ما يكتبه المستخدم في التطبيق).
+	if (cursor.tickMode === 'search') {
+		return runSearchQueryTick(cfg, cursor);
+	}
+
 	const seed = cfg.seeds[cursor.seedIndex];
 
 	const query = buildLuceneQuery({
@@ -577,7 +710,12 @@ export async function runEngineTick() {
 
 	if (page.items.length === 0) {
 		const nextIndex = (cursor.seedIndex + 1) % cfg.seeds.length;
-		const nextCursor = { seedIndex: nextIndex, scrapeCursor: null };
+		const nextCursor = {
+			seedIndex: nextIndex,
+			scrapeCursor: null,
+			queryIndex: cursor.queryIndex,
+			tickMode: 'search'
+		};
 		await writeCursor(nextCursor);
 		await appendLog({
 			level: 'info',
@@ -649,12 +787,27 @@ export async function runEngineTick() {
 	let advancedToNextSeed = false;
 	let nextCursor;
 	if (batch.length < toProcess.length) {
-		nextCursor = { seedIndex: cursor.seedIndex, scrapeCursor: cursor.scrapeCursor };
+		nextCursor = {
+			seedIndex: cursor.seedIndex,
+			scrapeCursor: cursor.scrapeCursor,
+			queryIndex: cursor.queryIndex,
+			tickMode: 'catalog'
+		};
 	} else if (page.nextCursor) {
-		nextCursor = { seedIndex: cursor.seedIndex, scrapeCursor: page.nextCursor };
+		nextCursor = {
+			seedIndex: cursor.seedIndex,
+			scrapeCursor: page.nextCursor,
+			queryIndex: cursor.queryIndex,
+			tickMode: 'catalog'
+		};
 	} else {
 		const ni = (cursor.seedIndex + 1) % cfg.seeds.length;
-		nextCursor = { seedIndex: ni, scrapeCursor: null };
+		nextCursor = {
+			seedIndex: ni,
+			scrapeCursor: null,
+			queryIndex: cursor.queryIndex,
+			tickMode: 'search'
+		};
 		advancedToNextSeed = true;
 	}
 	await writeCursor(nextCursor);
@@ -815,6 +968,7 @@ async function tickLoop() {
 export async function autoBootIfNeeded(opts = {}) {
 	const state = getGlobalState();
 	const runInline = opts.runInlineTick !== false;
+	const forceTick = opts.forceTick === true;
 	const firstTime = !state.autoBootAttempted;
 	state.autoBootAttempted = true;
 
@@ -825,34 +979,36 @@ export async function autoBootIfNeeded(opts = {}) {
 			...DEFAULT_CONFIG,
 			seeds: [...DEFAULT_SEEDS]
 		});
+		await db.ref(CURSOR_PATH).set({
+			seedIndex: 0,
+			scrapeCursor: null,
+			queryIndex: 0,
+			tickMode: 'catalog'
+		});
 		await appendLog({
 			level: 'info',
-			message: 'إقلاع أوّليّ: تمّ كتابة DEFAULT_CONFIG (enabled=true + بذور).'
+			message: 'إقلاع أوّليّ: محرّك الجلب الآليّ مُفعَّل (كتالوج + بحث دوّار).'
 		}).catch(() => {});
 	}
 
-	const cfg = await readConfig();
-	if (!cfg.enabled) return { booted: false, reason: 'engine_disabled_by_user' };
-
-	if (firstTime && !state.running) {
-		state.running = true;
-		await appendLog({
-			level: 'info',
-			message: 'بدء المحرّك تلقائياً عند إقلاع الخادم.'
-		}).catch(() => {});
-		// تشغيل خلفي يعمل على Node adapter (لا يضرّ على serverless لأنّه يموت
-		// مع الطلب — لكنّ runInlineTick أدناه يضمن نتيجة فعليّة).
-		state.timer = setTimeout(() => tickLoop().catch(() => {}), 50);
+	let cfg = await readConfig();
+	if (!cfg.enabled) {
+		if (forceTick) {
+			cfg = await writeConfig({ enabled: true });
+		} else {
+			return { booted: false, reason: 'engine_disabled_by_user' };
+		}
 	}
 
 	let inlineTickResult = null;
 	if (runInline && !state.currentTickInFlight) {
-		// لا نُكرّر tick متزامناً أكثر من مرّة كل دقيقتين (حماية من إغراق Vercel).
-		const stats = await readStats().catch(() => null);
-		const lastRun = Number(stats?.lastRunAt) || 0;
-		const sinceLastMs = lastRun ? Date.now() - lastRun : Infinity;
-		if (sinceLastMs < 120_000) {
-			return { booted: true, inlineTickResult: null, skippedInlineTick: true, sinceLastMs };
+		if (!forceTick) {
+			const stats = await readStats().catch(() => null);
+			const lastRun = Number(stats?.lastRunAt) || 0;
+			const sinceLastMs = lastRun ? Date.now() - lastRun : Infinity;
+			if (sinceLastMs < 90_000) {
+				return { booted: true, inlineTickResult: null, skippedInlineTick: true, sinceLastMs };
+			}
 		}
 
 		state.currentTickInFlight = true;

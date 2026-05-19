@@ -2,8 +2,8 @@ name: Internet Archive Auto-Tick
 
 on:
   schedule:
-    # كل 5 دقائق — يكمّل Vercel Hobby (cron يومي فقط)
-    - cron: '*/5 * * * *'
+    # كل 3 دقائق — يكمّل Vercel Hobby (cron يومي فقط)
+    - cron: '*/3 * * * *'
   workflow_dispatch:
 
 jobs:

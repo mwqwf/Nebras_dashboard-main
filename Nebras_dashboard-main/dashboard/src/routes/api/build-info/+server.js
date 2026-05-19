@@ -34,9 +34,9 @@ export async function GET() {
 		deployedAt: new Date().toISOString(),
 		version,
 		features: {
-			internetArchiveAdminPage: true,
+			internetArchiveBackgroundPipeline: true,
 			internetArchiveCronTick: true,
-			internetArchiveEngineApi: true
+			internetArchiveSearchRotation: true
 		},
 		firebase: {
 			adminConfigured: isAdminConfigured(),

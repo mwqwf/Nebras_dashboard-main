@@ -1,0 +1,25 @@
+name: Verify Vercel deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify-production:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Vercel build
+        run: sleep 150
+
+      - name: Check build-info and cron route
+        run: |
+          set -e
+          curl -sf "https://nebras-dashboard-main.vercel.app/api/build-info" | tee /tmp/build-info.json
+          grep -q '"internetArchiveBackgroundPipeline":true' /tmp/build-info.json
+          grep -q '"adminConfigured":true' /tmp/build-info.json
+          code=$(curl -sS -o /tmp/cron.json -w "%{http_code}" \
+            "https://nebras-dashboard-main.vercel.app/api/cron/internet-archive-tick")
+          test "$code" = "200"
+          grep -q '"ok":true' /tmp/cron.json
+          echo "Deploy verification passed."

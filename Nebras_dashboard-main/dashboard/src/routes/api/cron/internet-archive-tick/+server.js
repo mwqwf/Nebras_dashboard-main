@@ -41,9 +41,8 @@ export async function GET(event) {
 	}
 
 	try {
-		// إقلاع آلي + tick متزامن في نفس الطلب (Vercel serverless لا يدعم
-		// background timers). autoBoot يكتب DEFAULT_CONFIG ثم ينفّذ tick.
-		const r = await autoBootIfNeeded({ runInlineTick: true });
+		// المحرّك يعمل دائماً في الخلفية — لا يعتمد على لوحة تحكّم أو أزرار.
+		const r = await autoBootIfNeeded({ runInlineTick: true, forceTick: true });
 		if (!r.booted) {
 			return json({ ok: true, skipped: true, reason: r.reason });
 		}

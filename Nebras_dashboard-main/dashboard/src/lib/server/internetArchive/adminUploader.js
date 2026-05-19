@@ -11,7 +11,7 @@
  * ║  thumbnail, subsection, …) ولا يرى __provider ولا __iaIdentifier. ║
  * ╚══════════════════════════════════════════════════════════════════╝
  *
- *   • Storage path: dashboard/internet-archive/{fileId}/{ts}_{safe}
+ *   • Storage path: dashboard/content/{fileId}/{ts}_{safe} (نفس الرفع اليدوي)
  *   • Download URL مع firebaseStorageDownloadTokens (UUID)
  *   • Multi-write على content_unified_files + dashboard_uploads
  *   • fileId بصيغة fb_<epoch>_… (نفس الرفع اليدوي — ترتيب التطبيق)
@@ -190,7 +190,7 @@ export async function adminUploadAndRegister(args) {
 
 	const fileId = generateNebrasFileId();
 	const safeName = sanitizeSegment(filename || 'item.bin');
-	const objectPath = `dashboard/internet-archive/${fileId}/${Date.now()}_${safeName}`;
+	const objectPath = `dashboard/content/${fileId}/${Date.now()}_${safeName}`;
 	const token = randomUUID();
 
 	const ctx = { adminApp, bucketName, uploaderUid: uploader?.uid || '' };
