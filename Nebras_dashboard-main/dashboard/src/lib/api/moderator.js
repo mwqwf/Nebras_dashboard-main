@@ -44,6 +44,7 @@ import {
   filterAndRank,
   createTtlCache,
 } from "$lib/utils/search.js";
+import { pickEngagementStats } from "$lib/utils/engagementStats.js";
 
 // Mshcat/OldApp bridges removed (commit e4e0062). Legacy code paths inside this
 // file branch on isMshcatConfigured()/isOldAppConfigured() — wired here to inert
@@ -1956,6 +1957,7 @@ export async function listMyFiles({
   list = list.map((item) => {
     const createdAt =
       item?.metadata?.created_at || item?.createdAt || new Date().toISOString();
+    const engagement = pickEngagementStats(item);
     return {
       id: item.fileId || item.id,
       filename: item.filename || "untitled",
@@ -1965,6 +1967,7 @@ export async function listMyFiles({
       upload_type: item.upload_type || "firebase",
       upload_status: item.upload_status || "completed",
       storage_path: item.storagePath || item.storage_path || "",
+      engagement,
       metadata: {
         ...(item.metadata || {}),
         created_at: createdAt,

@@ -7,6 +7,7 @@
 	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
 	import { tokenize, highlightMatches } from '$lib/utils/search.js';
+	import EngagementBadge from '$lib/components/EngagementBadge.svelte';
 
 	// سياسة الجلب: لا تحميل تلقائيّ — الشاشة تبقى فارغة حتّى يبحث المستخدم.
 
@@ -492,6 +493,7 @@
 							<span class="file-meta" style="color: {item.metadata?.is_listed === false ? 'var(--color-danger-400)' : 'inherit'};">
 								{item.metadata?.is_listed === false ? t('common.unlisted') : `${item.file_type} · ${formatFileSize(item.file_size)}`}
 							</span>
+							<EngagementBadge stats={item.engagement} />
 						</div>
 						<span class="file-status {statusColor(item.upload_status)}">{item.upload_status}</span>
 						<span class="file-date">{formatDate(item.metadata?.created_at)}</span>

@@ -15,6 +15,8 @@
 	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
 	import { tokenize, highlightMatches } from '$lib/utils/search.js';
+	import EngagementBadge from '$lib/components/EngagementBadge.svelte';
+	import { pickEngagementStats } from '$lib/utils/engagementStats.js';
 
 	// ─── State ──────────────────────────────────────────
 	let items = $state([]);
@@ -516,6 +518,7 @@
 							{#if item.metadata?.description}
 								<p class="card-desc">{@html highlightMatches(item.metadata.description.slice(0, 80) + (item.metadata.description.length > 80 ? '...' : ''), searchTokens)}</p>
 							{/if}
+							<EngagementBadge stats={pickEngagementStats(item)} />
 							<div class="card-footer">
 								<span class="card-date">{formatDate(item.metadata?.created_at)}</span>
 								<div class="card-actions">
