@@ -74,28 +74,42 @@ const LOG_MAX_ENTRIES = 60;
  * يمكن للمسؤول إضافة بذوره عبر updateSeeds؛ لكنّ هذه القائمة وحدها كافية
  * لرؤية محتوى في التطبيق فور التشغيل.
  */
+/**
+ * البذور الافتراضيّة — مسمّيات المجموعات مأخوذة من **استكشاف فعلي لـ IA Scrape API**.
+ *
+ * المجموعات القديمة الخاطئة (community_texts, opensource_arabic, opensource_audio,
+ * islamicliterature) كانت تُرجع 0 نتيجة. المسمّيات الحقيقيّة المُفهرسة:
+ *
+ *   كتب عربيّة/إسلاميّة: booksbylanguage_arabic, folkscanomy_religion,
+ *                        folkscanomy_religion_quran, folkscanomy
+ *   صوت إسلامي:        audio_islamic, audio_religion
+ *   فيديو:             opensource_movies (موجود لكن قليل المحتوى الديني)
+ *
+ * استعمال الـ q الحرّ + mediatype + language يكفي بدون قيد collection صارم —
+ * لأنّ الـ q الحرّ يضيّق النطاق دلالياً، و mediatype يضمن نوع الملفّ.
+ */
 export const DEFAULT_SEEDS = Object.freeze([
 	{
-		id: 'arabic_texts_opensource',
-		label: 'كتب عربية — مصدر مفتوح',
-		q: '(islam OR إسلام OR قرآن OR حديث OR فقه OR تفسير OR سيرة)',
+		id: 'arabic_islamic_books',
+		label: 'كتب عربيّة إسلاميّة',
+		q: '(islam OR إسلام OR قرآن OR حديث OR فقه OR تفسير OR سيرة OR عقيدة)',
 		languages: ['Arabic', 'ara'],
 		nebrasTypes: ['document'],
-		collections: ['opensource_arabic', 'community_texts', 'arabicliterature']
+		collections: ['booksbylanguage_arabic', 'folkscanomy_religion', 'folkscanomy_religion_quran']
 	},
 	{
-		id: 'arabic_audio_opensource',
-		label: 'صوتيّات عربيّة — مصدر مفتوح',
-		q: '(قرآن OR تلاوة OR محاضرة OR درس)',
+		id: 'arabic_audio_islamic',
+		label: 'صوتيّات إسلاميّة عربيّة',
+		q: '(قرآن OR تلاوة OR محاضرة OR درس OR خطبة OR تفسير)',
 		languages: ['Arabic', 'ara'],
 		nebrasTypes: ['audio'],
-		collections: ['opensource_audio', 'opensource']
+		collections: ['audio_islamic', 'audio_religion']
 	},
 	{
 		id: 'islamic_video_opensource',
-		label: 'فيديو إسلامي — مصدر مفتوح',
-		q: '(islamic OR إسلامي OR محاضرة OR خطبة)',
-		languages: ['Arabic', 'ara'],
+		label: 'فيديو إسلامي مفتوح المصدر',
+		q: '(islamic OR إسلامي OR محاضرة OR خطبة OR seerah OR muhammad)',
+		languages: ['Arabic', 'ara', 'English'],
 		nebrasTypes: ['video'],
 		collections: ['opensource_movies']
 	}
@@ -161,20 +175,18 @@ const DEFAULT_CONFIG = Object.freeze({
 	tickIntervalMs: 12000,
 	batchSize: 5,
 	scrapeCount: 200,
+	// مسمّيات المجموعات المُفهرسة فعلاً في IA — التحقّق تمّ بـ Scrape API مباشرة.
 	trustedCollections: [
-		'opensource_arabic',
-		'community_texts',
-		'arabicliterature',
-		'arabicliteratureandlinguistics',
-		'islamicbooks_archive',
-		'islamic-books',
-		'islamicpdfbooks',
-		'shamela',
-		'opensource',
-		'opensource_audio',
-		'opensource_movies',
+		'booksbylanguage_arabic',
+		'booksbylanguage',
+		'folkscanomy_religion',
+		'folkscanomy_religion_quran',
+		'folkscanomy',
+		'audio_islamic',
 		'audio_religion',
-		'lecturesandtalks'
+		'opensource_movies',
+		'opensource_audio',
+		'opensource'
 	],
 	allowMissingLicenseInTrustedCollections: true
 });
@@ -1085,10 +1097,23 @@ export async function autoBootIfNeeded(opts = {}) {
 			(s) =>
 				String(s?.q || '').trim() === 'language:Arabic' &&
 				(!Array.isArray(s.languages) || s.languages.length === 0)
+		) ||
+		// مسمّيات collections القديمة الخاطئة → فرض التحديث
+		rawCfg.seeds.some(
+			(s) =>
+				Array.isArray(s?.collections) &&
+				s.collections.some((c) =>
+					['opensource_arabic', 'community_texts', 'arabicliterature', 'opensource_audio'].includes(String(c))
+				)
 		);
+	// نتحقّق إن كانت المجموعات الموثوقة الحاليّة تحوي المسمّيات الصحيحة الجديدة.
+	// لو كانت تحوي أيّاً من المسمّيات الخاطئة القديمة، نُحدّث.
 	const collectionsStale =
 		!Array.isArray(rawCfg.trustedCollections) ||
-		rawCfg.trustedCollections.length < DEFAULT_CONFIG.trustedCollections.length;
+		rawCfg.trustedCollections.some((c) =>
+			['opensource_arabic', 'community_texts', 'arabicliterature', 'islamicbooks_archive'].includes(String(c))
+		) ||
+		!rawCfg.trustedCollections.includes('booksbylanguage_arabic');
 	if (
 		Number(rawCfg.scrapeCount) < 200 ||
 		Number(rawCfg.batchSize) < 3 ||
@@ -1101,6 +1126,8 @@ export async function autoBootIfNeeded(opts = {}) {
 			seeds: [...DEFAULT_SEEDS],
 			trustedCollections: DEFAULT_CONFIG.trustedCollections
 		});
+		// إعادة المؤشّر إلى البداية حتّى لا يبقى عالقاً في حالة قديمة.
+		await writeCursor({ seedIndex: 0, scrapeCursor: null, queryIndex: 0, tickMode: 'catalog' });
 	}
 
 	if (!cfg.enabled) {

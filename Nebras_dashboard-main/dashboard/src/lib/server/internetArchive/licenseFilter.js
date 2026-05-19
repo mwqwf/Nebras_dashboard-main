@@ -31,17 +31,21 @@ const ALLOWED_LICENSE_PATTERNS = Object.freeze([
 ]);
 
 /**
- * مجموعات IA معروفة بمحتوى عامّ آمن للنشر (allowlist تشغيلي). يُستعمل
- * كاحتياط حين تفقد العناصر حقل license. غير مفعّل إلا إن صرّح المسؤول.
+ * مجموعات IA معروفة بمحتوى عامّ آمن للنشر (allowlist تشغيلي).
+ * مسمّيات IA الفعليّة — تحقّقنا منها بـ Scrape API. القائمة القديمة كانت
+ * تحوي مسمّيات وهميّة (community_texts/opensource_arabic) لا تُعيد نتائج.
  */
 export const DEFAULT_TRUSTED_COLLECTIONS = Object.freeze([
-	'opensource_arabic',
-	'community_texts',
-	'arabicliterature',
-	'arabicliteratureandlinguistics',
-	'islamicbooks_archive',
-	'islamic-books',
-	'shamela'
+	'booksbylanguage_arabic',
+	'booksbylanguage',
+	'folkscanomy_religion',
+	'folkscanomy_religion_quran',
+	'folkscanomy',
+	'audio_islamic',
+	'audio_religion',
+	'opensource_movies',
+	'opensource_audio',
+	'opensource'
 ]);
 
 /**
