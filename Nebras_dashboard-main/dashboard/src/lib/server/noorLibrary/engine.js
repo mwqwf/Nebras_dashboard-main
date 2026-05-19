@@ -392,6 +392,33 @@ async function processBook({ url, bookId, sections }) {
 	const createdSectionsIds = [];
 	let sectionsCreatedDelta = 0;
 
+	const createSecondaryForDecision = async (targetSubId, name, parentSubName = '') => {
+		const secondaryName = String(name || '').trim() || 'كتب متنوّعة';
+		const created = await createSecondarySectionAdmin(targetSubId, secondaryName);
+		const newSecondaryId = String(created.id);
+		if (!created.alreadyExisted) {
+			createdSectionsIds.push(newSecondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			const parentSub = sections.index.subsById[String(targetSubId)];
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName: parentSubName || parentSub?.name || '',
+				sectionId: created.id,
+				parentId: targetSubId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSubName || parentSub?.name || ''}"`,
+				sectionId: created.id,
+				parentId: targetSubId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
+		return newSecondaryId;
+	};
+
 	if (decision.kind === 'create_main') {
 		// أعلى مستوى من الإنشاء — main + sub أوّل تحته في عمليّة واحدة.
 		const createdMain = await createMainSectionAdmin(decision.newMainName);
@@ -436,6 +463,12 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+
+		secondaryId = await createSecondaryForDecision(
+			subId,
+			decision.newSecondaryName || decision.newSubName,
+			createdSub.name
+		);
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
@@ -461,30 +494,20 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+		secondaryId = await createSecondaryForDecision(
+			subId,
+			decision.newSecondaryName || decision.newSubName,
+			created.name
+		);
 	} else if (decision.kind === 'create_secondary') {
 		subId = decision.subId;
-		const created = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
-		secondaryId = String(created.id);
-		if (!created.alreadyExisted) {
-			createdSectionsIds.push(secondaryId);
-			sectionsCreatedDelta += 1;
-			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-			const parentSub = sections.index.subsById[subId];
-			await notifyFcmSectionCreated({
-				level: 'secondary',
-				name: created.name,
-				parentName: parentSub?.name || '',
-				sectionId: created.id,
-				parentId: subId
-			});
-			await appendLog({
-				level: 'success',
-				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSub?.name || ''}"`,
-				sectionId: created.id,
-				parentId: subId,
-				kind: 'secondary_section_created'
-			}).catch(() => {});
-		}
+		secondaryId = await createSecondaryForDecision(subId, decision.newSecondaryName);
+	} else if (!secondaryId && subId) {
+		// ضمان القاعدة الثلاثية: لا يُضاف كتاب Noor بلا قسم ثانوي.
+		secondaryId = await createSecondaryForDecision(
+			subId,
+			decision.newSecondaryName || 'كتب متنوّعة'
+		);
 	}
 
 	if (!subId) {

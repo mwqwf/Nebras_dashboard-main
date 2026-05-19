@@ -22,6 +22,7 @@
  *                                          true إن كانت الحزمة موجودة).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
+ *       NOOR_ALLOW_PLAIN_PUPPETEER     — fallback بدون stealth (افتراضي false).
  *
  * الواجهة العامّة:
  *   - isPuppeteerEnabled() → boolean
@@ -30,6 +31,8 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { access } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -63,7 +66,8 @@ function readBoolEnv(name, fallback) {
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * الوضع الافتراضي صار Stealth إلزامياً لمكتبة نور. fallback إلى puppeteer
+ * العادي لا يعمل إلا عند ضبط NOOR_ALLOW_PLAIN_PUPPETEER=true صراحةً.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,14 +85,19 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		if (!readBoolEnv('NOOR_ALLOW_PLAIN_PUPPETEER', false)) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'Stealth Mode مطلوب: تعذّر تحميل puppeteer-extra أو puppeteer-extra-plugin-stealth.';
+			return null;
+		}
+		// retry with plain puppeteer فقط إذا فُعّل fallback صراحةً للتشخيص.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
 			state.puppeteerEnabled = true;
 			state.lastError =
-				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
+				'NOOR_ALLOW_PLAIN_PUPPETEER=true — استعمال puppeteer العاديّ بدون stealth للتشخيص فقط.';
 			return state.puppeteerModule;
 		} catch (errPlain) {
 			state.puppeteerEnabled = false;
@@ -142,6 +151,16 @@ async function getBrowser() {
 	const executablePath =
 		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
 		undefined;
+	if (executablePath) {
+		try {
+			await access(executablePath, fsConstants.X_OK);
+		} catch {
+			throw Object.assign(
+				new Error(`PUPPETEER_EXECUTABLE_PATH غير صالح أو غير قابل للتنفيذ: ${executablePath}`),
+				{ reason: 'invalid_puppeteer_executable_path', status: 500 }
+			);
+		}
+	}
 
 	state.browserPromise = puppeteer
 		.launch({
