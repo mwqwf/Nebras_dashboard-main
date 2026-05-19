@@ -12,8 +12,8 @@
  */
 import { json } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
-import { getAdminDatabase, isAdminConfigured } from '$lib/server/firebaseAdmin.js';
-import { autoBootIfNeeded, runEngineTick } from '$lib/server/internetArchive/engine.js';
+import { isAdminConfigured } from '$lib/server/firebaseAdmin.js';
+import { autoBootIfNeeded } from '$lib/server/internetArchive/engine.js';
 
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
@@ -39,20 +39,13 @@ export async function GET(event) {
 	}
 
 	try {
-		// إقلاع آلي (يكتب DEFAULT_CONFIG إن لم يوجد config أصلاً).
-		await autoBootIfNeeded();
-
-		// قراءة enabled — لو المستخدم أوقفه صراحةً نحترم القرار.
-		const enabledSnap = await getAdminDatabase()
-			.ref('ia_library_engine/config/enabled')
-			.get();
-		const enabled = enabledSnap.exists() ? enabledSnap.val() !== false : true;
-		if (!enabled) {
-			return json({ ok: true, skipped: true, reason: 'engine_disabled_by_user' });
+		// إقلاع آلي + tick متزامن في نفس الطلب (Vercel serverless لا يدعم
+		// background timers). autoBoot يكتب DEFAULT_CONFIG ثم ينفّذ tick.
+		const r = await autoBootIfNeeded({ runInlineTick: true });
+		if (!r.booted) {
+			return json({ ok: true, skipped: true, reason: r.reason });
 		}
-
-		const r = await runEngineTick();
-		return json({ ok: true, cron: true, ...r });
+		return json({ ok: true, cron: true, ...(r.inlineTickResult || {}) });
 	} catch (err) {
 		console.error('[cron/internet-archive-tick]', err);
 		return json(

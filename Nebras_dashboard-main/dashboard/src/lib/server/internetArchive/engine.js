@@ -791,23 +791,30 @@ async function tickLoop() {
  * الإقلاع التلقائي الكامل — يُستدعى من hooks.server.js على أوّل طلب،
  * ومن /engine/status. مرّة واحدة فقط لكلّ Node process.
  *
- * السلوك:
- *  1) إن لم يوجد config في RTDB → يكتب DEFAULT_CONFIG (enabled=true + بذور).
- *  2) إن كان enabled=true ولا حلقة قيد التشغيل → يطلق tickLoop فوراً.
- *  3) إن كان enabled=false (المستخدم أوقفه صراحةً) → يحترم القرار ولا يعيد.
+ * ⚠️ على Vercel serverless: `setTimeout` لا يصمد بعد إرجاع الـ response،
+ * لذا الحلّ الوحيد لإجراء tick حقيقي هو **تنفيذه متزامناً** قبل الـ return.
  *
- * النتيجة: حالما أوّل طلب HTTP يصل، يبدأ المحرّك يجلب محتوى — دون أيّ
- * زرّ يضغطه أحد.
+ * المعاملات:
+ *   - opts.runInlineTick (افتراضي true): إذا كان true ينفّذ tick واحد
+ *     متزامناً (await) في نفس الطلب. هذا يضمن أنّ محتوى يصل Firestore
+ *     قبل أن ينتهي الطلب — حتى على serverless.
+ *
+ * السلوك:
+ *   1) إن لم يوجد config → يكتب DEFAULT_CONFIG (enabled=true + بذور).
+ *   2) إن كان enabled=false (المستخدم أوقفه) → يخرج (يحترم القرار).
+ *   3) إن كان enabled=true:
+ *      أ) يطلق tickLoop داخلياً (يعمل على Node long-running adapter).
+ *      ب) إذا runInlineTick=true ينفّذ runEngineTick متزامناً أيضاً.
  */
-export async function autoBootIfNeeded() {
+export async function autoBootIfNeeded(opts = {}) {
 	const state = getGlobalState();
-	if (state.autoBootAttempted) return;
+	const runInline = opts.runInlineTick !== false;
+	const firstTime = !state.autoBootAttempted;
 	state.autoBootAttempted = true;
 
 	const db = getAdminDatabase();
 	const cfgSnap = await db.ref(CONFIG_PATH).get();
 	if (!cfgSnap.exists()) {
-		// أوّل إقلاع — اكتب DEFAULT_CONFIG كاملاً.
 		await db.ref(CONFIG_PATH).set({
 			...DEFAULT_CONFIG,
 			seeds: [...DEFAULT_SEEDS]
@@ -819,19 +826,44 @@ export async function autoBootIfNeeded() {
 	}
 
 	const cfg = await readConfig();
-	if (cfg.enabled && !state.running) {
+	if (!cfg.enabled) return { booted: false, reason: 'engine_disabled_by_user' };
+
+	if (firstTime && !state.running) {
 		state.running = true;
 		await appendLog({
 			level: 'info',
 			message: 'بدء المحرّك تلقائياً عند إقلاع الخادم.'
 		}).catch(() => {});
-		// أوّل tick فوراً (لا تأخير).
+		// تشغيل خلفي يعمل على Node adapter (لا يضرّ على serverless لأنّه يموت
+		// مع الطلب — لكنّ runInlineTick أدناه يضمن نتيجة فعليّة).
 		state.timer = setTimeout(() => tickLoop().catch(() => {}), 50);
 	}
+
+	let inlineTickResult = null;
+	if (runInline && !state.currentTickInFlight) {
+		state.currentTickInFlight = true;
+		state.lastTickStartedAt = Date.now();
+		try {
+			inlineTickResult = await runEngineTick();
+		} catch (err) {
+			await appendLog({
+				level: 'error',
+				message: `inline tick فشل: ${err?.message || err}`,
+				reason: err?.reason || 'inline_tick_failed'
+			}).catch(() => {});
+		} finally {
+			state.currentTickInFlight = false;
+			state.lastTickEndedAt = Date.now();
+		}
+	}
+
+	return { booted: true, inlineTickResult };
 }
 
 export async function getEngineStatus({ logLimit = 30 } = {}) {
-	await autoBootIfNeeded();
+	// لا نشغّل tick متزامناً عند قراءة الحالة فقط (لكي لا تبطئ Polling
+	// كل 8 ثوانٍ من الواجهة). نُكتفي بكتابة DEFAULT_CONFIG لو لم يوجد.
+	await autoBootIfNeeded({ runInlineTick: false });
 	const state = getGlobalState();
 	const [cfg, cursor, stats, log] = await Promise.all([
 		readConfig(),

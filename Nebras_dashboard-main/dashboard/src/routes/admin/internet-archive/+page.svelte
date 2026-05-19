@@ -59,8 +59,27 @@
 		}
 	}
 
+	/**
+	 * عند فتح الصفحة لأوّل مرّة: نقرأ الحالة، ثمّ إن لم يوجد محتوى مستورَد
+	 * نُطلق tick متزامن مباشرة (لا ننتظر Cron). هذا يضمن: المستخدم يفتح
+	 * الصفحة، خلال 10-30 ثانية يرى أوّل عناصر تظهر في "آخر الأحداث" ثمّ
+	 * تنتقل إلى Firestore ثمّ تظهر في التطبيق.
+	 */
+	async function autoTriggerIfEmpty() {
+		await loadStatus();
+		if (engine?.config?.enabled && (engine?.stats?.totalImported ?? 0) === 0) {
+			// لا تُظهر "busy" عريضاً — فقط شغّل tick في الخلفية.
+			try {
+				await runOneTick();
+				await loadStatus();
+			} catch {
+				/* الأخطاء تظهر في سجلّ المحرّك */
+			}
+		}
+	}
+
 	onMount(() => {
-		loadStatus();
+		autoTriggerIfEmpty();
 		pollTimer = setInterval(loadStatus, 8000);
 	});
 	onDestroy(() => {

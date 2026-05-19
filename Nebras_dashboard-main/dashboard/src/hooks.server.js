@@ -51,9 +51,13 @@ let iaAutoBootKicked = false;
 function kickIaEngine() {
 	if (iaAutoBootKicked) return;
 	iaAutoBootKicked = true;
-	// لا ننتظر — fire and forget. إن فشل، سيُسجَّل في log المحرّك.
+	// fire-and-forget بدون tick متزامن (حتى لا نُبطّئ أوّل طلب).
+	// المحرّك الحقيقي يُشغَّل عبر:
+	//   - Cron (`/api/cron/internet-archive-tick`) كلّ دقيقتين
+	//   - زرّ "جلب دفعة الآن" في `/admin/internet-archive`
+	//   - تلقائياً عند فتح صفحة `/admin/internet-archive` أوّل مرّة
 	if (isAdminConfigured()) {
-		iaAutoBoot().catch(() => {});
+		iaAutoBoot({ runInlineTick: false }).catch(() => {});
 	}
 }
 
