@@ -133,7 +133,8 @@ export async function scrapeOnePage({
 
 	const params = new URLSearchParams();
 	params.set('q', query);
-	params.set('count', String(Math.max(1, Math.min(1000, Number(count) || 100))));
+	// IA Scraping API يفرض حداً أدنى 100 (وإلا HTTP 400).
+	params.set('count', String(Math.max(100, Math.min(1000, Number(count) || 100))));
 	params.set('fields', (fields || DEFAULT_FIELDS).join(','));
 	for (const s of sorts || []) params.append('sorts', s);
 	if (cursor) params.set('cursor', cursor);

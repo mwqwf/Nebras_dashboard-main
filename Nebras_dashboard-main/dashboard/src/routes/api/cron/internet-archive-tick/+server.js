@@ -46,7 +46,24 @@ export async function GET(event) {
 		if (!r.booted) {
 			return json({ ok: true, skipped: true, reason: r.reason });
 		}
-		return json({ ok: true, cron: true, ...(r.inlineTickResult || {}) });
+		if (r.tickError) {
+			return json(
+				{
+					ok: false,
+					cron: true,
+					error: 'tick_failed',
+					...r.tickError,
+					...(r.inlineTickResult || {})
+				},
+				{ status: 500 }
+			);
+		}
+		return json({
+			ok: true,
+			cron: true,
+			skippedInlineTick: Boolean(r.skippedInlineTick),
+			...(r.inlineTickResult || {})
+		});
 	} catch (err) {
 		console.error('[cron/internet-archive-tick]', err);
 		return json(

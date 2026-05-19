@@ -150,7 +150,7 @@ const DEFAULT_CONFIG = Object.freeze({
 	seeds: [...DEFAULT_SEEDS],
 	tickIntervalMs: 12000,
 	batchSize: 1,
-	scrapeCount: 20,
+	scrapeCount: 100,
 	trustedCollections: ['opensource', 'opensource_arabic', 'community_texts'],
 	allowMissingLicenseInTrustedCollections: true
 });
@@ -210,7 +210,7 @@ async function readConfig() {
 		seeds,
 		tickIntervalMs: Math.max(3000, Number(v.tickIntervalMs) || DEFAULT_CONFIG.tickIntervalMs),
 		batchSize: Math.max(1, Math.min(10, Number(v.batchSize) || DEFAULT_CONFIG.batchSize)),
-		scrapeCount: Math.max(10, Math.min(1000, Number(v.scrapeCount) || DEFAULT_CONFIG.scrapeCount)),
+		scrapeCount: Math.max(100, Math.min(1000, Number(v.scrapeCount) || DEFAULT_CONFIG.scrapeCount)),
 		trustedCollections: Array.isArray(v.trustedCollections)
 			? v.trustedCollections
 			: DEFAULT_CONFIG.trustedCollections,
@@ -608,7 +608,7 @@ async function runSearchQueryTick(cfg, cursor) {
 	const idx = cursor.queryIndex % queries.length;
 	const q = queries[idx];
 	const lucene = buildLuceneQuery({ q, nebrasTypes: ['document'], languages: ['Arabic'] });
-	const page = await scrapeOnePage({ query: lucene, count: 15 });
+	const page = await scrapeOnePage({ query: lucene, count: 100 });
 	const identifiers = page.items.map((it) => String(it?.identifier || '')).filter(Boolean);
 	const { newIds } = await partitionKnownItems(identifiers);
 	const newSet = new Set(newIds);
@@ -886,7 +886,7 @@ export async function bootstrap() {
 	const current = await readConfig();
 	const seeds = current.seeds.length > 0 ? current.seeds : [...DEFAULT_SEEDS];
 	const cfg = await writeConfig({ seeds, enabled: true });
-	await writeCursor({ seedIndex: 0, scrapeCursor: null });
+	await writeCursor({ seedIndex: 0, scrapeCursor: null, queryIndex: 0, tickMode: 'catalog' });
 	await appendLog({
 		level: 'info',
 		message: `Bootstrap: ${cfg.seeds.length} بذور مُفعَّلة — بدء الجلب الآليّ الكامل.`
@@ -1001,7 +1001,13 @@ export async function autoBootIfNeeded(opts = {}) {
 	}
 
 	let inlineTickResult = null;
-	if (runInline && !state.currentTickInFlight) {
+	/** @type {{ reason?: string, message?: string } | null} */
+	let tickError = null;
+
+	if (runInline) {
+		if (state.currentTickInFlight && !forceTick) {
+			return { booted: true, inlineTickResult: null, skippedInlineTick: true, reason: 'tick_in_flight' };
+		}
 		if (!forceTick) {
 			const stats = await readStats().catch(() => null);
 			const lastRun = Number(stats?.lastRunAt) || 0;
@@ -1016,10 +1022,14 @@ export async function autoBootIfNeeded(opts = {}) {
 		try {
 			inlineTickResult = await runEngineTick();
 		} catch (err) {
+			tickError = {
+				reason: err?.reason || 'inline_tick_failed',
+				message: err?.message || String(err)
+			};
 			await appendLog({
 				level: 'error',
-				message: `inline tick فشل: ${err?.message || err}`,
-				reason: err?.reason || 'inline_tick_failed'
+				message: `inline tick فشل: ${tickError.message}`,
+				reason: tickError.reason
 			}).catch(() => {});
 		} finally {
 			state.currentTickInFlight = false;
@@ -1027,7 +1037,7 @@ export async function autoBootIfNeeded(opts = {}) {
 		}
 	}
 
-	return { booted: true, inlineTickResult };
+	return { booted: true, inlineTickResult, tickError };
 }
 
 export async function getEngineStatus({ logLimit = 30 } = {}) {
@@ -1057,7 +1067,7 @@ export async function getEngineStatus({ logLimit = 30 } = {}) {
 export async function updateSeeds(seeds) {
 	const filtered = (seeds || []).filter(isValidSeed);
 	const cfg = await writeConfig({ seeds: filtered });
-	await writeCursor({ seedIndex: 0, scrapeCursor: null });
+	await writeCursor({ seedIndex: 0, scrapeCursor: null, queryIndex: 0, tickMode: 'catalog' });
 	await appendLog({
 		level: 'info',
 		message: `تمّ تحديث البذور (${cfg.seeds.length} بذرة).`
@@ -1066,7 +1076,7 @@ export async function updateSeeds(seeds) {
 }
 
 export async function resetCursor() {
-	await writeCursor({ seedIndex: 0, scrapeCursor: null });
+	await writeCursor({ seedIndex: 0, scrapeCursor: null, queryIndex: 0, tickMode: 'catalog' });
 	await appendLog({ level: 'info', message: 'إعادة تعيين المؤشّر.' });
 	return { seedIndex: 0, scrapeCursor: null };
 }
