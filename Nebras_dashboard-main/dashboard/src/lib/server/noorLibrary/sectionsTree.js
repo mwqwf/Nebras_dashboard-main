@@ -44,6 +44,17 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بترخيصه'
 ]);
 
+/**
+ * أنماط أسماء تظهر غالباً بسبب أخطاء إدخال/ترميز. لا نصلحها تلقائياً هنا
+ * حتى لا نغيّر بيانات المدير، لكن نخفيها عن المصنّف الآلي ونمنع الكتابة تحتها.
+ */
+const TYPO_SECTION_PATTERNS = Object.freeze([
+	/بتدكصهك/u,
+	/ترخيصهك/u,
+	/[a-z]{3,}/i,
+	/^[\d\s._-]+$/u
+]);
+
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
 function normalizeArabic(s) {
 	return String(s || '')
@@ -72,6 +83,28 @@ export function isBlacklistedSectionName(name) {
 	return NORMALIZED_BLACKLIST.has(n);
 }
 
+/**
+ * فحص Typos واضح في اسم القسم. المقصود هنا الأخطاء التشغيلية الصريحة
+ * لا الاختلافات اللغوية الطبيعية، لذلك نبقيه محافظاً.
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function hasLikelySectionNameTypo(name) {
+	const raw = String(name || '').trim();
+	if (!raw) return true;
+	const normalized = normalizeArabic(raw);
+	return TYPO_SECTION_PATTERNS.some((pattern) => pattern.test(raw) || pattern.test(normalized));
+}
+
+/**
+ * اسم يجب أن يتجاهله محرك Noor: إمّا في القائمة السوداء أو يظهر كـ typo واضح.
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isIgnoredSectionName(name) {
+	return isBlacklistedSectionName(name) || hasLikelySectionNameTypo(name);
+}
+
 async function readLevel(level) {
 	const snap = await getNebrasFirestoreAdmin()
 		.collection(NEBRAS_FS_SECTIONS)
@@ -92,19 +125,19 @@ async function readLevel(level) {
 export function computeBlacklistedIds({ mains, subs, secondaries }) {
 	const mainIds = new Set();
 	for (const m of mains) {
-		if (isBlacklistedSectionName(m?.name)) mainIds.add(String(m.id));
+		if (isIgnoredSectionName(m?.name)) mainIds.add(String(m.id));
 	}
 
 	const subIds = new Set();
 	for (const s of subs) {
-		const isNameBlocked = isBlacklistedSectionName(s?.name);
+		const isNameBlocked = isIgnoredSectionName(s?.name);
 		const parentBlocked = mainIds.has(String(s?.main_section ?? ''));
 		if (isNameBlocked || parentBlocked) subIds.add(String(s.id));
 	}
 
 	const secondaryIds = new Set();
 	for (const sec of secondaries) {
-		const isNameBlocked = isBlacklistedSectionName(sec?.name);
+		const isNameBlocked = isIgnoredSectionName(sec?.name);
 		const parentBlocked = subIds.has(String(sec?.sub_section ?? ''));
 		if (isNameBlocked || parentBlocked) secondaryIds.add(String(sec.id));
 	}
@@ -225,7 +258,7 @@ export function serializeTreeAsPlainText(tree) {
 /**
  * يتحقّق أنّ المسار الذي اقترحه المصنِّف أو المستخدم سليم وفق القاعدة الذهبيّة:
  *   main_section_id موجود — sub.main_section === main_section_id —
- *   secondary.sub_section === sub.id (إن وُجد).
+ *   secondary.sub_section === sub.id. مكتبة نور تُلزم المسار الثلاثي الكامل.
  *
  * @returns {{ valid: boolean, reason?: string, resolved?: { main: any, sub: any, secondary: any|null } }}
  */
@@ -244,13 +277,11 @@ export function validateHierarchyPath(
 		return { valid: false, reason: 'sub_does_not_belong_to_main' };
 	}
 
-	let secondary = null;
-	if (secondaryId) {
-		secondary = index.secondariesById[String(secondaryId)];
-		if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
-		if (String(secondary.sub_section ?? '') !== String(subId)) {
-			return { valid: false, reason: 'secondary_does_not_belong_to_sub' };
-		}
+	if (!secondaryId) return { valid: false, reason: 'secondary_section_required' };
+	const secondary = index.secondariesById[String(secondaryId)];
+	if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
+	if (String(secondary.sub_section ?? '') !== String(subId)) {
+		return { valid: false, reason: 'secondary_does_not_belong_to_sub' };
 	}
 
 	return { valid: true, resolved: { main, sub, secondary } };
