@@ -436,6 +436,31 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+
+		const createdSecondary = await createSecondarySectionAdmin(
+			subId,
+			decision.newSecondaryName || 'موضوعات عامة'
+		);
+		secondaryId = String(createdSecondary.id);
+		if (!createdSecondary.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: createdSecondary.name,
+				parentName: createdSub.name,
+				sectionId: createdSecondary.id,
+				parentId: subId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSecondary.name}" تحت "${createdSub.name}"`,
+				sectionId: createdSecondary.id,
+				parentId: subId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
@@ -459,6 +484,31 @@ async function processBook({ url, bookId, sections }) {
 				sectionId: created.id,
 				parentId: mainId,
 				kind: 'sub_section_created'
+			}).catch(() => {});
+		}
+
+		const createdSecondary = await createSecondarySectionAdmin(
+			subId,
+			decision.newSecondaryName || 'موضوعات عامة'
+		);
+		secondaryId = String(createdSecondary.id);
+		if (!createdSecondary.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: createdSecondary.name,
+				parentName: created.name,
+				sectionId: createdSecondary.id,
+				parentId: subId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSecondary.name}" تحت "${created.name}"`,
+				sectionId: createdSecondary.id,
+				parentId: subId,
+				kind: 'secondary_section_created'
 			}).catch(() => {});
 		}
 	} else if (decision.kind === 'create_secondary') {
@@ -493,15 +543,21 @@ async function processBook({ url, bookId, sections }) {
 			status: 500
 		});
 	}
+	if (!secondaryId) {
+		throw Object.assign(new Error('فشل تحديد secondaryId بعد التصنيف — محرك Noor يفرض main > sub > secondary > content.'), {
+			reason: 'no_secondary_after_classify',
+			status: 500
+		});
+	}
 
 	// إعادة قراءة الأقسام (لجلب أسماء الأقسام الجديدة).
 	const refreshed = await buildSectionsTree();
 	const main = refreshed.index.mainsById[mainId];
 	const sub = refreshed.index.subsById[subId];
-	const secondary = secondaryId ? refreshed.index.secondariesById[secondaryId] : null;
+	const secondary = refreshed.index.secondariesById[secondaryId];
 
-	if (!main || !sub) {
-		throw Object.assign(new Error('main أو sub لم يُعثر عليه بعد التصنيف.'), {
+	if (!main || !sub || !secondary) {
+		throw Object.assign(new Error('main أو sub أو secondary لم يُعثر عليه بعد التصنيف.'), {
 			reason: 'hierarchy_resolution_failed',
 			status: 500
 		});
@@ -522,12 +578,8 @@ async function processBook({ url, bookId, sections }) {
 		main_section_name: String(main.name || ''),
 		subsection: String(sub.id),
 		subsection_name: String(sub.name || ''),
-		...(secondary
-			? {
-					secondary_subsection: String(secondary.id),
-					secondary_subsection_name: String(secondary.name || '')
-				}
-			: { secondary_subsection: null })
+		secondary_subsection: String(secondary.id),
+		secondary_subsection_name: String(secondary.name || '')
 	};
 
 	const result = await adminUploadAndRegister({
@@ -549,7 +601,7 @@ async function processBook({ url, bookId, sections }) {
 		fileId: result.fileId,
 		title: meta.title,
 		url: meta.source?.url || url,
-		hierarchy: { mainId: String(main.id), subId: String(sub.id), secondaryId: secondary ? String(secondary.id) : null },
+		hierarchy: { mainId: String(main.id), subId: String(sub.id), secondaryId: String(secondary.id) },
 		createdSectionsIds
 	});
 
@@ -575,7 +627,7 @@ async function processBook({ url, bookId, sections }) {
 		hierarchy: {
 			main: { id: String(main.id), name: main.name },
 			sub: { id: String(sub.id), name: sub.name },
-			secondary: secondary ? { id: String(secondary.id), name: secondary.name } : null
+			secondary: { id: String(secondary.id), name: secondary.name }
 		},
 		createdSectionsIds,
 		sectionsCreatedDelta,
