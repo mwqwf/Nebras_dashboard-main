@@ -41,7 +41,9 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بتدكصهك',
 	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
-	'دروس بترخيصه'
+	'دروس بترخيصه',
+	'دروس بترخيسها',
+	'دروس بترخيسه'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -61,6 +63,24 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+function levenshtein(a, b) {
+	const s = normalizeArabic(a);
+	const t = normalizeArabic(b);
+	if (!s || !t) return Number.MAX_SAFE_INTEGER;
+	if (s === t) return 0;
+	const prev = Array.from({ length: t.length + 1 }, (_, i) => i);
+	const curr = Array(t.length + 1).fill(0);
+	for (let i = 1; i <= s.length; i++) {
+		curr[0] = i;
+		for (let j = 1; j <= t.length; j++) {
+			const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+			curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+		}
+		for (let j = 0; j <= t.length; j++) prev[j] = curr[j];
+	}
+	return prev[t.length];
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +89,14 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (n === blocked) return true;
+		// تجاهل أيّ قسم يحتوي الاسم المحظور داخل عبارة أطول.
+		if (blocked.length >= 6 && (n.includes(blocked) || blocked.includes(n))) return true;
+		// Typos صغيرة حول العبارة المحظورة لا تمرّ للمصنّف ولا للكتابة.
+		if (Math.max(n.length, blocked.length) <= 24 && levenshtein(n, blocked) <= 2) return true;
+	}
+	return false;
 }
 
 async function readLevel(level) {
