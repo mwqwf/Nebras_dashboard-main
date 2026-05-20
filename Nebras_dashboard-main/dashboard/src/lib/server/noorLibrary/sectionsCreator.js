@@ -12,8 +12,8 @@
  *
  * المسارات المكتوبة:
  *   sections_unified/main/{id}       — { id, name, order_index, is_listed, thumbnail, created_at }
- *   sections_unified/sub/{id}        — { id, name, main_section, is_listed, thumbnail, created_at }
- *   sections_unified/secondary/{id}  — { id, name, sub_section,  is_listed, thumbnail, created_at }
+ *   sections_unified/sub/{id}        — { id, name, main_section, order_index, is_listed, thumbnail, created_at }
+ *   sections_unified/secondary/{id}  — { id, name, sub_section, order_index, is_listed, thumbnail, created_at }
  *
  * كلّ سجلّ يحمل علامة `__createdBy: 'noor_library_engine'` لكي يستطيع
  * زرّ "إعادة ضبط المصنع" مسحَه دون المساس بأقسام أنشأها مدير بشري.
@@ -50,6 +50,18 @@ function makeSectionId() {
 
 function cleanName(name) {
 	return String(name || '').trim().slice(0, 120);
+}
+
+function nextOrderIndex(rows, { parentKey = null, parentId = null } = {}) {
+	const scoped = parentKey
+		? rows.filter((row) => String(row?.[parentKey] ?? '') === String(parentId ?? ''))
+		: rows;
+	let max = -1;
+	for (const row of scoped) {
+		const n = Number(row?.order_index);
+		if (Number.isFinite(n) && n > max) max = n;
+	}
+	return max + 1;
 }
 
 function blacklistError(message, reason = 'blacklisted_section') {
@@ -157,11 +169,12 @@ export async function createMainSectionAdmin(name) {
 		return { id: existing.id, name: existing.name, alreadyExisted: true };
 	}
 
+	const mains = await adminFsReadSectionsLevel('main');
 	const id = makeSectionId();
 	const payload = {
 		id,
 		name: cleanedName,
-		order_index: 0,
+		order_index: nextOrderIndex(mains),
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
@@ -222,11 +235,13 @@ export async function createSubSectionAdmin(mainSectionId, name) {
 		};
 	}
 
+	const subs = await adminFsReadSectionsLevel('sub');
 	const id = makeSectionId();
 	const payload = {
 		id,
 		name: cleanedName,
 		main_section: mainNum,
+		order_index: nextOrderIndex(subs, { parentKey: 'main_section', parentId: mainNum }),
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
@@ -285,11 +300,13 @@ export async function createSecondarySectionAdmin(subSectionId, name) {
 		};
 	}
 
+	const secondaries = await adminFsReadSectionsLevel('secondary');
 	const id = makeSectionId();
 	const payload = {
 		id,
 		name: cleanedName,
 		sub_section: subNum,
+		order_index: nextOrderIndex(secondaries, { parentKey: 'sub_section', parentId: subNum }),
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
