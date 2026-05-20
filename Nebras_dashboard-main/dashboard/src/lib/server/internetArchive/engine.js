@@ -18,7 +18,7 @@
  *
  * مسارات RTDB:
  *   ia_library_engine/config   — { enabled, seeds[], tickIntervalMs, batchSize, scrapeCount, trustedCollections[], allowMissingLicenseInTrustedCollections }
- *   ia_library_engine/cursor   — { seedIndex, scrapeCursor }
+ *   ia_library_engine/cursor   — { seedIndex, scrapeCursors:{seedId→cursor}, queryIndex, tickMode }
  *   ia_library_engine/stats    — إحصائيات + consecutiveEmptyRuns
  *   ia_library_engine/log/{ts} — آخر 60 إدخال
  */
@@ -267,16 +267,29 @@ async function writeConfig(patch) {
 	return next;
 }
 
+/** ينظّف خريطة { seedId → cursor } من القيم الفارغة/غير النصّيّة (RTDB يرفض undefined). */
+function sanitizeScrapeCursors(raw) {
+	const out = {};
+	if (raw && typeof raw === 'object') {
+		for (const [k, val] of Object.entries(raw)) {
+			if (typeof val === 'string' && val) out[k] = val;
+		}
+	}
+	return out;
+}
+
 async function readCursor() {
 	const snap = await getAdminDatabase().ref(CURSOR_PATH).get();
 	if (!snap.exists()) {
-		return { seedIndex: 0, scrapeCursor: null, queryIndex: 0, tickMode: 'catalog' };
+		return { seedIndex: 0, scrapeCursors: {}, queryIndex: 0, tickMode: 'catalog' };
 	}
 	const v = snap.val() || {};
 	const tickMode = v.tickMode === 'search' ? 'search' : 'catalog';
+	// scrapeCursors: مؤشّر مستقلّ لكلّ بذرة لكي تتقدّم الأنواع (كتب/صوت/فيديو)
+	// بالتوازي. الشكل القديم (scrapeCursor واحد) يُتجاهَل — البدء من جديد آمن.
 	return {
 		seedIndex: Math.max(0, Number(v.seedIndex) || 0),
-		scrapeCursor: typeof v.scrapeCursor === 'string' && v.scrapeCursor ? v.scrapeCursor : null,
+		scrapeCursors: sanitizeScrapeCursors(v.scrapeCursors),
 		queryIndex: Math.max(0, Number(v.queryIndex) || 0),
 		tickMode
 	};
@@ -286,8 +299,8 @@ async function writeCursor(cursor) {
 	await getAdminDatabase()
 		.ref(CURSOR_PATH)
 		.set({
-			seedIndex: cursor.seedIndex,
-			scrapeCursor: cursor.scrapeCursor || null,
+			seedIndex: Math.max(0, Number(cursor.seedIndex) || 0),
+			scrapeCursors: sanitizeScrapeCursors(cursor.scrapeCursors),
 			queryIndex: Math.max(0, Number(cursor.queryIndex) || 0),
 			tickMode: cursor.tickMode === 'search' ? 'search' : 'catalog',
 			updatedAt: { '.sv': 'timestamp' }
@@ -776,10 +789,12 @@ async function runSearchQueryTick(cfg, cursor) {
 	const idx = cursor.queryIndex % queries.length;
 	const q = queries[idx];
 	// licenseSafe: false — راجع الشرح في runEngineTick.
+	// كلّ الأنواع (كتب/صوت/فيديو) — playabilityFilter يختار الملفّ المناسب
+	// لكلّ عنصر بحسب mediatype، فالاستعلام الواحد يغطّي الأنواع الثلاثة.
 	const lucene = buildLuceneQuery({
 		q,
-		nebrasTypes: ['document'],
-		languages: ['Arabic'],
+		nebrasTypes: ['document', 'audio', 'video'],
+		languages: ['Arabic', 'ara'],
 		licenseSafe: false
 	});
 	const page = await scrapeOnePage({ query: lucene, count: cfg.scrapeCount });
@@ -790,7 +805,7 @@ async function runSearchQueryTick(cfg, cursor) {
 
 	const nextCursor = {
 		seedIndex: cursor.seedIndex,
-		scrapeCursor: cursor.scrapeCursor,
+		scrapeCursors: cursor.scrapeCursors,
 		queryIndex: (idx + 1) % queries.length,
 		tickMode: 'catalog'
 	};
@@ -828,7 +843,7 @@ export async function runEngineTick() {
 
 	let cursor = await readCursor();
 	if (cursor.seedIndex >= cfg.seeds.length) {
-		cursor = { ...cursor, seedIndex: 0, scrapeCursor: null };
+		cursor = { ...cursor, seedIndex: 0 };
 	}
 
 	// بالتناوب: دورة فهرسة كتالوجية + دورة بعبارة بحث (لتغطية ما يكتبه المستخدم في التطبيق).
@@ -837,6 +852,9 @@ export async function runEngineTick() {
 	}
 
 	const seed = cfg.seeds[cursor.seedIndex];
+	const seedKey = String(seed.id);
+	// مؤشّر هذه البذرة فقط — مستقلّ عن باقي البذور.
+	const seedCursor = cursor.scrapeCursors[seedKey] || null;
 
 	// licenseSafe: false — لأنّ IA لا يفهرس licenseurl لجميع العناصر.
 	// نعتمد على licenseFilter.js (post-scrape) الذي يستعمل trustedCollections
@@ -853,14 +871,21 @@ export async function runEngineTick() {
 	const page = await scrapeOnePage({
 		query,
 		count: cfg.scrapeCount,
-		cursor: cursor.scrapeCursor
+		cursor: seedCursor
 	});
 
+	// ✅ تدوير دوريّ: ننتقل دائماً للبذرة التالية بعد هذه الدورة، فتتقدّم
+	// الأنواع الثلاثة (كتب/صوت/فيديو) بالتوازي بدل احتكار بذرة واحدة
+	// (الكتب) لكلّ الدورات لأنّها عمليّاً لا تنفد. وبعد كلّ كتالوج ننتقل
+	// لوضع البحث ثمّ نعود — للتغطية الشاملة.
+	const nextSeedIndex = (cursor.seedIndex + 1) % cfg.seeds.length;
+
 	if (page.items.length === 0) {
-		const nextIndex = (cursor.seedIndex + 1) % cfg.seeds.length;
+		const nextScrapeCursors = { ...cursor.scrapeCursors };
+		delete nextScrapeCursors[seedKey]; // أعِد البدء من الأحدث في الدورة القادمة
 		const nextCursor = {
-			seedIndex: nextIndex,
-			scrapeCursor: null,
+			seedIndex: nextSeedIndex,
+			scrapeCursors: nextScrapeCursors,
 			queryIndex: cursor.queryIndex,
 			tickMode: 'search'
 		};
@@ -890,34 +915,26 @@ export async function runEngineTick() {
 				`استورد "${r.title}" → ${r.hierarchy.main.name} › ${r.hierarchy.sub.name}${r.hierarchy.secondary ? ' › ' + r.hierarchy.secondary.name : ''}`
 		});
 
-	// تحديد cursor التالي — البذرة تستنفد كاملةً قبل الانتقال.
-	let advancedToNextSeed = false;
-	let nextCursor;
+	// مؤشّر هذه البذرة للدورة القادمة:
+	//   • إن بقي على الصفحة مرشّحون جدد أكثر ممّا حاولنا → نُبقي نفس المؤشّر
+	//     لإكمالهم لاحقاً (المسجَّلون مسبقاً يُتخطّون) → لا نفقد عناصر صفحة مزدحمة.
+	//   • وإلّا ننتقل إلى صفحة nextCursor، أو نُفرّغه عند نفاد البذرة.
+	const nextScrapeCursors = { ...cursor.scrapeCursors };
 	const moreCandidatesOnPage = candidateCount > MAX_IMPORT_ATTEMPTS_PER_TICK;
-	if (processed === 0 && moreCandidatesOnPage) {
-		nextCursor = {
-			seedIndex: cursor.seedIndex,
-			scrapeCursor: cursor.scrapeCursor,
-			queryIndex: cursor.queryIndex,
-			tickMode: 'catalog'
-		};
+	if (moreCandidatesOnPage) {
+		if (seedCursor) nextScrapeCursors[seedKey] = seedCursor;
+		else delete nextScrapeCursors[seedKey];
 	} else if (page.nextCursor) {
-		nextCursor = {
-			seedIndex: cursor.seedIndex,
-			scrapeCursor: page.nextCursor,
-			queryIndex: cursor.queryIndex,
-			tickMode: 'catalog'
-		};
+		nextScrapeCursors[seedKey] = page.nextCursor;
 	} else {
-		const ni = (cursor.seedIndex + 1) % cfg.seeds.length;
-		nextCursor = {
-			seedIndex: ni,
-			scrapeCursor: null,
-			queryIndex: cursor.queryIndex,
-			tickMode: 'search'
-		};
-		advancedToNextSeed = true;
+		delete nextScrapeCursors[seedKey];
 	}
+	const nextCursor = {
+		seedIndex: nextSeedIndex,
+		scrapeCursors: nextScrapeCursors,
+		queryIndex: cursor.queryIndex,
+		tickMode: 'search'
+	};
 	await writeCursor(nextCursor);
 
 	await bumpStats({
@@ -947,7 +964,7 @@ export async function runEngineTick() {
 		skipped,
 		failed,
 		sectionsCreated: totalSectionsCreated,
-		advancedToNextSeed,
+		advancedToNextSeed: true,
 		cursor: nextCursor,
 		currentSeedId: seed.id,
 		failureSamples
@@ -995,7 +1012,7 @@ export async function bootstrap() {
 	const current = await readConfig();
 	const seeds = current.seeds.length > 0 ? current.seeds : [...DEFAULT_SEEDS];
 	const cfg = await writeConfig({ seeds, enabled: true });
-	await writeCursor({ seedIndex: 0, scrapeCursor: null, queryIndex: 0, tickMode: 'catalog' });
+	await writeCursor({ seedIndex: 0, scrapeCursors: {}, queryIndex: 0, tickMode: 'catalog' });
 	await appendLog({
 		level: 'info',
 		message: `Bootstrap: ${cfg.seeds.length} بذور مُفعَّلة — بدء الجلب الآليّ الكامل.`
@@ -1091,7 +1108,7 @@ export async function autoBootIfNeeded(opts = {}) {
 		});
 		await db.ref(CURSOR_PATH).set({
 			seedIndex: 0,
-			scrapeCursor: null,
+			scrapeCursors: {},
 			queryIndex: 0,
 			tickMode: 'catalog'
 		});
@@ -1145,7 +1162,7 @@ export async function autoBootIfNeeded(opts = {}) {
 			trustedCollections: DEFAULT_CONFIG.trustedCollections
 		});
 		// إعادة المؤشّر إلى البداية حتّى لا يبقى عالقاً في حالة قديمة.
-		await writeCursor({ seedIndex: 0, scrapeCursor: null, queryIndex: 0, tickMode: 'catalog' });
+		await writeCursor({ seedIndex: 0, scrapeCursors: {}, queryIndex: 0, tickMode: 'catalog' });
 	}
 
 	if (!cfg.enabled) {
@@ -1223,7 +1240,7 @@ export async function getEngineStatus({ logLimit = 30 } = {}) {
 export async function updateSeeds(seeds) {
 	const filtered = (seeds || []).filter(isValidSeed);
 	const cfg = await writeConfig({ seeds: filtered });
-	await writeCursor({ seedIndex: 0, scrapeCursor: null, queryIndex: 0, tickMode: 'catalog' });
+	await writeCursor({ seedIndex: 0, scrapeCursors: {}, queryIndex: 0, tickMode: 'catalog' });
 	await appendLog({
 		level: 'info',
 		message: `تمّ تحديث البذور (${cfg.seeds.length} بذرة).`
@@ -1232,9 +1249,9 @@ export async function updateSeeds(seeds) {
 }
 
 export async function resetCursor() {
-	await writeCursor({ seedIndex: 0, scrapeCursor: null, queryIndex: 0, tickMode: 'catalog' });
+	await writeCursor({ seedIndex: 0, scrapeCursors: {}, queryIndex: 0, tickMode: 'catalog' });
 	await appendLog({ level: 'info', message: 'إعادة تعيين المؤشّر.' });
-	return { seedIndex: 0, scrapeCursor: null };
+	return { seedIndex: 0, scrapeCursors: {} };
 }
 
 /**

@@ -325,9 +325,12 @@
 					<dd class="font-medium">{status.cursor?.queryIndex ?? 0}</dd>
 				</div>
 				<div>
-					<dt class="text-slate-500">scrapeCursor</dt>
-					<dd class="truncate font-mono text-xs" title={status.cursor?.scrapeCursor || '—'}>
-						{status.cursor?.scrapeCursor || '—'}
+					<dt class="text-slate-500">scrapeCursors (بذور نشطة)</dt>
+					<dd
+						class="truncate font-mono text-xs"
+						title={Object.keys(status.cursor?.scrapeCursors ?? {}).join(', ') || '—'}
+					>
+						{Object.keys(status.cursor?.scrapeCursors ?? {}).length || '—'}
 					</dd>
 				</div>
 			</dl>
