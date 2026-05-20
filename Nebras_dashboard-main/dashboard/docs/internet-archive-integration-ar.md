@@ -11,8 +11,8 @@
 
 | القاعدة | السبب |
 |---------|------|
-| لا اتصال مباشر بين Flutter و `archive.org` | حماية تجربة المستخدم + متطلّبات Google Play Data Safety. |
-| كلّ شيء يمرّ عبر لوحة التحكّم → Firebase Storage → Firestore | يصبح كتالوج التطبيق "نبراس فقط" — روابط `firebasestorage.googleapis.com`. |
+| لا اتصال مباشر بين Flutter و `archive.org` | حماية تجربة المستخدم + متطلّبات Google Play Data Safety. التطبيق نفسه (`content_model.dart` → `_rejectArchiveOrg`) يرفض أيّ رابط يحوي `archive.org`. |
+| كلّ شيء يمرّ عبر لوحة التحكّم → Firestore (metadata-only) → بثّ عبر Proxy | كتالوج التطبيق يحوي روابط نبراس فقط (`{NEBRAS_PUBLIC_BASE_URL}/api/proxy/ia/…`). لم يعد يُنزَّل الملفّ ولا يُرفع إلى Firebase Storage. |
 | لا يدخل التطبيق إلا محتوى **مرخّص + قابل للتشغيل + مُتحقَّق من سلامته** | لا تظهر عناصر مكسورة أو محظورة قانونياً. |
 | كلّ بذرة (تصنيف) تجلب نتائجها **كاملةً** قبل التحوّل للتاليّة | منع جلب جزئي. |
 | لا أزرار "Internet Archive" في التطبيق | "trust by default" — المستخدم يرى محتوى نبراس فحسب. |
@@ -25,15 +25,23 @@
 
 ```
 dashboard/src/lib/server/internetArchive/
-├── playabilityFilter.js   # حارس الصيغ + magic bytes + حدود الحجم
+├── playabilityFilter.js   # حارس الصيغ + magic bytes + حدود الحجم + verifyHeadBytes / pdfTailIsEncrypted
 ├── licenseFilter.js       # PD / CC0 / CC-BY / CC-BY-SA + trusted collections
 ├── search.js              # IA Scraping API + Lucene builder + URL helpers
 ├── fetcher.js             # metadata + اختيار أفضل ملف + كائن preview
-├── downloader.js          # تنزيل آمن إلى Buffer + تحقّق magic bytes
-├── adminUploader.js       # رفع Storage + مرآة Firestore بنفس schema الموبايل
+├── metadataProbe.js       # ★ فحص قابليّة التشغيل بـ HTTP Range (512 بايت) — بلا تنزيل (بديل downloader.js)
+├── metadataRegister.js    # ★ كتابة مرآة Firestore بروابط proxy — بلا Storage (بديل adminUploader.js)
+├── classifier.js          # تصنيف عربي محلّيّ (heuristic) + قرار إنشاء أقسام
+├── sectionsCreator.js     # إنشاء main/sub/secondary فعلياً في sections_unified
+├── sectionsTree.js        # بناء شجرة الأقسام + فهارسها
 ├── registry.js            # ia_library_registry / ia_library_failures
 └── engine.js              # tick + start/stop + factoryReset
 ```
+
+> ملاحظة: `publicBaseUrl.js` يقع في `dashboard/src/lib/server/` (مستوى أعلى)
+> ويُستعمل لبناء روابط الـ proxy المطلقة من `NEBRAS_PUBLIC_BASE_URL`.
+> الملفّان القديمان `downloader.js` و`adminUploader.js` **حُذفا** بعد التحوّل
+> إلى معماريّة Metadata-only + Proxy.
 
 ### 2.2 نقاط API
 
@@ -58,6 +66,12 @@ dashboard/src/routes/api/admin/internet-archive/
 dashboard/src/routes/api/cron/internet-archive-tick/+server.js
 ```
 
+ومسار الـ Proxy العامّ (الجسر الفعليّ بين التطبيق و archive.org):
+
+```
+dashboard/src/routes/api/proxy/ia/[id]/+server.js   # GET|HEAD — بثّ server-to-server مع تمرير Range + حارس SSRF
+```
+
 ### 2.3 الواجهة
 
 ```
@@ -69,12 +83,14 @@ dashboard/src/lib/api/internetArchive.js
 
 ## 3. مسار البيانات
 
+### 3.1 الاستيعاب (Ingest) — وقت الاستيراد، بلا تنزيل
+
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │ Internet Archive                                                     │
 │   archive.org/services/search/v1/scrape   ← search.js                │
 │   archive.org/metadata/{id}               ← search.js / fetcher.js   │
-│   archive.org/download/{id}/{file}        ← downloader.js            │
+│   archive.org/download/{id}/{file}        ← metadataProbe.js (Range) │
 └──────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -82,30 +98,53 @@ dashboard/src/lib/api/internetArchive.js
 │ Internet Archive Engine (server)                                     │
 │   1) license filter          (licenseFilter.js)                      │
 │   2) playability filter      (playabilityFilter.js)                  │
-│   3) download → Buffer       (downloader.js + verifyDownloadedBuffer)│
-│   4) Storage upload          (adminUploader.js)                      │
-│   5) Firestore mirror write  (adminFsWriteFileMirrorBoth)            │
+│   3) probe — أوّل 512 بايت عبر HTTP Range + magic bytes + ذيل PDF     │
+│      (metadataProbe.js) — لا تنزيل كامل، الحجم من Content-Range       │
+│   4) classify — تصنيف عربي محلّيّ + إنشاء أقسام عند الحاجة            │
+│      (classifier.js + sectionsCreator.js)                            │
+│   5) register metadata — مرآة Firestore بروابط proxy، بلا Storage     │
+│      (metadataRegister.js → adminFsWriteFileMirrorBoth)              │
 │   6) registry record         (registry.js)                           │
 │   7) FCM notify              (engine.js)                             │
 └──────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│ Firebase                                                             │
-│   Storage:   dashboard/internet-archive/{fileId}/{ts}_{name}         │
+│ Firebase  (بلا Storage)                                              │
 │   Firestore: dashboard_uploads/{fileId}                              │
 │             content_unified_files/{fileId}                           │
+│             — الروابط العامّة تشير إلى /api/proxy/ia/{fileId}         │
+│             — __iaFileUrl/__iaThumbUrl تحفظ رابط archive.org الحقيقي │
+│             — __delivery: 'proxy_stream'                              │
 │   RTDB:      ia_library_engine/{config,cursor,stats,log}             │
 │             ia_library_registry/{identifier}                         │
 │             ia_library_failures/{identifier}                         │
 └──────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+```
+
+### 3.2 التشغيل (Playback) — وقت الطلب، بثّ عبر Proxy
+
+```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ Flutter App (لا تغيير)                                                │
+│ Flutter App                                                          │
 │   يقرأ Firestore كالعادة عبر HomeDatasource/SearchDatasource         │
 │   ContentModel.fromJson لا يعرف بـ __provider/__iaIdentifier         │
+│   يرى رابطاً نبراسيّاً فقط (لا "archive.org" → يمرّ _rejectArchiveOrg) │
 └──────────────────────────────────────────────────────────────────────┘
+                              │  GET {base}/api/proxy/ia/{fileId}.{ext}
+                              │  (Range header للصوت/الفيديو/seek الـ PDF)
+                              ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ Proxy route (server)  routes/api/proxy/ia/[id]/+server.js            │
+│   1) يجرّد الامتداد ويقرأ الوثيقة من content_unified_files (Admin)    │
+│   2) يتحقّق __provider==='internet_archive' وأنّ المضيف *.archive.org │
+│      (حارس SSRF)                                                     │
+│   3) fetch من archive.org server-to-server مع تمرير رأس Range        │
+│   4) يمرّر الـ stream مباشرةً (لا buffer كامل، لا تخزين)              │
+└──────────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+              archive.org/download/{id}/{file}  (__iaFileUrl)
 ```
 
 ---
@@ -116,24 +155,34 @@ dashboard/src/lib/api/internetArchive.js
 
 | النوع في نبراس | المشغّل في التطبيق | الصيغ المقبولة | الحجم الأقصى |
 |---|---|---|---|
-| `document` | Syncfusion `SfPdfViewer` | `.pdf` فقط | 500 ميغابايت |
-| `audio` | `just_audio` | `.mp3`, `.m4a`, `.aac`, `.wav`, `.ogg`, `.opus`, `.flac` | 250 ميغابايت |
-| `video` | `video_player` الرسمي | `.mp4` فقط (H.264 + AAC) | 800 ميغابايت |
+| `document` | Syncfusion `SfPdfViewer` | `.pdf` فقط | 100 ميغابايت |
+| `audio` | `just_audio` | `.mp3`, `.m4a`, `.aac`, `.wav`, `.ogg`, `.opus`, `.flac` | 150 ميغابايت |
+| `video` | `video_player` الرسمي | `.mp4` فقط (H.264 + AAC) | 200 ميغابايت |
+
+> الحدود مطابقة لـ `MAX_SIZE_BYTES` في `playabilityFilter.js`. أيّ ملفّ
+> أكبر من حدّه يُرفض في مرحلة الـ probe (من `Content-Range`) قبل أن تُكتب
+> له وثيقة.
 
 أيّ صيغة خارج هذه القوائم — حتى لو وردتْ في `content_model.dart` كقائمة
-موسّعة — يرفضها `playabilityFilter.js` قبل التنزيل. كذلك يُرفض كلّ
+موسّعة — يرفضها `playabilityFilter.js` قبل أن تُكتب وثيقته. كذلك يُرفض كلّ
 derivative معروف لا يصلح للعرض: `_bw.pdf`, `_text.pdf`, `_djvu.*`,
 `_jp2.zip`, `_meta.xml`, `.torrent`, …
 
-### تحقّق Magic Bytes
+### تحقّق Magic Bytes (بلا تنزيل)
 
-بعد تنزيل البايتات يتأكّد `verifyDownloadedBuffer` من:
+`metadataProbe.js` يطلب **أوّل 512 بايت فقط** عبر HTTP Range ثم يتحقّق منها
+بـ `verifyHeadBytes` (في `playabilityFilter.js`):
 
 - **PDF**: يبدأ بـ `%PDF-`.
 - **Audio**: ID3 / `fLaC` / `OggS` / `RIFF` / `ftyp` (m4a) / إطار MPEG.
 - **Video**: 4 بايت ثم `ftyp`.
 
-ملف لا يطابق magic bytes يُرفض ولا يُكتب في Firebase.
+ملف لا يطابق magic bytes يُرفض ولا تُكتب له وثيقة Firestore.
+
+إضافةً لذلك، **للـ PDF فقط** يجلب المحرّك ذيل الملفّ (~8KB عبر Range) ويمرّره
+على `pdfTailIsEncrypted` لاستبعاد المشفّر (قارئ Syncfusion لا يفتحه فيظهر
+"المصدر غير متاح"). الحجم يُحسب من رأس `Content-Range`/`Content-Length` —
+لا من قراءة الملفّ كاملاً.
 
 ---
 
@@ -154,18 +203,23 @@ derivative معروف لا يصلح للعرض: `_bw.pdf`, `_text.pdf`, `_djvu.*
 
 ---
 
-## 6. مخطّط Firestore (متوافق مع schema الموبايل)
+## 6. مخطّط Firestore (متوافق مع schema الموبايل) — روابط Proxy
 
-ملفّ مستورَد يُكتب بنفس الحقول التي يكتبها `storageUpload.js` يدوياً:
+يكتب `metadataRegister.js` سجلَّيْن متطابقَيْن (`content_unified_files` +
+`dashboard_uploads`) عبر `adminFsWriteFileMirrorBoth` بنفس schema الرفع
+اليدوي، **لكنّ كلّ الروابط العامّة تشير إلى الـ proxy** لا إلى Storage.
+
+الامتداد `{ext}` يؤخذ من اسم الملفّ الأصليّ، وإلا fallback حسب النوع
+(`document → .pdf`, `audio → .mp3`, `video → .mp4`).
 
 ```jsonc
 {
-  "id": "ia_…",
-  "fileId": "ia_…",
+  "id": "<fileId>",
+  "fileId": "<fileId>",
   "title": "…",
   "description": "…",
   "author": "…",
-  "thumbnail": "https://firebasestorage…",
+  "thumbnail": "{NEBRAS_PUBLIC_BASE_URL}/api/proxy/ia/{fileId}?t=thumb",  // أو null إن لا غلاف
   "content_type": "document | audio | video",
   "subsection": "<sub.id>",
   "subsection_name": "…",
@@ -173,32 +227,49 @@ derivative معروف لا يصلح للعرض: `_bw.pdf`, `_text.pdf`, `_djvu.*
   "main_section": "<main.id>",
   "main_section_id": "<main.id>",
   "main_section_name": "…",
-  "downloadUrl": "https://firebasestorage…",
-  "sourceUrl": "https://firebasestorage…",
-  "source_url": "…",
-  "file_url": "…",
-  "audio_url": "…",              // فقط للصوت
-  "video_url": "…",              // فقط للفيديو
+  "downloadUrl": "{NEBRAS_PUBLIC_BASE_URL}/api/proxy/ia/{fileId}.{ext}",
+  "sourceUrl":   "{NEBRAS_PUBLIC_BASE_URL}/api/proxy/ia/{fileId}.{ext}",
+  "source_url":  "{NEBRAS_PUBLIC_BASE_URL}/api/proxy/ia/{fileId}.{ext}",
+  "file_url":    "{NEBRAS_PUBLIC_BASE_URL}/api/proxy/ia/{fileId}.{ext}",
+  "audio_url":   "{NEBRAS_PUBLIC_BASE_URL}/api/proxy/ia/{fileId}.{ext}",   // فقط للصوت
+  "video_url":   "{NEBRAS_PUBLIC_BASE_URL}/api/proxy/ia/{fileId}.{ext}",   // فقط للفيديو
   "fileType": "application/pdf | audio/mpeg | video/mp4",
-  "fileSize": 123456,
-  "storagePath": "dashboard/internet-archive/…",
+  "fileSize": 123456,             // من probe (Content-Range)، لا من تنزيل
+  // لا storagePath — لا شيء على Firebase Storage.
   "createdAt": "<serverTimestamp>",
+  "created_at": "ISO8601",
   "is_listed": true,
 
   // — علامات داخليّة — لا يقرأها التطبيق —
   "__provider": "internet_archive",
+  "__delivery": "proxy_stream",                          // يميّز عناصر metadata-only عن رفع Storage القديم
   "__iaIdentifier": "<archive.org identifier>",
   "__iaSourceUrl": "https://archive.org/details/…",
+  "__iaFileUrl": "https://archive.org/download/…",       // ⇐ المصدر الحقيقيّ — يقرأه الـ proxy فقط
+  "__iaThumbUrl": "https://archive.org/…",               // أو "" إن لا غلاف
   "__iaLicense": "…",
   "__iaCollection": "…",
   "__iaImportedAt": "ISO8601",
-  "__iaOriginalFilename": "…"
+  "__iaOriginalFilename": "…",
+
+  // — وسوم امتثال Google Play / DMCA —
+  "__license_status": "verified_open_license | community_collection | unknown",
+  "__license_url": "…",
+  "__license_collection": "…",
+  "__attribution_url": "https://archive.org/details/…",
+  "__source_provider": "archive.org",
+  "__compliance_version": "2026.05",
+  "__verified_at": "ISO8601"
 }
 ```
 
 > `content_model.dart` يقرأ `id, title, description, author, thumbnail,
-> content_type, sourceUrl, subsection, secondary_subsection, …` فقط.
-> الحقول التي تبدأ بـ `__` غير معروفة له ولا تُؤثّر عليه.
+> content_type, sourceUrl, subsection, secondary_subsection, …` فقط — وكلّها
+> روابط proxy نبراسيّة. الحقول التي تبدأ بـ `__` غير معروفة له ولا تُؤثّر عليه.
+>
+> **مهمّ:** التطبيق يرفض أيّ رابط يحوي `archive.org` (دالّة `_rejectArchiveOrg`)،
+> لذا حفظ الرابط الحقيقيّ في `__iaFileUrl`/`__iaThumbUrl` (لا الحقول العامّة)
+> **إلزاميّ** لظهور العنصر؛ الـ proxy وحده يقرأ هذين الحقلين server-side.
 
 ---
 
@@ -274,6 +345,11 @@ derivative معروف لا يصلح للعرض: `_bw.pdf`, `_text.pdf`, `_djvu.*
 # لازم لتشغيل Firebase Admin (موجود أصلاً).
 NEBRAS_STORAGE_BUCKET=nebras-9118c.appspot.com
 
+# ★ لازم لبناء روابط الـ proxy المطلقة المكتوبة في Firestore.
+# بدونه يقع المحرّك على VERCEL_PROJECT_PRODUCTION_URL ثم قيمة افتراضيّة.
+# (لا تستعمل VERCEL_URL — يتغيّر مع كلّ preview وتفسد الروابط المخزَّنة.)
+NEBRAS_PUBLIC_BASE_URL=https://nebras-dashboard-main.vercel.app
+
 # لازم لتفعيل Cron tick.
 CRON_SECRET=<سر طويل عشوائي>
 
@@ -308,14 +384,23 @@ FCM_BROADCAST_TOPIC=nebras_all_users
 
 ## 13. ما **لا** يفعله المحرّك (محدّدات النسخة الحاليّة)
 
-- لا ينشئ أقساماً جديدة آليّاً — يكتب فقط في أقسام موجودة. أي بذرة
-  hierarchy غير صالحة تُحذف عند الحفظ.
+- لا يُنزّل الملفّ كاملاً ولا يرفع أيّ بايت إلى Firebase Storage — يكتب
+  metadata فقط ويبثّ المحتوى عند الطلب عبر الـ proxy.
 - لا يستورد محتوى مقيّداً (loans-only / restricted / privileged).
 - لا يستورد derivatives غير مدعومة (DjVu، JP2 zip، …).
 - لا يستورد ملفّات أكبر من الحدّ المعلَن لكلّ نوع.
 - لا يكتب أيّ شيء في `content_unified_youtube` — العناصر اليوتيوبية في IA
   نادرة وغير موثوقة الصيغة (نتجاوزها).
+- لا يجلب من أيّ مضيف خارج `*.archive.org` — حارس SSRF في مسار الـ proxy
+  يرفض أيّ رابط آخر حتى لو خُزّن في الوثيقة.
 - لا يفتح أيّ مسار في تطبيق Flutter — التطبيق غير معدَّل البتّة.
+
+> **ملاحظة (تصحيح):** خلافاً للنسخة الأولى، أصبح المحرّك **ينشئ أقساماً
+> جديدة آليّاً** عند الحاجة. `classifier.js` يصنّف العنصر محلّيّاً (heuristic
+> عربي) فإن لم يجد قسماً رئيسيّاً مناسباً أرجع قرار `create_main`، أو
+> `create_sub` إن وجد main بلا sub مناسب، و`sectionsCreator.js` يكتب هذه
+> الأقسام فعلاً في `sections_unified`. التصنيف لم يعد مقيّداً بهيكليّة
+> البذرة المُحدَّدة سلفاً.
 
 ---
 

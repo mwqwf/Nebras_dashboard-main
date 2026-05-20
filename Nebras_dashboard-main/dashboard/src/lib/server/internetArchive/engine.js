@@ -40,13 +40,14 @@ import { buildSectionsTree, validateHierarchyPath } from './sectionsTree.js';
 import {
 	createMainSectionAdmin,
 	createSubSectionAdmin,
-	createSecondarySectionAdmin
+	createSecondarySectionAdmin,
+	rollbackEngineCreatedSections
 } from './sectionsCreator.js';
 import { classifyItem } from './classifier.js';
 import { scrapeOnePage, buildLuceneQuery } from './search.js';
 import { previewItem } from './fetcher.js';
-import { downloadIaFile } from './downloader.js';
-import { adminUploadAndRegister } from './adminUploader.js';
+import { probeIaFile } from './metadataProbe.js';
+import { adminRegisterIaMetadata } from './metadataRegister.js';
 import { filterScrapeItemsByLicense } from './licenseFilter.js';
 import {
 	isItemImported,
@@ -57,8 +58,9 @@ import {
 
 /** محاولات استيراد لكل tick (فشل سريع بالترخيص/الصيغة ثم عنصر تالي). */
 const MAX_IMPORT_ATTEMPTS_PER_TICK = 12;
-/** مهلة تنزيل ضمن نافذة Cron (~30–60 ثانية على Vercel). */
-const CRON_DOWNLOAD_TIMEOUT_MS = 45_000;
+/** مهلة تنزيل قصيرة للسرعة: مع preferSmallest الملفّات صغيرة، فالملفّ
+ *  البطيء يُلغى بسرعة ويُنتقل للتالي بدل تعليق الدورة. */
+const CRON_DOWNLOAD_TIMEOUT_MS = 25_000;
 
 const ENGINE_ROOT = 'ia_library_engine';
 const CONFIG_PATH = `${ENGINE_ROOT}/config`;
@@ -108,8 +110,10 @@ export const DEFAULT_SEEDS = Object.freeze([
 	{
 		id: 'islamic_video_opensource',
 		label: 'فيديو إسلامي مفتوح المصدر',
-		q: '(islamic OR إسلامي OR محاضرة OR خطبة OR seerah OR muhammad)',
-		languages: ['Arabic', 'ara', 'English'],
+		// عربيّ دينيّ فقط — إزالة English ومصطلحات عامّة كانت تجلب أفلاماً/كرتوناً
+		// غير متعلّقة ("لا يهلوس ويجلب عشوائياً").
+		q: '(محاضرة OR خطبة OR درس OR تلاوة OR إسلامي OR قرآن OR سيرة OR تفسير)',
+		languages: ['Arabic', 'ara'],
 		nebrasTypes: ['video'],
 		collections: ['opensource_movies']
 	}
@@ -267,6 +271,11 @@ async function writeConfig(patch) {
 	return next;
 }
 
+/** أوضاع الدورة المسموحة. */
+function normalizeTickMode(m) {
+	return m === 'search' || m === 'fresh' || m === 'catalog' ? m : 'catalog';
+}
+
 /** ينظّف خريطة { seedId → cursor } من القيم الفارغة/غير النصّيّة (RTDB يرفض undefined). */
 function sanitizeScrapeCursors(raw) {
 	const out = {};
@@ -284,7 +293,7 @@ async function readCursor() {
 		return { seedIndex: 0, scrapeCursors: {}, queryIndex: 0, tickMode: 'catalog' };
 	}
 	const v = snap.val() || {};
-	const tickMode = v.tickMode === 'search' ? 'search' : 'catalog';
+	const tickMode = normalizeTickMode(v.tickMode);
 	// scrapeCursors: مؤشّر مستقلّ لكلّ بذرة لكي تتقدّم الأنواع (كتب/صوت/فيديو)
 	// بالتوازي. الشكل القديم (scrapeCursor واحد) يُتجاهَل — البدء من جديد آمن.
 	return {
@@ -302,7 +311,7 @@ async function writeCursor(cursor) {
 			seedIndex: Math.max(0, Number(cursor.seedIndex) || 0),
 			scrapeCursors: sanitizeScrapeCursors(cursor.scrapeCursors),
 			queryIndex: Math.max(0, Number(cursor.queryIndex) || 0),
-			tickMode: cursor.tickMode === 'search' ? 'search' : 'catalog',
+			tickMode: normalizeTickMode(cursor.tickMode),
 			updatedAt: { '.sv': 'timestamp' }
 		});
 }
@@ -315,6 +324,7 @@ async function readStats() {
 			totalSkipped: 0,
 			totalFailed: 0,
 			sectionsCreated: 0,
+			byType: { document: 0, audio: 0, video: 0 },
 			lastRunAt: null,
 			lastError: null,
 			runsCount: 0,
@@ -322,11 +332,17 @@ async function readStats() {
 		};
 	}
 	const v = snap.val() || {};
+	const bt = v.byType || {};
 	return {
 		totalImported: Number(v.totalImported) || 0,
 		totalSkipped: Number(v.totalSkipped) || 0,
 		totalFailed: Number(v.totalFailed) || 0,
 		sectionsCreated: Number(v.sectionsCreated) || 0,
+		byType: {
+			document: Number(bt.document) || 0,
+			audio: Number(bt.audio) || 0,
+			video: Number(bt.video) || 0
+		},
 		lastRunAt: v.lastRunAt || null,
 		lastError: v.lastError || null,
 		runsCount: Number(v.runsCount) || 0,
@@ -336,13 +352,20 @@ async function readStats() {
 
 async function bumpStats(patch) {
 	const ref = getAdminDatabase().ref(STATS_PATH);
+	const bt = patch.byTypeDelta || {};
 	await ref.transaction((current) => {
 		const c = current || {};
+		const cbt = c.byType || {};
 		return {
 			totalImported: Number(c.totalImported ?? 0) + Number(patch.importedDelta ?? 0),
 			totalSkipped: Number(c.totalSkipped ?? 0) + Number(patch.skippedDelta ?? 0),
 			totalFailed: Number(c.totalFailed ?? 0) + Number(patch.failedDelta ?? 0),
 			sectionsCreated: Number(c.sectionsCreated ?? 0) + Number(patch.sectionsCreatedDelta ?? 0),
+			byType: {
+				document: Number(cbt.document ?? 0) + Number(bt.document ?? 0),
+				audio: Number(cbt.audio ?? 0) + Number(bt.audio ?? 0),
+				video: Number(cbt.video ?? 0) + Number(bt.video ?? 0)
+			},
 			runsCount: Number(c.runsCount ?? 0) + Number(patch.runsDelta ?? 0),
 			lastRunAt: patch.touchLastRun ? Date.now() : (c.lastRunAt ?? null),
 			lastError: patch.lastError !== undefined ? (patch.lastError ?? null) : (c.lastError ?? null),
@@ -457,7 +480,18 @@ export async function importItem(identifier, opts = {}) {
 		preferSmallestFile: Boolean(opts.preferSmallestFile)
 	});
 
-	// 2) قراءة شجرة الأقسام الحاليّة (مرّة واحدة).
+	// 2) ⬇️ فحص قابليّة التشغيل **قبل** إنشاء أيّ قسم — لمنع "الأقسام
+	// الفارغة": لو فشل الفحص (timeout/403/توقيع تالف/PDF مشفّر) نخرج هنا دون
+	// أن نكون أنشأنا قسماً لا محتوى فيه.
+	// 📵 معماريّة Metadata-only: لا تنزيل ولا Storage — نطلب أوّل 512 بايت
+	// فقط (Range) ونتحقّق من magic bytes والحجم. الملفّ يُبثّ لاحقاً عند
+	// الطلب عبر /api/proxy/ia/{id}.
+	const probed = await probeIaFile(preview.pickedFile.downloadUrl, {
+		declaredType: preview.nebrasContentType,
+		...(opts.downloadTimeoutMs ? { timeoutMs: opts.downloadTimeoutMs } : {})
+	});
+
+	// 3) قراءة شجرة الأقسام الحاليّة (مرّة واحدة).
 	let sections = await buildSectionsTree();
 
 	// 3) إمّا hierarchy مفروضة، أو classifier تلقائي مع إنشاء أقسام.
@@ -565,48 +599,53 @@ export async function importItem(identifier, opts = {}) {
 		});
 	}
 
-	// 4) تنزيل الملفّ كـ Buffer مع تحقّق magic bytes + حدّ الحجم.
-	const downloaded = await downloadIaFile(preview.pickedFile.downloadUrl, {
-		declaredType: preview.nebrasContentType,
-		...(opts.downloadTimeoutMs ? { timeoutMs: opts.downloadTimeoutMs } : {})
-	});
-
-	// 5) رفع + كتابة مرآة Firestore (نفس schema الرفع اليدوي).
-	const result = await adminUploadAndRegister({
-		buffer: downloaded.buffer,
-		contentType: downloaded.contentType,
-		filename: preview.pickedFile.name,
-		nebrasContentType: preview.nebrasContentType,
-		thumbnailUrl: preview.thumbnailUrl,
-		metadata: {
-			title: preview.title,
-			description: preview.description,
-			author: preview.author,
-			is_listed: true,
-			main_section: String(main.id),
-			main_section_id: String(main.id),
-			main_section_name: String(main.name || ''),
-			subsection: String(sub.id),
-			subsection_name: String(sub.name || ''),
-			...(secondary
-				? {
-						secondary_subsection: String(secondary.id),
-						secondary_subsection_name: String(secondary.name || '')
-					}
-				: { secondary_subsection: null })
-		},
-		uploader: { uid: 'ia_library_engine', email: 'engine@nebras.local' },
-		iaInfo: {
-			identifier: preview.identifier,
-			iaSourceUrl: preview.iaSourceUrl,
-			license: preview.licenseInfo.licenseMatched || '',
-			collection: preview.licenseInfo.collection || '',
-			// ⚖️ يُحدِّد adminUploader إن كانت الوثيقة:
-			//   - verified_open_license (ترخيص PD/CC صريح)، أو
-			//   - community_collection (مجموعة موثوقة فقط)
-			licenseTier: preview.licenseInfo.licenseTier || null
+	// 4) كتابة مرآة Firestore (نفس schema الرفع اليدوي) بروابط proxy — بلا
+	// رفع Storage. لو فشلت الكتابة بعد أن أنشأنا أقساماً → نتراجع عنها فوراً
+	// لئلّا تبقى أقسام فارغة (الفحص تمّ قبل الإنشاء، فهذا آخر مصدر للفراغ).
+	let result;
+	try {
+		result = await adminRegisterIaMetadata({
+			iaFileUrl: preview.pickedFile.downloadUrl,
+			iaThumbUrl: preview.thumbnailUrl,
+			contentType: probed.contentType || preview.pickedFile.contentType,
+			size: probed.size || preview.pickedFile.size,
+			filename: preview.pickedFile.name,
+			nebrasContentType: preview.nebrasContentType,
+			metadata: {
+				title: preview.title,
+				description: preview.description,
+				author: preview.author,
+				is_listed: true,
+				main_section: String(main.id),
+				main_section_id: String(main.id),
+				main_section_name: String(main.name || ''),
+				subsection: String(sub.id),
+				subsection_name: String(sub.name || ''),
+				...(secondary
+					? {
+							secondary_subsection: String(secondary.id),
+							secondary_subsection_name: String(secondary.name || '')
+						}
+					: { secondary_subsection: null })
+			},
+			uploader: { uid: 'ia_library_engine', email: 'engine@nebras.local' },
+			iaInfo: {
+				identifier: preview.identifier,
+				iaSourceUrl: preview.iaSourceUrl,
+				license: preview.licenseInfo.licenseMatched || '',
+				collection: preview.licenseInfo.collection || '',
+				// ⚖️ يُحدِّد adminUploader إن كانت الوثيقة:
+				//   - verified_open_license (ترخيص PD/CC صريح)، أو
+				//   - community_collection (مجموعة موثوقة فقط)
+				licenseTier: preview.licenseInfo.licenseTier || null
+			}
+		});
+	} catch (uploadErr) {
+		if (createdSectionsIds.length > 0) {
+			await rollbackEngineCreatedSections(createdSectionsIds).catch(() => {});
 		}
-	});
+		throw uploadErr;
+	}
 
 	// 6) سجّل في registry لمنع التكرار.
 	await recordImported(identifier, {
@@ -710,6 +749,7 @@ async function tryImportsFromPage(page, cfg, logCtx = {}) {
 	let skipped = licenseRejected + (identifiers.length - newIds.length);
 	let failed = 0;
 	let totalSectionsCreated = 0;
+	const processedByType = { document: 0, audio: 0, video: 0 };
 	const failureSamples = [];
 
 	const targetSuccess = Math.max(1, Number(cfg.batchSize) || 1);
@@ -734,6 +774,9 @@ async function tryImportsFromPage(page, cfg, logCtx = {}) {
 			});
 			processed += 1;
 			totalSectionsCreated += r.createdSectionsIds?.length || 0;
+			if (processedByType[r.nebrasContentType] !== undefined) {
+				processedByType[r.nebrasContentType] += 1;
+			}
 			await appendLog({
 				level: 'success',
 				message: logCtx.successMessage
@@ -772,6 +815,7 @@ async function tryImportsFromPage(page, cfg, logCtx = {}) {
 		skipped,
 		failed,
 		totalSectionsCreated,
+		processedByType,
 		candidateCount: candidates.length,
 		failureSamples
 	};
@@ -798,7 +842,7 @@ async function runSearchQueryTick(cfg, cursor) {
 		licenseSafe: false
 	});
 	const page = await scrapeOnePage({ query: lucene, count: cfg.scrapeCount });
-	const { processed, skipped, failed, totalSectionsCreated, failureSamples } = await tryImportsFromPage(page, cfg, {
+	const { processed, skipped, failed, totalSectionsCreated, processedByType, failureSamples } = await tryImportsFromPage(page, cfg, {
 		mode: 'search',
 		successMessage: (r) => `بحث "${q}" → استورد "${r.title}"`
 	});
@@ -815,6 +859,7 @@ async function runSearchQueryTick(cfg, cursor) {
 		importedDelta: processed,
 		skippedDelta: skipped,
 		failedDelta: failed,
+		byTypeDelta: processedByType,
 		runsDelta: 1,
 		touchLastRun: true,
 		lastError: failed > 0 && !processed ? `بحث "${q}": لا تطابق قابل للاستيراد` : null
@@ -828,6 +873,69 @@ async function runSearchQueryTick(cfg, cursor) {
 		mode: 'search',
 		searchQuery: q,
 		cursor: nextCursor,
+		failureSamples
+	};
+}
+
+/**
+ * دورة "مسح الجديد" (fresh): تمسح **أحدث صفحة** (publicdate desc، cursor=null)
+ * للبذرة الحاليّة بلا أن تلمس مؤشّر الـ backfill العميق. الهدف ضمان التقاط
+ * المحتوى المُضاف حديثاً إلى الأرشيف بسرعة (لا ينتظر حتى تُستنفد البذرة).
+ * registry يتكفّل بتخطّي ما استُورد سابقاً، فلا تكرار.
+ */
+async function runFreshScanTick(cfg, cursor) {
+	const seed = cfg.seeds[cursor.seedIndex];
+	if (!seed) {
+		const nextCursor = { ...cursor, seedIndex: 0, tickMode: 'catalog' };
+		await writeCursor(nextCursor);
+		return { processed: 0, skipped: 0, failed: 0, mode: 'fresh', cursor: nextCursor };
+	}
+
+	const query = buildLuceneQuery({
+		q: seed.q,
+		nebrasTypes: seed.nebrasTypes,
+		languages: seed.languages,
+		collections: seed.collections,
+		creators: seed.creators,
+		licenseSafe: false
+	});
+	// cursor=null دائماً → أحدث العناصر؛ sorts الافتراضيّة publicdate desc.
+	const page = await scrapeOnePage({ query, count: cfg.scrapeCount, cursor: null });
+
+	const { processed, skipped, failed, totalSectionsCreated, processedByType, failureSamples } =
+		await tryImportsFromPage(page, cfg, {
+			seedId: seed.id,
+			mode: 'fresh',
+			successMessage: (r) => `جديد "${r.title}" → ${r.hierarchy.main.name} › ${r.hierarchy.sub.name}`
+		});
+
+	// بعد مسح الجديد ننتقل لوضع البحث، ثم يعود التناوب إلى الكتالوج.
+	const nextCursor = {
+		seedIndex: cursor.seedIndex,
+		scrapeCursors: cursor.scrapeCursors,
+		queryIndex: cursor.queryIndex,
+		tickMode: 'search'
+	};
+	await writeCursor(nextCursor);
+
+	await bumpStats({
+		importedDelta: processed,
+		skippedDelta: skipped,
+		failedDelta: failed,
+		byTypeDelta: processedByType,
+		runsDelta: 1,
+		touchLastRun: true,
+		lastError: null
+	});
+
+	return {
+		processed,
+		skipped,
+		failed,
+		sectionsCreated: totalSectionsCreated,
+		mode: 'fresh',
+		cursor: nextCursor,
+		currentSeedId: seed.id,
 		failureSamples
 	};
 }
@@ -846,9 +954,13 @@ export async function runEngineTick() {
 		cursor = { ...cursor, seedIndex: 0 };
 	}
 
-	// بالتناوب: دورة فهرسة كتالوجية + دورة بعبارة بحث (لتغطية ما يكتبه المستخدم في التطبيق).
+	// تناوب ثلاثيّ: كتالوج (backfill عميق) → fresh (مسح أحدث صفحة لالتقاط
+	// الجديد المُضاف لاحقاً) → بحث (تغطية ما يبحث عنه المستخدم) → كتالوج…
 	if (cursor.tickMode === 'search') {
 		return runSearchQueryTick(cfg, cursor);
+	}
+	if (cursor.tickMode === 'fresh') {
+		return runFreshScanTick(cfg, cursor);
 	}
 
 	const seed = cfg.seeds[cursor.seedIndex];
@@ -887,7 +999,7 @@ export async function runEngineTick() {
 			seedIndex: nextSeedIndex,
 			scrapeCursors: nextScrapeCursors,
 			queryIndex: cursor.queryIndex,
-			tickMode: 'search'
+			tickMode: 'fresh'
 		};
 		await writeCursor(nextCursor);
 		await appendLog({
@@ -907,7 +1019,7 @@ export async function runEngineTick() {
 		};
 	}
 
-	const { processed, skipped, failed, totalSectionsCreated, candidateCount, failureSamples } =
+	const { processed, skipped, failed, totalSectionsCreated, processedByType, candidateCount, failureSamples } =
 		await tryImportsFromPage(page, cfg, {
 			seedId: seed.id,
 			mode: 'catalog',
@@ -933,7 +1045,7 @@ export async function runEngineTick() {
 		seedIndex: nextSeedIndex,
 		scrapeCursors: nextScrapeCursors,
 		queryIndex: cursor.queryIndex,
-		tickMode: 'search'
+		tickMode: 'fresh'
 	};
 	await writeCursor(nextCursor);
 
@@ -941,6 +1053,7 @@ export async function runEngineTick() {
 		importedDelta: processed,
 		skippedDelta: skipped,
 		failedDelta: failed,
+		byTypeDelta: processedByType,
 		runsDelta: 1,
 		touchLastRun: true,
 		lastError: failed > 0 ? `${failed} فشلت في الدورة الأخيرة` : null
@@ -1213,16 +1326,52 @@ export async function autoBootIfNeeded(opts = {}) {
 	return { booted: true, inlineTickResult, tickError };
 }
 
+/**
+ * تفصيل حقيقيّ لما جلبه المحرّك من الأرشيف، محسوب من السجلّ (registry):
+ *   - byType: كم كتاب/صوت/فيديو فعليّاً.
+ *   - topSections: أعلى الأقسام الرئيسيّة بعدد العناصر (بأسمائها).
+ *   - distinctSections: عدد الأقسام الرئيسيّة المستعملة.
+ * يُحسب عند الطلب من سجلّ بحجم = عدد المستورَد (مقبول للوحة إدارية).
+ */
+async function computeIaBreakdown() {
+	const snap = await getAdminDatabase().ref('ia_library_registry').get();
+	const byType = { document: 0, audio: 0, video: 0 };
+	const bySectionCount = {};
+	let total = 0;
+	if (snap.exists()) {
+		for (const rec of Object.values(snap.val() || {})) {
+			total += 1;
+			const t = String(rec?.nebrasContentType || '');
+			if (byType[t] !== undefined) byType[t] += 1;
+			const mainId = rec?.hierarchy?.mainId ? String(rec.hierarchy.mainId) : '';
+			if (mainId) bySectionCount[mainId] = (bySectionCount[mainId] || 0) + 1;
+		}
+	}
+	let nameById = {};
+	try {
+		const tree = await buildSectionsTree();
+		nameById = tree.index.mainsById || {};
+	} catch {
+		/* ignore — نعرض المعرّفات إن تعذّر بناء الشجرة */
+	}
+	const topSections = Object.entries(bySectionCount)
+		.map(([id, count]) => ({ id, name: nameById[id]?.name || id, count }))
+		.sort((a, b) => b.count - a.count)
+		.slice(0, 10);
+	return { total, byType, topSections, distinctSections: Object.keys(bySectionCount).length };
+}
+
 export async function getEngineStatus({ logLimit = 30 } = {}) {
 	// لا نشغّل tick متزامناً عند قراءة الحالة فقط (لكي لا تبطئ Polling
 	// كل 8 ثوانٍ من الواجهة). نُكتفي بكتابة DEFAULT_CONFIG لو لم يوجد.
 	await autoBootIfNeeded({ runInlineTick: false });
 	const state = getGlobalState();
-	const [cfg, cursor, stats, log] = await Promise.all([
+	const [cfg, cursor, stats, log, iaBreakdown] = await Promise.all([
 		readConfig(),
 		readCursor(),
 		readStats(),
-		readLog(logLimit)
+		readLog(logLimit),
+		computeIaBreakdown().catch(() => null)
 	]);
 	return {
 		processRunning: state.running,
@@ -1232,6 +1381,7 @@ export async function getEngineStatus({ logLimit = 30 } = {}) {
 		config: cfg,
 		cursor,
 		stats,
+		iaBreakdown,
 		currentSeed: cfg.seeds[cursor.seedIndex] || null,
 		log
 	};

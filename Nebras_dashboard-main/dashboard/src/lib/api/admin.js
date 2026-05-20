@@ -6,6 +6,16 @@
  */
 
 import { apiGet, apiPost, apiPatch, apiPut, apiDelete } from '$lib/api/client.js';
+import { authedJson } from '$lib/api/_authedFetch.js';
+
+/**
+ * إحصائيات عامة حقيقية من Firestore (أقسام رئيسي/فرعي/ثانوي + المحتوى +
+ * توزيع الأنواع + أعلى الأقسام). تعكس ما في التطبيق فعلاً.
+ * @returns {Promise<Object>}
+ */
+export async function getDashboardOverview() {
+	return authedJson('/api/admin/aggregates/overview');
+}
 
 // ─── Moderator Management ──────────────────────────────
 

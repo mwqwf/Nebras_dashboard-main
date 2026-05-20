@@ -240,6 +240,67 @@ export function chooseBestPlayableFile(files, item, opts = {}) {
 }
 
 /**
+ * يفحص **رأس** الملفّ فقط (أوّل بايتات) دون تنزيله كاملاً — لاستعماله في
+ * وضع metadata-only حيث نطلب من IA `Range: bytes=0-511` بدل تنزيل الملفّ.
+ * يتحقّق من توقيع magic bytes ومن توافق الـ MIME (إن وُجد).
+ *
+ * هذا هو نفس منطق magic bytes في verifyDownloadedBuffer لكن بدون فحص
+ * الحجم الكامل (الحجم يأتي من Content-Range/Content-Length) وبدون فحص
+ * تشفير PDF (يتطلّب نهاية الملفّ — يُفحص عبر headTailHasPdfEncrypt إن
+ * أُحضِر ذيل الملفّ منفصلاً).
+ *
+ * @param {Buffer | Uint8Array} head أوّل بايتات الملفّ (≥ 16 بايت يكفي).
+ * @param {{ contentType?: string, declaredType: NebrasContentType }} opts
+ * @returns {{ ok: boolean, reason?: string }}
+ */
+export function verifyHeadBytes(head, { contentType, declaredType }) {
+	if (!head || head.byteLength === 0) {
+		return { ok: false, reason: 'empty_head' };
+	}
+	const ct = String(contentType || '').toLowerCase();
+	const allowedCt = ALLOWED_MIME[declaredType] || [];
+	if (ct && !allowedCt.some((m) => ct.includes(m)) && !ct.includes('octet-stream')) {
+		return { ok: false, reason: 'mime_mismatch' };
+	}
+	const h = Buffer.isBuffer(head) ? head.subarray(0, 16) : Buffer.from(head.slice(0, 16));
+	if (declaredType === 'document') {
+		if (!(h[0] === 0x25 && h[1] === 0x50 && h[2] === 0x44 && h[3] === 0x46)) {
+			return { ok: false, reason: 'magic_bytes_not_pdf' };
+		}
+	} else if (declaredType === 'audio') {
+		const isId3 = h[0] === 0x49 && h[1] === 0x44 && h[2] === 0x33;
+		const isFlac = h[0] === 0x66 && h[1] === 0x4c && h[2] === 0x61 && h[3] === 0x43;
+		const isOgg = h[0] === 0x4f && h[1] === 0x67 && h[2] === 0x67 && h[3] === 0x53;
+		const isRiff = h[0] === 0x52 && h[1] === 0x49 && h[2] === 0x46 && h[3] === 0x46;
+		const isMp4 = h[4] === 0x66 && h[5] === 0x74 && h[6] === 0x79 && h[7] === 0x70;
+		const isMpegFrame = h[0] === 0xff && (h[1] & 0xe0) === 0xe0;
+		if (!isId3 && !isFlac && !isOgg && !isRiff && !isMp4 && !isMpegFrame) {
+			return { ok: false, reason: 'magic_bytes_not_audio' };
+		}
+	} else if (declaredType === 'video') {
+		const isMp4 = h[4] === 0x66 && h[5] === 0x74 && h[6] === 0x79 && h[7] === 0x70;
+		if (!isMp4) {
+			return { ok: false, reason: 'magic_bytes_not_mp4' };
+		}
+	}
+	return { ok: true };
+}
+
+/**
+ * يكتشف PDF مُشفَّر/محميّ بكلمة مرور من ذيله (الـ trailer قرب النهاية).
+ * يُستعمل في وضع metadata-only بطلب Range منفصل لذيل الملفّ، لأنّ قارئ
+ * Syncfusion في التطبيق لا يفتح PDF المشفّر فيظهر "المصدر غير متاح".
+ *
+ * @param {Buffer | Uint8Array} tail آخر بايتات الملفّ (~8KB).
+ * @returns {boolean}
+ */
+export function pdfTailIsEncrypted(tail) {
+	if (!tail || tail.byteLength === 0) return false;
+	const buf = Buffer.isBuffer(tail) ? tail : Buffer.from(tail);
+	return buf.toString('latin1').includes('/Encrypt');
+}
+
+/**
  * يفحص buffer منزَّل + رؤوس Response قبل الكتابة في Firebase. هذه آخر
  * نقطة دفاع: حتى لو نجح كلّ ما سبق، نتأكّد:
  *   - الحجم > 0 وضمن الحدّ
@@ -272,6 +333,14 @@ export function verifyDownloadedBuffer(buffer, { contentType, declaredType }) {
 		// PDF: '%PDF-'
 		if (!(head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46)) {
 			return { ok: false, reason: 'magic_bytes_not_pdf' };
+		}
+		// رفض PDF مُشفّر/محميّ بكلمة مرور — قارئ Syncfusion في التطبيق لا يفتحه
+		// فيظهر "المصدر غير متاح". نفحص طرفي الملفّ (الـ trailer غالباً قرب النهاية).
+		const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+		const headStr = buf.subarray(0, Math.min(buf.length, 8192)).toString('latin1');
+		const tailStr = buf.subarray(Math.max(0, buf.length - 8192)).toString('latin1');
+		if (headStr.includes('/Encrypt') || tailStr.includes('/Encrypt')) {
+			return { ok: false, reason: 'pdf_encrypted' };
 		}
 	} else if (declaredType === 'audio') {
 		// نقبل أيًّا من: ID3 (mp3) | 'fLaC' | 'OggS' | 'RIFF' (wav) | 'ftyp' (m4a/aac)

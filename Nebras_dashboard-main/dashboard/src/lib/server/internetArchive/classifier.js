@@ -64,13 +64,30 @@ const SUBJECT_HINTS = Object.freeze({
 	'islamic-lectures': 'دروس إسلاميّة'
 });
 
+/**
+ * يُنظّف اسم قسم مقترح: الأرشيف يحشر عدّة مواضيع في حقل subject واحد
+ * مفصولة بـ `*` أو `;` أو `,` فينتج اسم قسم مشوَّه طويل ("علم القرآن*تفسير...").
+ * نأخذ أوّل مقطع نظيف فقط ونقصّه لطول معقول.
+ */
+function sanitizeSectionName(raw) {
+	let s = String(raw || '').trim();
+	if (!s) return '';
+	// أوّل مقطع قبل الفواصل الشائعة.
+	s = s.split(/[*;|/\\\n\r\t]+/)[0].trim();
+	// أزل علامات/فواصل زائدة من الأطراف.
+	s = s.replace(/^[\s,،.\-–—_]+/, '').replace(/[\s,،.\-–—_]+$/, '').trim();
+	// طول قسم معقول.
+	if (s.length > 28) s = s.slice(0, 28).trim();
+	return s;
+}
+
 function labelizeSubject(raw) {
 	const n = normalizeArabic(raw);
 	if (!n) return '';
 	const en = String(raw || '').trim().toLowerCase().replace(/_/g, '-');
 	if (SUBJECT_HINTS[en]) return SUBJECT_HINTS[en];
-	// لو النصّ عربي أصلاً، ابقِه كما هو (بعد قصّ)
-	return String(raw || '').trim().slice(0, 60);
+	// لو النصّ عربي أصلاً، ابقِه كما هو (بعد تنظيف + قصّ)
+	return sanitizeSectionName(raw);
 }
 
 function labelizeCollection(raw) {
@@ -132,10 +149,11 @@ function pickBestHint(subjects, collections, nebrasContentType) {
 			return labeled;
 		}
 	}
-	// 2) ثم أوّل subject عربي قصير
+	// 2) ثم أوّل subject عربي — بعد تنظيفه (أوّل مقطع نظيف + قصّ)
 	for (const s of subjects || []) {
-		const n = String(s || '').trim();
-		if (n && /[؀-ۿ]/.test(n) && n.length <= 40) return n.slice(0, 60);
+		if (!/[؀-ۿ]/.test(String(s || ''))) continue;
+		const clean = sanitizeSectionName(s);
+		if (clean && clean.length >= 2) return clean;
 	}
 	// 3) ثم collection معرفة
 	for (const c of collections || []) {
