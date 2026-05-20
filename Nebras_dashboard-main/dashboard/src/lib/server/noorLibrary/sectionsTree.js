@@ -38,10 +38,13 @@ import {
  * من الشجرة قبل تمريرها للمصنِّف ولا يقبل أيّ كتابة من المحرّك الآلي.
  */
 export const BLACKLISTED_SECTION_NAMES = Object.freeze([
-	'دروس بتدكصهك',
-	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
-	'دروس بترخيصه'
+	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
+	'دروس بترخيصه',
+	'دروس بترخيص',
+	'دروس بتراخيصها',
+	'دروس بتصريحها',
+	'دروس بتدكصهك'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -61,6 +64,45 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+function compactArabic(s) {
+	return normalizeArabic(s).replace(/\s+/g, '');
+}
+
+function editDistance(a, b) {
+	const x = compactArabic(a);
+	const y = compactArabic(b);
+	if (!x || !y) return Math.max(x.length, y.length);
+	const prev = Array.from({ length: y.length + 1 }, (_, i) => i);
+	const curr = Array(y.length + 1).fill(0);
+	for (let i = 1; i <= x.length; i += 1) {
+		curr[0] = i;
+		for (let j = 1; j <= y.length; j += 1) {
+			const cost = x[i - 1] === y[j - 1] ? 0 : 1;
+			curr[j] = Math.min(
+				curr[j - 1] + 1,
+				prev[j] + 1,
+				prev[j - 1] + cost
+			);
+		}
+		for (let j = 0; j <= y.length; j += 1) prev[j] = curr[j];
+	}
+	return prev[y.length];
+}
+
+function isLikelyBlacklistedTypo(name) {
+	const n = compactArabic(name);
+	if (!n) return false;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		const b = compactArabic(blocked);
+		if (!b) continue;
+		if (n.includes(b) || b.includes(n)) return true;
+		const maxLen = Math.max(n.length, b.length);
+		const allowedDistance = Math.max(1, Math.floor(maxLen * 0.22));
+		if (editDistance(n, b) <= allowedDistance) return true;
+	}
+	return false;
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +111,7 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return NORMALIZED_BLACKLIST.has(n) || isLikelyBlacklistedTypo(n);
 }
 
 async function readLevel(level) {

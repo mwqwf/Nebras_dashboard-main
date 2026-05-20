@@ -9,6 +9,15 @@
 
 import { validateHierarchyPath } from './sectionsTree.js';
 
+const PROFILE_MIN_SCORE = 7;
+const MAIN_MATCH_MIN_SCORE = 5;
+const SUB_MATCH_MIN_SCORE = 5;
+const SECONDARY_MATCH_MIN_SCORE = 5;
+
+const GENERIC_MAIN = 'مكتبة إسلامية عامة';
+const GENERIC_SUB = 'موضوعات عامة';
+const GENERIC_SECONDARY = 'مصنفات عامة';
+
 // ── Arabic normalization ────────────────
 function normalizeArabic(s) {
 	return String(s || '')
@@ -20,6 +29,294 @@ function normalizeArabic(s) {
 		.replace(/\s+/g, ' ')
 		.trim()
 		.toLowerCase();
+}
+
+function uniqueList(values) {
+	return [...new Set(values.map((v) => String(v || '').trim()).filter(Boolean))];
+}
+
+function tokensOf(value) {
+	return normalizeArabic(value).split(' ').filter((t) => t.length >= 3);
+}
+
+function buildBookHaystack(bookMeta) {
+	const title = normalizeArabic(bookMeta?.title || '');
+	const author = normalizeArabic(bookMeta?.author || '');
+	const description = normalizeArabic(bookMeta?.description || '');
+	const hints = normalizeArabic((bookMeta?.categoryHints || []).join(' '));
+	const all = [title, author, description, hints].filter(Boolean).join(' ');
+	return {
+		title,
+		author,
+		description,
+		hints,
+		all,
+		tokens: new Set(tokensOf(all))
+	};
+}
+
+function keywordScoreInText(text, tokenSet, keywords, phraseWeight = 4) {
+	const hay = normalizeArabic(text);
+	if (!hay) return 0;
+	let score = 0;
+	for (const kw of uniqueList(keywords)) {
+		const n = normalizeArabic(kw);
+		if (!n) continue;
+		if (hay === n) score += phraseWeight + 6;
+		else if (hay.includes(n) && n.length >= 4) score += phraseWeight;
+		for (const t of tokensOf(n)) {
+			if (tokenSet.has(t)) score += 1;
+		}
+	}
+	return score;
+}
+
+function overlapScore(a, b) {
+	const aTokens = tokensOf(a);
+	const bTokens = tokensOf(b);
+	if (!aTokens.length || !bTokens.length) return 0;
+	const aSet = new Set(aTokens);
+	const bSet = new Set(bTokens);
+	let inter = 0;
+	for (const t of aSet) if (bSet.has(t)) inter += 1;
+	return (inter / new Set([...aSet, ...bSet]).size) * 10;
+}
+
+function scoreNameAgainst(name, preferredNames = [], keywords = []) {
+	const n = normalizeArabic(name);
+	if (!n) return 0;
+	const tokenSet = new Set(tokensOf(n));
+	let score = 0;
+	for (const target of uniqueList(preferredNames)) {
+		const t = normalizeArabic(target);
+		if (!t) continue;
+		if (n === t) score += 24;
+		else if (n.includes(t) || t.includes(n)) score += 12;
+		score += overlapScore(n, t);
+	}
+	score += keywordScoreInText(n, tokenSet, keywords, 3);
+	return score;
+}
+
+const TOPIC_PROFILES = Object.freeze([
+	{
+		key: 'quran',
+		mainName: 'القرآن الكريم وعلومه',
+		mainAliases: ['القرآن الكريم', 'علوم القرآن', 'التفسير وعلوم القرآن'],
+		subName: 'التفسير وعلوم القرآن',
+		subAliases: ['التفسير', 'علوم القرآن'],
+		secondaryName: 'تفسير القرآن',
+		keywords: ['قرآن', 'القرآن', 'تفسير', 'سورة', 'آية', 'القراءات', 'التجويد', 'أسباب النزول', 'علوم القرآن'],
+		secondaryRules: [
+			{ name: 'التجويد والقراءات', keywords: ['تجويد', 'قراءات', 'رواية حفص', 'ورش'] },
+			{ name: 'علوم القرآن', keywords: ['علوم القرآن', 'أسباب النزول', 'الناسخ والمنسوخ', 'المكي والمدني'] },
+			{ name: 'تفسير القرآن', keywords: ['تفسير', 'معاني القرآن', 'تدبر', 'سورة'] }
+		]
+	},
+	{
+		key: 'hadith',
+		mainName: 'الحديث الشريف وعلومه',
+		mainAliases: ['الحديث الشريف', 'السنة النبوية', 'علوم الحديث'],
+		subName: 'الحديث وعلومه',
+		subAliases: ['متون الحديث', 'علوم الحديث'],
+		secondaryName: 'كتب الحديث',
+		keywords: ['حديث', 'الأحاديث', 'السنة', 'رواة', 'إسناد', 'صحيح', 'سنن', 'مسند', 'مصطلح الحديث', 'جرح وتعديل'],
+		secondaryRules: [
+			{ name: 'مصطلح الحديث', keywords: ['مصطلح الحديث', 'إسناد', 'رواية', 'دراية', 'علل الحديث'] },
+			{ name: 'شروح الحديث', keywords: ['شرح الحديث', 'فتح الباري', 'شرح صحيح', 'عمدة القاري'] },
+			{ name: 'كتب الحديث', keywords: ['صحيح', 'سنن', 'مسند', 'موطأ', 'الأحاديث'] }
+		]
+	},
+	{
+		key: 'fiqh',
+		mainName: 'الفقه الإسلامي وأصوله',
+		mainAliases: ['الفقه الإسلامي', 'الفقه وأصوله', 'كتب الفقه'],
+		subName: 'الفقه وأصوله',
+		subAliases: ['الفقه', 'أصول الفقه'],
+		secondaryName: 'مسائل فقهية عامة',
+		keywords: ['فقه', 'أصول الفقه', 'فتاوى', 'طهارة', 'صلاة', 'زكاة', 'صيام', 'حج', 'نكاح', 'طلاق', 'بيع', 'معاملات', 'مواريث'],
+		secondaryRules: [
+			{ name: 'العبادات', keywords: ['طهارة', 'صلاة', 'زكاة', 'صيام', 'حج', 'عبادات'] },
+			{ name: 'المعاملات', keywords: ['بيع', 'ربا', 'إجارة', 'شركة', 'وقف', 'معاملات'] },
+			{ name: 'الأحوال الشخصية', keywords: ['نكاح', 'زواج', 'طلاق', 'عدة', 'مواريث', 'وصية'] },
+			{ name: 'أصول الفقه', keywords: ['أصول الفقه', 'قياس', 'إجماع', 'استحسان', 'الأدلة'] },
+			{ name: 'مسائل فقهية عامة', keywords: ['فقه', 'فتاوى', 'أحكام'] }
+		]
+	},
+	{
+		key: 'aqidah',
+		mainName: 'العقيدة الإسلامية',
+		mainAliases: ['العقيدة', 'التوحيد', 'أصول الدين'],
+		subName: 'العقيدة والتوحيد',
+		subAliases: ['التوحيد', 'أصول الدين', 'الإيمان'],
+		secondaryName: 'التوحيد والإيمان',
+		keywords: ['عقيدة', 'توحيد', 'إيمان', 'شرك', 'أسماء الله', 'صفات', 'القدر', 'النبوة', 'اليوم الآخر', 'الفرق'],
+		secondaryRules: [
+			{ name: 'التوحيد والإيمان', keywords: ['توحيد', 'إيمان', 'شرك', 'عبادة'] },
+			{ name: 'الأسماء والصفات', keywords: ['أسماء الله', 'صفات', 'الصفات', 'الأسماء الحسنى'] },
+			{ name: 'الفرق والمذاهب العقدية', keywords: ['فرق', 'مذاهب', 'جهمية', 'معتزلة', 'أشاعرة'] }
+		]
+	},
+	{
+		key: 'sirah_history',
+		mainName: 'السيرة والتاريخ الإسلامي',
+		mainAliases: ['السيرة النبوية', 'التاريخ الإسلامي', 'التراجم'],
+		subName: 'السيرة والتاريخ',
+		subAliases: ['السيرة النبوية', 'التاريخ الإسلامي', 'التراجم والطبقات'],
+		secondaryName: 'التاريخ الإسلامي',
+		keywords: ['سيرة', 'النبي', 'رسول الله', 'غزوة', 'مغازي', 'تاريخ', 'خلافة', 'صحابة', 'تراجم', 'طبقات', 'أعلام'],
+		secondaryRules: [
+			{ name: 'السيرة النبوية', keywords: ['سيرة', 'النبي', 'رسول الله', 'غزوة', 'مغازي'] },
+			{ name: 'التاريخ الإسلامي', keywords: ['تاريخ', 'خلافة', 'دولة', 'فتوح', 'أموي', 'عباسي'] },
+			{ name: 'التراجم والطبقات', keywords: ['تراجم', 'طبقات', 'أعلام', 'صحابة'] }
+		]
+	},
+	{
+		key: 'education_adab',
+		mainName: 'التربية والآداب',
+		mainAliases: ['التربية والتعليم', 'الآداب والأخلاق', 'تزكية النفس'],
+		subName: 'التربية والتعليم',
+		subAliases: ['التعليم', 'طلب العلم', 'آداب طالب العلم'],
+		secondaryName: 'التعليم وطلب العلم',
+		keywords: ['تربية', 'تعليم', 'تعليمات', 'علمية', 'طلب العلم', 'طالب العلم', 'معلم', 'متعلم', 'نصائح', 'آداب', 'أخلاق', 'تزكية'],
+		secondaryRules: [
+			{ name: 'التعليم وطلب العلم', keywords: ['تعليم', 'تعليمات', 'علمية', 'طلب العلم', 'طالب العلم', 'معلم', 'متعلم', 'نصائح'] },
+			{ name: 'الآداب والأخلاق', keywords: ['آداب', 'أدب', 'أخلاق', 'فضائل', 'سلوك'] },
+			{ name: 'تزكية النفس', keywords: ['تزكية', 'رقائق', 'زهد', 'قلوب', 'محاسبة النفس'] }
+		]
+	},
+	{
+		key: 'language',
+		mainName: 'اللغة العربية وعلومها',
+		mainAliases: ['اللغة العربية', 'النحو والصرف', 'الأدب العربي'],
+		subName: 'علوم اللغة العربية',
+		subAliases: ['النحو والصرف', 'البلاغة', 'الأدب العربي'],
+		secondaryName: 'اللغة العربية',
+		keywords: ['لغة عربية', 'نحو', 'صرف', 'بلاغة', 'إعراب', 'معجم', 'قاموس', 'أدب عربي', 'شعر'],
+		secondaryRules: [
+			{ name: 'النحو والصرف', keywords: ['نحو', 'صرف', 'إعراب'] },
+			{ name: 'البلاغة', keywords: ['بلاغة', 'بيان', 'بديع', 'معاني'] },
+			{ name: 'الأدب العربي', keywords: ['أدب عربي', 'شعر', 'نثر'] },
+			{ name: 'المعاجم واللغة', keywords: ['معجم', 'قاموس', 'لغة'] }
+		]
+	},
+	{
+		key: 'dawah',
+		mainName: 'الدعوة والإرشاد',
+		mainAliases: ['الدعوة', 'الإرشاد', 'الخطب والدروس'],
+		subName: 'الدعوة والإرشاد',
+		subAliases: ['الخطب', 'المواعظ', 'الإرشاد'],
+		secondaryName: 'الدعوة إلى الله',
+		keywords: ['دعوة', 'داعية', 'إرشاد', 'خطب', 'محاضرات', 'موعظة', 'نصح', 'الأمر بالمعروف', 'النهي عن المنكر'],
+		secondaryRules: [
+			{ name: 'الدعوة إلى الله', keywords: ['دعوة', 'داعية', 'إرشاد'] },
+			{ name: 'الخطب والمواعظ', keywords: ['خطب', 'خطبة', 'موعظة', 'مواعظ'] }
+		]
+	}
+]);
+
+function inferTopicProfile(bookMeta) {
+	const hay = buildBookHaystack(bookMeta);
+	let best = null;
+	let bestScore = 0;
+	for (const profile of TOPIC_PROFILES) {
+		const names = [
+			profile.mainName,
+			...(profile.mainAliases || []),
+			profile.subName,
+			...(profile.subAliases || [])
+		];
+		const keywords = [...(profile.keywords || []), ...names];
+		let score = 0;
+		score += keywordScoreInText(hay.title, new Set(tokensOf(hay.title)), keywords, 6) * 2;
+		score += keywordScoreInText(hay.hints, new Set(tokensOf(hay.hints)), keywords, 5) * 2;
+		score += keywordScoreInText(hay.description, new Set(tokensOf(hay.description)), keywords, 3);
+		score += keywordScoreInText(hay.author, new Set(tokensOf(hay.author)), keywords, 2) * 0.5;
+		for (const rule of profile.secondaryRules || []) {
+			score += keywordScoreInText(hay.title, new Set(tokensOf(hay.title)), rule.keywords || [], 5);
+			score += keywordScoreInText(hay.hints, new Set(tokensOf(hay.hints)), rule.keywords || [], 4);
+		}
+		if (score > bestScore) {
+			bestScore = score;
+			best = profile;
+		}
+	}
+	if (!best || bestScore < PROFILE_MIN_SCORE) return null;
+	return {
+		profile: best,
+		score: bestScore,
+		confidence: Math.min(0.55 + bestScore * 0.025, 0.93)
+	};
+}
+
+function chooseSecondaryName(profile, bookMeta) {
+	const hay = buildBookHaystack(bookMeta);
+	let best = null;
+	let bestScore = 0;
+	for (const rule of profile.secondaryRules || []) {
+		const keywords = uniqueList([rule.name, ...(rule.keywords || [])]);
+		let score = 0;
+		score += keywordScoreInText(hay.title, new Set(tokensOf(hay.title)), keywords, 6) * 2;
+		score += keywordScoreInText(hay.hints, new Set(tokensOf(hay.hints)), keywords, 5) * 2;
+		score += keywordScoreInText(hay.description, new Set(tokensOf(hay.description)), keywords, 3);
+		if (score > bestScore) {
+			bestScore = score;
+			best = rule.name;
+		}
+	}
+	return best || profile.secondaryName || GENERIC_SECONDARY;
+}
+
+function pickBestMainForProfile(tree, profile) {
+	const preferred = [profile.mainName, ...(profile.mainAliases || [])];
+	const keywords = [profile.subName, ...(profile.subAliases || []), ...(profile.keywords || [])];
+	let best = null;
+	let bestScore = 0;
+	for (const main of tree || []) {
+		const score = scoreNameAgainst(main.name, preferred, keywords);
+		if (score > bestScore) {
+			bestScore = score;
+			best = main;
+		}
+	}
+	return best ? { node: best, score: bestScore } : null;
+}
+
+function pickBestSubForProfile(mainNode, profile) {
+	const preferred = [profile.subName, ...(profile.subAliases || [])];
+	const keywords = [...(profile.keywords || []), ...(profile.mainAliases || [])];
+	let best = null;
+	let bestScore = 0;
+	for (const sub of mainNode?.children || []) {
+		const score = scoreNameAgainst(sub.name, preferred, keywords);
+		if (score > bestScore) {
+			bestScore = score;
+			best = sub;
+		}
+	}
+	return best ? { node: best, score: bestScore } : null;
+}
+
+function pickBestSecondaryForProfile(subNode, profile, proposedName) {
+	const preferred = [
+		proposedName,
+		profile.secondaryName,
+		...(profile.secondaryRules || []).map((r) => r.name)
+	];
+	const keywords = uniqueList([
+		...(profile.keywords || []),
+		...(profile.secondaryRules || []).flatMap((r) => r.keywords || [])
+	]);
+	let best = null;
+	let bestScore = 0;
+	for (const sec of subNode?.children || []) {
+		const score = scoreNameAgainst(sec.name, preferred, keywords);
+		if (score > bestScore) {
+			bestScore = score;
+			best = sec;
+		}
+	}
+	return best ? { node: best, score: bestScore } : null;
 }
 
 /**
@@ -49,33 +346,36 @@ function classifyHeuristic({ tree, index }, bookMeta) {
 		return score;
 	}
 
-	let bestMain = null, bestMainScore = -1;
+	let best = null;
 	for (const m of tree) {
-		const s = scoreOf(m.name);
-		if (s > bestMainScore) { bestMainScore = s; bestMain = m; }
+		const mainScore = scoreOf(m.name);
+		for (const sub of m.children || []) {
+			const subScore = scoreOf(sub.name);
+			const secondaries = sub.children?.length ? sub.children : [null];
+			for (const sec of secondaries) {
+				const secScore = sec ? scoreOf(sec.name) : 0;
+				const total = mainScore * 2 + subScore * 3 + secScore * 2;
+				if (!best || total > best.total) {
+					best = { main: m, sub, sec, mainScore, subScore, secScore, total };
+				}
+			}
+		}
 	}
-	if (!bestMain) return null;
-
-	let bestSub = null, bestSubScore = -1;
-	for (const sub of bestMain.children) {
-		const s = scoreOf(sub.name);
-		if (s > bestSubScore) { bestSubScore = s; bestSub = sub; }
-	}
-	if (!bestSub) return null;
-
-	let bestSec = null, bestSecScore = -1;
-	for (const sec of bestSub.children) {
-		const s = scoreOf(sec.name);
-		if (s > bestSecScore) { bestSecScore = s; bestSec = sec; }
-	}
+	if (!best || best.total <= 0) return null;
 
 	return {
-		mainId: bestMain.id,
-		subId: bestSub.id,
-		secondaryId: bestSec ? bestSec.id : null,
-		confidence: Math.min(0.5 + bestMainScore * 0.05 + bestSubScore * 0.05, 0.85),
+		mainId: best.main.id,
+		subId: best.sub.id,
+		secondaryId: best.sec ? best.sec.id : null,
+		confidence: Math.min(0.45 + best.total * 0.04, 0.82),
 		reasoning: 'heuristic مطابقة محليّة',
-		method: 'heuristic'
+		method: 'heuristic',
+		_scores: {
+			main: best.mainScore,
+			sub: best.subScore,
+			secondary: best.secScore,
+			total: best.total
+		}
 	};
 }
 
@@ -104,6 +404,14 @@ function haystackForReuse(bookMeta) {
 			.filter(Boolean)
 			.join(' ')
 	);
+}
+
+function sectionNameFromBookTitle(bookMeta) {
+	const stem = seriesStemFromTitle(bookMeta?.title || '')
+		.replace(/^(?:كتاب|تحميل كتاب|شرح|مختصر)\s+/u, '')
+		.trim();
+	if (stem.length >= 6) return stem.slice(0, 80);
+	return GENERIC_SECONDARY;
 }
 
 function getSecondariesUnderSubInTree(tree, subId) {
@@ -214,16 +522,88 @@ export async function classifyAutonomous(sections, bookMeta) {
 			{ reason: 'empty_sections_tree', status: 412 }
 		);
 	}
+
+	const topic = inferTopicProfile(bookMeta);
+	if (topic) {
+		const { profile } = topic;
+		const secondaryName = chooseSecondaryName(profile, bookMeta);
+		const bestMain = pickBestMainForProfile(sections.tree, profile);
+
+		if (!bestMain || bestMain.score < MAIN_MATCH_MIN_SCORE) {
+			return {
+				kind: 'create_main',
+				newMainName: profile.mainName,
+				newSubName: profile.subName,
+				newSecondaryName: secondaryName,
+				confidence: topic.confidence,
+				reasoning: `تصنيف موضوعي: ${profile.mainName} / ${profile.subName} / ${secondaryName}`,
+				method: 'taxonomy'
+			};
+		}
+
+		const bestSub = pickBestSubForProfile(bestMain.node, profile);
+		if (!bestSub || bestSub.score < SUB_MATCH_MIN_SCORE) {
+			return {
+				kind: 'create_sub',
+				mainId: String(bestMain.node.id),
+				newSubName: profile.subName,
+				newSecondaryName: secondaryName,
+				confidence: topic.confidence,
+				reasoning: `القسم الرئيسي مناسب، ولا يوجد فرع مطابق؛ إنشاء ${profile.subName} / ${secondaryName}`,
+				method: 'taxonomy'
+			};
+		}
+
+		const bestSecondary = pickBestSecondaryForProfile(bestSub.node, profile, secondaryName);
+		if (bestSecondary && bestSecondary.score >= SECONDARY_MATCH_MIN_SCORE) {
+			return {
+				kind: 'existing',
+				mainId: String(bestMain.node.id),
+				subId: String(bestSub.node.id),
+				secondaryId: String(bestSecondary.node.id),
+				confidence: topic.confidence,
+				reasoning: `مسار ثلاثي موجود مناسب: ${bestMain.node.name} / ${bestSub.node.name} / ${bestSecondary.node.name}`,
+				method: 'taxonomy'
+			};
+		}
+
+		const reusable = pickReuseSecondary(sections, String(bestSub.node.id), bookMeta, {
+			proposedNewName: secondaryName,
+			minScore: 10
+		});
+		if (reusable) {
+			return {
+				kind: 'existing',
+				mainId: String(bestMain.node.id),
+				subId: String(bestSub.node.id),
+				secondaryId: reusable.id,
+				confidence: topic.confidence,
+				reasoning: `أُعيد استخدام قسم ثانوي قريب: ${reusable.name}`,
+				method: 'taxonomy'
+			};
+		}
+
+		return {
+			kind: 'create_secondary',
+			mainId: String(bestMain.node.id),
+			subId: String(bestSub.node.id),
+			newSecondaryName: secondaryName,
+			confidence: topic.confidence,
+			reasoning: `القسم الرئيسي والفرعي مناسبان، ولا يوجد قسم ثانوي مطابق؛ إنشاء ${secondaryName}`,
+			method: 'taxonomy'
+		};
+	}
+
 	const sug = classifyHeuristic(sections, bookMeta);
 	if (!sug) {
 		return {
-			kind: 'existing',
-			mainId: sections.tree[0].id,
-			subId: sections.tree[0].children[0]?.id || '',
-			secondaryId: null,
-			confidence: 0.1,
-			reasoning: 'لم تعطِ خوارزميّة المطابقة نتيجة — أوّل قسم رئيسي/فرعي.',
-			method: 'heuristic'
+			kind: 'create_main',
+			newMainName: GENERIC_MAIN,
+			newSubName: GENERIC_SUB,
+			newSecondaryName: sectionNameFromBookTitle(bookMeta),
+			confidence: 0.25,
+			reasoning: 'لم تُعرَف مادة الكتاب بدقّة؛ إنشاء مسار عام ثلاثي بدلاً من خلطه مع قسم غير مناسب.',
+			method: 'fallback_create'
 		};
 	}
 	let secId = sug.secondaryId ? String(sug.secondaryId) : null;
@@ -233,6 +613,17 @@ export async function classifyAutonomous(sections, bookMeta) {
 			minScore: 9
 		});
 		if (autoSec) secId = autoSec.id;
+	}
+	if (!secId) {
+		return {
+			kind: 'create_secondary',
+			mainId: String(sug.mainId),
+			subId: String(sug.subId),
+			newSecondaryName: sectionNameFromBookTitle(bookMeta),
+			confidence: Math.min(sug.confidence, 0.65),
+			reasoning: 'وجدنا main/sub مناسبين بالـ heuristic، وأنشأنا مستوى ثانوي لإبقاء المحتوى تحت هيكل ثلاثي كامل.',
+			method: 'heuristic_create_secondary'
+		};
 	}
 	return {
 		kind: 'existing',
