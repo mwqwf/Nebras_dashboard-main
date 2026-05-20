@@ -22,6 +22,8 @@
  *                                          true إن كانت الحزمة موجودة).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
+ *       PUPPETEER_STEALTH_MODE=true|false — إلزام puppeteer-extra stealth
+ *                                          (افتراضي true).
  *
  * الواجهة العامّة:
  *   - isPuppeteerEnabled() → boolean
@@ -63,12 +65,15 @@ function readBoolEnv(name, fallback) {
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * نُجرّب `puppeteer-extra` مع stealth افتراضياً. الرجوع إلى Puppeteer العادي
+ * مسموح فقط إذا عُطّل Stealth صراحةً عبر PUPPETEER_STEALTH_MODE=false.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
 	if (state.puppeteerModule) return state.puppeteerModule;
 	if (state.puppeteerEnabled === false) return null;
+
+	const stealthMode = readBoolEnv('PUPPETEER_STEALTH_MODE', true);
 
 	try {
 		// dynamic import لكي لا تنكسر البناءات حيث puppeteer غير مثبّت.
@@ -81,6 +86,12 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		if (stealthMode) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'Stealth Mode مفعّل لكن puppeteer-extra أو puppeteer-extra-plugin-stealth غير متاح.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {
