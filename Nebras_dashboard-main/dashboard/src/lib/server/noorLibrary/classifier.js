@@ -498,7 +498,7 @@ function pickMainName(discipline) {
 	return discipline?.mainName || 'المكتبة الإسلامية';
 }
 
-function findBestNode(nodes, bookMeta, discipline, { minScore = 1 } = {}) {
+function buildBookScoringContext(bookMeta) {
 	const haystack = normalizeArabic(
 		[
 			bookMeta?.title,
@@ -509,23 +509,32 @@ function findBestNode(nodes, bookMeta, discipline, { minScore = 1 } = {}) {
 			.filter(Boolean)
 			.join(' ')
 	);
-	const tokens = tokensOf(haystack);
+	return { haystack, tokens: tokensOf(haystack) };
+}
+
+function scoreNodeForBook(node, context, discipline) {
+	const n = normalizeArabic(node?.name || '');
+	if (!n) return -Infinity;
+	let score = 0;
+	for (const w of n.split(' ')) {
+		if (w.length >= 3 && context.tokens.has(w)) score += 1;
+	}
+	if (n.length >= 4 && context.haystack.includes(n)) score += 3;
+	if (discipline) {
+		const nodeDiscipline = inferSectionDiscipline(node.name);
+		if (nodeDiscipline?.id === discipline.id) score += 8;
+		else if (nodeDiscipline && nodeDiscipline.id !== discipline.id) score -= 8;
+	}
+	return score;
+}
+
+function findBestNode(nodes, bookMeta, discipline, { minScore = 1 } = {}) {
+	const context = buildBookScoringContext(bookMeta);
 	let best = null;
 	let bestScore = -Infinity;
 
 	for (const node of nodes || []) {
-		const n = normalizeArabic(node?.name || '');
-		if (!n) continue;
-		let score = 0;
-		for (const w of n.split(' ')) {
-			if (w.length >= 3 && tokens.has(w)) score += 1;
-		}
-		if (n.length >= 4 && haystack.includes(n)) score += 3;
-		if (discipline) {
-			const nodeDiscipline = inferSectionDiscipline(node.name);
-			if (nodeDiscipline?.id === discipline.id) score += 8;
-			else if (nodeDiscipline && nodeDiscipline.id !== discipline.id) score -= 8;
-		}
+		const score = scoreNodeForBook(node, context, discipline);
 		if (score > bestScore) {
 			bestScore = score;
 			best = node;
@@ -534,6 +543,36 @@ function findBestNode(nodes, bookMeta, discipline, { minScore = 1 } = {}) {
 
 	if (!best || bestScore < minScore) return null;
 	return { node: best, score: bestScore };
+}
+
+function isGenericMainNode(node) {
+	const name = normalizeArabic(node?.name || '');
+	if (!name) return false;
+	if (GENERIC_HINTS.has(name)) return true;
+	return name.includes('اسلام') || name.includes('مكتبه') || name.includes('علوم شرعيه');
+}
+
+function findGenericMain(tree) {
+	return (tree || []).find(isGenericMainNode) || null;
+}
+
+function findBestSubPath(tree, bookMeta, discipline, { minScore = 1 } = {}) {
+	const context = buildBookScoringContext(bookMeta);
+	let best = null;
+	let bestScore = -Infinity;
+	for (const main of tree || []) {
+		const mainScore = Math.max(0, scoreNodeForBook(main, context, discipline));
+		for (const sub of main.children || []) {
+			const subScore = scoreNodeForBook(sub, context, discipline);
+			const total = subScore + mainScore * 0.25;
+			if (total > bestScore) {
+				bestScore = total;
+				best = { main, sub, mainScore, subScore };
+			}
+		}
+	}
+	if (!best || bestScore < minScore) return null;
+	return best;
 }
 
 
@@ -594,8 +633,41 @@ export async function classifyAutonomous(sections, bookMeta) {
 		};
 	}
 
-	const mainPick = findBestNode(tree, bookMeta, discipline, { minScore: discipline ? 4 : 1 });
-	if (!mainPick) {
+	let mainPick = findBestNode(tree, bookMeta, discipline, { minScore: discipline ? 4 : 1 });
+	let main = mainPick?.node || null;
+	let subPick = main
+		? findBestNode(main.children || [], bookMeta, discipline, {
+				minScore: discipline ? 4 : 1
+			})
+		: null;
+
+	// إن كان الـ main عاماً لكن يوجد sub علمي مناسب في أي مكان، أعد استخدامه.
+	if (!subPick) {
+		const crossSub = findBestSubPath(tree, bookMeta, discipline, {
+			minScore: discipline ? 4 : 1
+		});
+		if (crossSub) {
+			main = crossSub.main;
+			mainPick = { node: crossSub.main, score: crossSub.mainScore };
+			subPick = { node: crossSub.sub, score: crossSub.subScore };
+		}
+	}
+
+	if (!mainPick || !main) {
+		const genericMain = findGenericMain(tree);
+		if (genericMain) {
+			return {
+				kind: 'create_sub',
+				mainId: String(genericMain.id),
+				subId: null,
+				secondaryId: null,
+				newSubName,
+				newSecondaryName,
+				confidence: 0.4,
+				reasoning: `لم يوجد قسم رئيسي متخصص، لكن "${genericMain.name}" عام مناسب — إنشاء فرعي وثانوي تحته.`,
+				method: 'heuristic'
+			};
+		}
 		return {
 			kind: 'create_main',
 			mainId: null,
@@ -612,10 +684,6 @@ export async function classifyAutonomous(sections, bookMeta) {
 		};
 	}
 
-	const main = mainPick.node;
-	const subPick = findBestNode(main.children || [], bookMeta, discipline, {
-		minScore: discipline ? 4 : 1
-	});
 	if (!subPick) {
 		return {
 			kind: 'create_sub',
