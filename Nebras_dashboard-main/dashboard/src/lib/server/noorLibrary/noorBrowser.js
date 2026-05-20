@@ -30,6 +30,7 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { existsSync } from 'node:fs';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -59,6 +60,25 @@ function readBoolEnv(name, fallback) {
 	return fallback;
 }
 
+function resolveChromeExecutablePath() {
+	const configured = String(
+		env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || ''
+	).trim();
+	if (configured) return configured;
+
+	for (const candidate of [
+		'/usr/local/bin/google-chrome',
+		'/usr/bin/google-chrome',
+		'/usr/bin/google-chrome-stable',
+		'/usr/bin/chromium',
+		'/usr/bin/chromium-browser'
+	]) {
+		if (existsSync(candidate)) return candidate;
+	}
+
+	return undefined;
+}
+
 /**
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
@@ -81,8 +101,14 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		// Noor خلف Cloudflare؛ التشغيل الآلي يجب أن يكون Stealth افتراضياً.
+		// نسمح بالسقوط إلى puppeteer العادي فقط عند تفعيل flag تشخيصي صريح.
+		if (!readBoolEnv('NOOR_ALLOW_PLAIN_PUPPETEER', false)) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'puppeteer-extra/stealth غير متاح. ثبّت puppeteer-extra و puppeteer-extra-plugin-stealth أو فعّل NOOR_ALLOW_PLAIN_PUPPETEER للتشخيص فقط.';
+			return null;
+		}
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
@@ -139,9 +165,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = resolveChromeExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({
