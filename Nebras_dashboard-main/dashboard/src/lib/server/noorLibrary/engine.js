@@ -392,6 +392,36 @@ async function processBook({ url, bookId, sections }) {
 	const createdSectionsIds = [];
 	let sectionsCreatedDelta = 0;
 
+	const createMissingSecondary = async (parentSubId, secondaryName) => {
+		const cleanedName = String(secondaryName || '').trim();
+		if (!parentSubId || !cleanedName) return null;
+		const created = await createSecondarySectionAdmin(parentSubId, cleanedName);
+		const id = String(created.id);
+		if (!created.alreadyExisted) {
+			createdSectionsIds.push(id);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			const parentSub =
+				sections.index.subsById[String(parentSubId)] ||
+				(decision.newSubName ? { name: decision.newSubName } : null);
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName: parentSub?.name || '',
+				sectionId: created.id,
+				parentId: parentSubId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSub?.name || ''}"`,
+				sectionId: created.id,
+				parentId: parentSubId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
+		return id;
+	};
+
 	if (decision.kind === 'create_main') {
 		// أعلى مستوى من الإنشاء — main + sub أوّل تحته في عمليّة واحدة.
 		const createdMain = await createMainSectionAdmin(decision.newMainName);
@@ -487,9 +517,19 @@ async function processBook({ url, bookId, sections }) {
 		}
 	}
 
+	if (!secondaryId && decision.newSecondaryName) {
+		secondaryId = await createMissingSecondary(subId, decision.newSecondaryName);
+	}
+
 	if (!subId) {
 		throw Object.assign(new Error('فشل تحديد subId بعد التصنيف.'), {
 			reason: 'no_sub_after_classify',
+			status: 500
+		});
+	}
+	if (!secondaryId) {
+		throw Object.assign(new Error('فشل تحديد secondaryId بعد التصنيف — مكتبة نور تتطلّب main > sub > secondary.'), {
+			reason: 'no_secondary_after_classify',
 			status: 500
 		});
 	}
@@ -498,10 +538,10 @@ async function processBook({ url, bookId, sections }) {
 	const refreshed = await buildSectionsTree();
 	const main = refreshed.index.mainsById[mainId];
 	const sub = refreshed.index.subsById[subId];
-	const secondary = secondaryId ? refreshed.index.secondariesById[secondaryId] : null;
+	const secondary = refreshed.index.secondariesById[secondaryId];
 
-	if (!main || !sub) {
-		throw Object.assign(new Error('main أو sub لم يُعثر عليه بعد التصنيف.'), {
+	if (!main || !sub || !secondary) {
+		throw Object.assign(new Error('main أو sub أو secondary لم يُعثر عليه بعد التصنيف.'), {
 			reason: 'hierarchy_resolution_failed',
 			status: 500
 		});
@@ -522,12 +562,8 @@ async function processBook({ url, bookId, sections }) {
 		main_section_name: String(main.name || ''),
 		subsection: String(sub.id),
 		subsection_name: String(sub.name || ''),
-		...(secondary
-			? {
-					secondary_subsection: String(secondary.id),
-					secondary_subsection_name: String(secondary.name || '')
-				}
-			: { secondary_subsection: null })
+		secondary_subsection: String(secondary.id),
+		secondary_subsection_name: String(secondary.name || '')
 	};
 
 	const result = await adminUploadAndRegister({
@@ -549,7 +585,7 @@ async function processBook({ url, bookId, sections }) {
 		fileId: result.fileId,
 		title: meta.title,
 		url: meta.source?.url || url,
-		hierarchy: { mainId: String(main.id), subId: String(sub.id), secondaryId: secondary ? String(secondary.id) : null },
+		hierarchy: { mainId: String(main.id), subId: String(sub.id), secondaryId: String(secondary.id) },
 		createdSectionsIds
 	});
 
@@ -561,10 +597,10 @@ async function processBook({ url, bookId, sections }) {
 		contentId: result.fileId,
 		mainSectionId: main.id,
 		subSectionId: sub.id,
-		secondarySectionId: secondary?.id || '',
+		secondarySectionId: secondary.id,
 		mainSectionName: main.name,
 		subSectionName: sub.name,
-		secondarySectionName: secondary?.name || '',
+		secondarySectionName: secondary.name,
 		sourceUrl: meta.source?.url || url
 	});
 
@@ -575,7 +611,7 @@ async function processBook({ url, bookId, sections }) {
 		hierarchy: {
 			main: { id: String(main.id), name: main.name },
 			sub: { id: String(sub.id), name: sub.name },
-			secondary: secondary ? { id: String(secondary.id), name: secondary.name } : null
+			secondary: { id: String(secondary.id), name: secondary.name }
 		},
 		createdSectionsIds,
 		sectionsCreatedDelta,

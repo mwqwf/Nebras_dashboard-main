@@ -12,8 +12,8 @@
  *
  * المسارات المكتوبة:
  *   sections_unified/main/{id}       — { id, name, order_index, is_listed, thumbnail, created_at }
- *   sections_unified/sub/{id}        — { id, name, main_section, is_listed, thumbnail, created_at }
- *   sections_unified/secondary/{id}  — { id, name, sub_section,  is_listed, thumbnail, created_at }
+ *   sections_unified/sub/{id}        — { id, name, main_section, order_index, is_listed, thumbnail, created_at }
+ *   sections_unified/secondary/{id}  — { id, name, sub_section,  order_index, is_listed, thumbnail, created_at }
  *
  * كلّ سجلّ يحمل علامة `__createdBy: 'noor_library_engine'` لكي يستطيع
  * زرّ "إعادة ضبط المصنع" مسحَه دون المساس بأقسام أنشأها مدير بشري.
@@ -50,6 +50,16 @@ function makeSectionId() {
 
 function cleanName(name) {
 	return String(name || '').trim().slice(0, 120);
+}
+
+async function nextOrderIndex(level, predicate = null) {
+	const rows = await adminFsReadSectionsLevel(level);
+	const siblings = typeof predicate === 'function' ? rows.filter(predicate) : rows;
+	const max = siblings.reduce((acc, row) => {
+		const n = Number(row?.order_index ?? 0);
+		return Number.isFinite(n) && n > acc ? n : acc;
+	}, 0);
+	return max + 1;
 }
 
 function blacklistError(message, reason = 'blacklisted_section') {
@@ -161,7 +171,7 @@ export async function createMainSectionAdmin(name) {
 	const payload = {
 		id,
 		name: cleanedName,
-		order_index: 0,
+		order_index: await nextOrderIndex('main'),
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
@@ -227,6 +237,10 @@ export async function createSubSectionAdmin(mainSectionId, name) {
 		id,
 		name: cleanedName,
 		main_section: mainNum,
+		order_index: await nextOrderIndex(
+			'sub',
+			(row) => String(row?.main_section ?? '') === String(mainNum)
+		),
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
@@ -290,6 +304,10 @@ export async function createSecondarySectionAdmin(subSectionId, name) {
 		id,
 		name: cleanedName,
 		sub_section: subNum,
+		order_index: await nextOrderIndex(
+			'secondary',
+			(row) => String(row?.sub_section ?? '') === String(subNum)
+		),
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
