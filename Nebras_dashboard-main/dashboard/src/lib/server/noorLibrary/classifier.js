@@ -141,6 +141,19 @@ const TAXONOMY_RULES = Object.freeze([
 	}
 ]);
 
+const GENERIC_CATEGORY_HINTS = new Set(
+	[
+		'كتب',
+		'كتاب',
+		'كتب اسلاميه',
+		'اسلاميه',
+		'اسلام',
+		'الدين',
+		'الشريعه',
+		'مكتبه نور'
+	].map(normalizeArabic)
+);
+
 function tokenizeNormalized(text) {
 	return normalizeArabic(text)
 		.split(' ')
@@ -240,21 +253,24 @@ function cleanSectionName(name) {
 }
 
 function categoryHintName(bookMeta) {
-	const hints = (bookMeta?.categoryHints || [])
-		.map(cleanSectionName)
-		.filter((h) => h && !/^(الرئيسية|home|كتب|مكتبة نور)$/i.test(h));
-	const direct = hints.find((h) => normalizeArabic(h).length >= 5);
-	if (!direct) return '';
-	return cleanSectionName(
-		direct
+	for (const rawHint of bookMeta?.categoryHints || []) {
+		const direct = cleanSectionName(rawHint);
+		if (!direct || /^(الرئيسية|home|كتب|مكتبة نور)$/i.test(direct)) continue;
+		const cleaned = cleanSectionName(
+			direct
 			.replace(/^كتب\s+(?:في|عن)?\s*/u, '')
 			.replace(/^الكتب\s+(?:في|عن)?\s*/u, '')
-	);
+		);
+		const normalized = normalizeArabic(cleaned);
+		if (normalized.length < 5 || GENERIC_CATEGORY_HINTS.has(normalized)) continue;
+		return cleaned;
+	}
+	return '';
 }
 
 function proposedSecondaryName(rule, bookMeta) {
 	const hint = categoryHintName(bookMeta);
-	if (hint && normalizeArabic(hint) !== 'كتب اسلاميه') return hint;
+	if (hint) return hint;
 	return cleanSectionName(rule?.secondaryNames?.[0] || seriesStemFromTitle(bookMeta?.title || '') || 'متفرقات');
 }
 
