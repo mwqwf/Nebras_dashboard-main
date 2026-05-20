@@ -1,19 +1,26 @@
 /**
  * POST /api/admin/internet-archive/cleanup-orphans
  *
- * يحذف من Firestore أيّ وثيقة محتوى لا تحوي sourceUrl / file_url / video_url
- * صالحاً — لأنّ التطبيق سيُظهر "No source available" عند الضغط عليها.
+ * يحذف من Firestore كلّ وثيقة محتوى لا يستطيع التطبيق تشغيلها أو يجب ألّا
+ * يتّصل بمصدرها:
+ *   • وثيقة بلا sourceUrl / file_url / video_url صالح (تُظهر "No source available").
+ *   • ✅ وثيقة رابطها يشير مباشرة إلى **archive.org** — التطبيق قارئ من
+ *     قاعدة البيانات فقط ولا علاقة له بالأرشيف؛ هذه بقايا قديمة تُحذف.
+ *     (لا يمسّ هذا محتوى المحرّك المعاد استضافته على Firebase Storage، لأنّ
+ *     رابط تشغيله storage لا archive.org.)
  *
- * يطبَّق على:
- *   • content_unified_files
- *   • dashboard_uploads
+ * يطبَّق على: content_unified_files + dashboard_uploads.
  *
- * body: { dryRun?: boolean }  (إن كان true: لا يحذف، يُرجع القائمة فقط)
+ * body: {
+ *   dryRun?: boolean,   // true = لا يحذف، يُرجع القائمة فقط
+ *   restart?: boolean    // true (افتراضي) = بعد الحذف يبدأ المحرّك من جديد
+ * }
  */
 import { json } from '@sveltejs/kit';
 import { getNebrasFirestoreAdmin, isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import { adminFsDeleteFileMirrorBoth } from '$lib/server/nebrasUnifiedFirestoreAdmin.js';
 import { requireAdminRole } from '$lib/server/adminApiAuth.js';
+import { resetCursor, startEngine } from '$lib/server/internetArchive/engine.js';
 
 const URL_FIELDS = [
 	'sourceUrl',
@@ -71,6 +78,7 @@ export async function POST(event) {
 		/* ignore — body optional */
 	}
 	const dryRun = Boolean(body?.dryRun);
+	const restart = body?.restart === undefined ? true : Boolean(body?.restart);
 
 	const fs = getNebrasFirestoreAdmin();
 
@@ -79,24 +87,30 @@ export async function POST(event) {
 		fs.collection('dashboard_uploads').get()
 	]);
 
-	const orphanIds = new Set();
+	const removableIds = new Set();
 	const samples = [];
+	let orphanCount = 0;
+	let archiveCount = 0;
 
 	function scan(snap, label) {
 		for (const d of snap.docs) {
 			const data = d.data() || {};
 			const url = pickUrl(data);
-			if (!url) {
-				orphanIds.add(d.id);
-				if (samples.length < 12) {
-					samples.push({
-						collection: label,
-						id: d.id,
-						title: data?.title || data?.metadata?.title || '',
-						provider: data?.__provider || 'manual',
-						licenseStatus: data?.__license_status || 'n/a'
-					});
-				}
+			const isOrphan = !url;
+			const isArchive = !!url && url.toLowerCase().includes('archive.org');
+			if (!isOrphan && !isArchive) continue;
+			removableIds.add(d.id);
+			if (isOrphan) orphanCount += 1;
+			else archiveCount += 1;
+			if (samples.length < 12) {
+				samples.push({
+					collection: label,
+					id: d.id,
+					reason: isOrphan ? 'no_source' : 'archive_org_link',
+					title: data?.title || data?.metadata?.title || '',
+					provider: data?.__provider || 'manual',
+					licenseStatus: data?.__license_status || 'n/a'
+				});
 			}
 		}
 	}
@@ -108,22 +122,43 @@ export async function POST(event) {
 		return json({
 			ok: true,
 			dryRun: true,
-			orphanCount: orphanIds.size,
+			removableCount: removableIds.size,
+			orphanCount,
+			archiveCount,
 			samples
 		});
 	}
 
 	let deleted = 0;
-	for (const id of orphanIds) {
+	for (const id of removableIds) {
 		await adminFsDeleteFileMirrorBoth(id).catch(() => {});
 		deleted += 1;
+	}
+
+	// "ابدأ من جديد": صفّر مؤشّر الزحف (يبدأ التدوير من البذرة الأولى عبر
+	// كل الأنواع) وفعّل المحرّك. لا نمسّ سجلّ المستورَد لتفادي التكرار، لكن
+	// الزحف يستأنف نظيفاً مع المنطق الجديد فتظهر الكتب والصوت والفيديو.
+	let restarted = false;
+	let restartError = null;
+	if (restart) {
+		try {
+			await resetCursor();
+			await startEngine();
+			restarted = true;
+		} catch (err) {
+			restartError = err?.message || String(err);
+		}
 	}
 
 	return json({
 		ok: true,
 		dryRun: false,
-		orphanCount: orphanIds.size,
+		removableCount: removableIds.size,
+		orphanCount,
+		archiveCount,
 		deleted,
+		restarted,
+		restartError,
 		samples
 	});
 }

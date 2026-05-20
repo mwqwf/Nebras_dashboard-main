@@ -17,14 +17,15 @@
 		runOneTick,
 		resetEngine,
 		startEngine,
-		stopEngine
+		stopEngine,
+		cleanupOrphans
 	} from '$lib/api/internetArchive.js';
 
 	let status = $state(null);
 	let loadingStatus = $state(true);
 	let statusError = $state('');
 
-	let actionInFlight = $state(''); // '' | 'bootstrap' | 'diagnose' | 'tick' | 'reset' | 'factory' | 'start' | 'stop'
+	let actionInFlight = $state(''); // '' | 'bootstrap' | 'diagnose' | 'tick' | 'reset' | 'factory' | 'start' | 'stop' | 'cleanup'
 	let actionResult = $state(null);
 	let actionError = $state('');
 
@@ -83,6 +84,15 @@
 	async function onFactoryReset() {
 		if (!confirm('سيحذف هذا كلّ ما رفعه محرّك IA (محتوى + أقسام). تأكيد؟')) return;
 		await runAction('factory', () => resetEngine('factory'));
+	}
+	async function onCleanup() {
+		if (
+			!confirm(
+				'سيحذف الوثائق بلا مصدر صالح أو المرتبطة بـ archive.org مباشرة، ثم يبدأ المحرّك من جديد. تأكيد؟'
+			)
+		)
+			return;
+		await runAction('cleanup', () => cleanupOrphans({ restart: true }));
 	}
 	async function onDiagnose() {
 		if (actionInFlight) return;
@@ -197,6 +207,14 @@
 			onclick={onFactoryReset}
 		>
 			⚠ Factory Reset
+		</button>
+		<button
+			class="rounded bg-orange-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-orange-700 disabled:opacity-50"
+			disabled={Boolean(actionInFlight)}
+			onclick={onCleanup}
+			title="حذف الوثائق بلا مصدر أو المرتبطة بـ archive.org ثم بدء المحرّك من جديد"
+		>
+			🧹 تنظيف + بدء جديد
 		</button>
 		<button
 			class="ml-auto rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"

@@ -97,3 +97,15 @@ export async function updateSeeds(seeds) {
 export async function resetEngine(type = 'cursor') {
 	return authedJson(`${BASE}/engine/reset`, { method: 'POST', body: { type } });
 }
+
+/**
+ * تنظيف Firestore: يحذف الوثائق بلا مصدر صالح أو التي ترتبط بـ archive.org
+ * مباشرة (التطبيق قارئ من قاعدة البيانات فقط)، ثم يبدأ المحرّك من جديد.
+ * @param {{ dryRun?: boolean, restart?: boolean }} [args]
+ */
+export async function cleanupOrphans(args = {}) {
+	return authedJson(`${BASE}/cleanup-orphans`, {
+		method: 'POST',
+		body: { dryRun: Boolean(args.dryRun), restart: args.restart !== false }
+	});
+}
