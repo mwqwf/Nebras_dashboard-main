@@ -338,6 +338,31 @@ async function notifyFcmSectionCreated(info) {
 	}
 }
 
+async function createSecondaryForDecision({ subId, name, parentSubName, createdSectionsIds }) {
+	const created = await createSecondarySectionAdmin(subId, name);
+	let delta = 0;
+	if (!created.alreadyExisted) {
+		createdSectionsIds.push(String(created.id));
+		delta = 1;
+		await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+		await notifyFcmSectionCreated({
+			level: 'secondary',
+			name: created.name,
+			parentName: parentSubName || '',
+			sectionId: created.id,
+			parentId: subId
+		});
+		await appendLog({
+			level: 'success',
+			message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSubName || ''}"`,
+			sectionId: created.id,
+			parentId: subId,
+			kind: 'secondary_section_created'
+		}).catch(() => {});
+	}
+	return { id: String(created.id), name: created.name, delta };
+}
+
 // ── Core: process a single book end-to-end ──────────────────────────
 
 /**
@@ -436,6 +461,16 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+		if (decision.newSecondaryName) {
+			const createdSecondary = await createSecondaryForDecision({
+				subId,
+				name: decision.newSecondaryName,
+				parentSubName: createdSub.name,
+				createdSectionsIds
+			});
+			secondaryId = createdSecondary.id;
+			sectionsCreatedDelta += createdSecondary.delta;
+		}
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
@@ -461,35 +496,38 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+		if (decision.newSecondaryName) {
+			const createdSecondary = await createSecondaryForDecision({
+				subId,
+				name: decision.newSecondaryName,
+				parentSubName: created.name,
+				createdSectionsIds
+			});
+			secondaryId = createdSecondary.id;
+			sectionsCreatedDelta += createdSecondary.delta;
+		}
 	} else if (decision.kind === 'create_secondary') {
 		subId = decision.subId;
-		const created = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
-		secondaryId = String(created.id);
-		if (!created.alreadyExisted) {
-			createdSectionsIds.push(secondaryId);
-			sectionsCreatedDelta += 1;
-			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-			const parentSub = sections.index.subsById[subId];
-			await notifyFcmSectionCreated({
-				level: 'secondary',
-				name: created.name,
-				parentName: parentSub?.name || '',
-				sectionId: created.id,
-				parentId: subId
-			});
-			await appendLog({
-				level: 'success',
-				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSub?.name || ''}"`,
-				sectionId: created.id,
-				parentId: subId,
-				kind: 'secondary_section_created'
-			}).catch(() => {});
-		}
+		const parentSub = sections.index.subsById[subId];
+		const createdSecondary = await createSecondaryForDecision({
+			subId,
+			name: decision.newSecondaryName,
+			parentSubName: parentSub?.name || '',
+			createdSectionsIds
+		});
+		secondaryId = createdSecondary.id;
+		sectionsCreatedDelta += createdSecondary.delta;
 	}
 
 	if (!subId) {
 		throw Object.assign(new Error('فشل تحديد subId بعد التصنيف.'), {
 			reason: 'no_sub_after_classify',
+			status: 500
+		});
+	}
+	if (!secondaryId) {
+		throw Object.assign(new Error('فشل تحديد secondaryId بعد التصنيف — الهيكل الثلاثي إلزامي.'), {
+			reason: 'no_secondary_after_classify',
 			status: 500
 		});
 	}
