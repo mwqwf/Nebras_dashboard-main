@@ -98,12 +98,27 @@ export async function POST(event) {
 	try {
 		// 1) قراءة شجرة الأقسام والتحقّق من المسار الذهبي
 		await writeJobPatch(jobId, { status: 'reading_sections' }).catch(() => {});
+		if (!hierarchy.secondaryId) {
+			await writeJobPatch(jobId, {
+				status: 'failed',
+				failedReason: 'secondary_section_required'
+			}).catch(() => {});
+			return json(
+				{
+					error: 'invalid_hierarchy',
+					reason: 'secondary_section_required',
+					message: 'استيراد مكتبة نور يتطلب مساراً كاملاً: main → sub → secondary → content.',
+					jobId
+				},
+				{ status: 422 }
+			);
+		}
 		const sections = await buildSectionsTree();
 		const validation = validateHierarchyPath(
 			{
 				mainId: hierarchy.mainId,
 				subId: hierarchy.subId,
-				secondaryId: hierarchy.secondaryId || null
+				secondaryId: hierarchy.secondaryId
 			},
 			sections.index
 		);

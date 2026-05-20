@@ -41,7 +41,9 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بتدكصهك',
 	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
-	'دروس بترخيصه'
+	'دروس بترخيصه',
+	'دروس بترخيص',
+	'دروس مرخصة'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -61,6 +63,29 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+function levenshteinDistanceWithin(a, b, maxDistance = 2) {
+	if (!a || !b) return Math.max(a.length, b.length);
+	if (Math.abs(a.length - b.length) > maxDistance) return maxDistance + 1;
+	let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+	for (let i = 1; i <= a.length; i += 1) {
+		const current = [i];
+		let rowMin = current[0];
+		for (let j = 1; j <= b.length; j += 1) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			const value = Math.min(
+				previous[j] + 1,
+				current[j - 1] + 1,
+				previous[j - 1] + cost
+			);
+			current[j] = value;
+			if (value < rowMin) rowMin = value;
+		}
+		if (rowMin > maxDistance) return maxDistance + 1;
+		previous = current;
+	}
+	return previous[b.length];
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +94,14 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (!blocked) continue;
+		if (n.includes(blocked)) return true;
+		// حماية من Typos بسيطة في الاسم المحظور نفسه (حرف ناقص/زائد/مبدّل).
+		if (levenshteinDistanceWithin(n, blocked, 2) <= 2) return true;
+	}
+	return false;
 }
 
 async function readLevel(level) {
