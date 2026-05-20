@@ -94,7 +94,8 @@ export async function partitionKnownBooks(bookIds) {
  *   title?: string,
  *   url?: string,
  *   hierarchy?: { mainId:string, subId:string, secondaryId?:string|null },
- *   createdSectionsIds?: string[]
+ *   createdSectionsIds?: string[],
+ *   createdSections?: Array<{ level:string, id:string, name:string, parentId?:string, parentName?:string }>
  * }} record
  */
 export async function recordImported(bookId, record) {
@@ -107,6 +108,15 @@ export async function recordImported(bookId, record) {
 		hierarchy: record?.hierarchy || null,
 		createdSectionsIds: Array.isArray(record?.createdSectionsIds)
 			? record.createdSectionsIds.slice(0, 10)
+			: [],
+		createdSections: Array.isArray(record?.createdSections)
+			? record.createdSections.slice(0, 10).map((section) => ({
+					level: String(section?.level || ''),
+					id: String(section?.id || ''),
+					name: String(section?.name || ''),
+					parentId: String(section?.parentId || ''),
+					parentName: String(section?.parentName || '')
+				}))
 			: [],
 		importedAt: { '.sv': 'timestamp' }
 	};
