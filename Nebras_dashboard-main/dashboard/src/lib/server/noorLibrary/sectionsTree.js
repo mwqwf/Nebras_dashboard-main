@@ -61,6 +61,11 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+const NORMALIZED_BLACKLIST_PREFIXES = Object.freeze([
+	'دروس بترخيص',
+	'دروس بتد'
+]);
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +74,11 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (blocked.length >= 4 && (n.includes(blocked) || blocked.includes(n))) return true;
+	}
+	return NORMALIZED_BLACKLIST_PREFIXES.some((prefix) => n.startsWith(prefix));
 }
 
 async function readLevel(level) {
