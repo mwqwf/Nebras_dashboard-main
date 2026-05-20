@@ -44,6 +44,14 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بترخيصه'
 ]);
 
+/**
+ * شظايا typos معروفة في أسماء أقسام لا يجوز أن يراها المحرّك. نطابقها
+ * كـ contains بعد التطبيع، لأنّ القسم قد يحمل نصاً إضافياً حول الخطأ.
+ */
+export const TYPO_SECTION_NAME_FRAGMENTS = Object.freeze([
+	'بتدكصهك'
+]);
+
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
 function normalizeArabic(s) {
 	return String(s || '')
@@ -61,6 +69,8 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+const NORMALIZED_TYPO_FRAGMENTS = TYPO_SECTION_NAME_FRAGMENTS.map(normalizeArabic).filter(Boolean);
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -70,6 +80,26 @@ export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
 	return NORMALIZED_BLACKLIST.has(n);
+}
+
+/**
+ * يفحص typos نصيّة معروفة داخل اسم القسم، وليس تطابق الاسم كاملاً فقط.
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function hasKnownSectionNameTypo(name) {
+	const n = normalizeArabic(name);
+	if (!n) return false;
+	return NORMALIZED_TYPO_FRAGMENTS.some((fragment) => fragment && n.includes(fragment));
+}
+
+/**
+ * الاسم المحظور للمحرّك = موجود في القائمة السوداء أو يحتوي typo معروفاً.
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isBlockedSectionName(name) {
+	return isBlacklistedSectionName(name) || hasKnownSectionNameTypo(name);
 }
 
 async function readLevel(level) {
@@ -92,19 +122,19 @@ async function readLevel(level) {
 export function computeBlacklistedIds({ mains, subs, secondaries }) {
 	const mainIds = new Set();
 	for (const m of mains) {
-		if (isBlacklistedSectionName(m?.name)) mainIds.add(String(m.id));
+		if (isBlockedSectionName(m?.name)) mainIds.add(String(m.id));
 	}
 
 	const subIds = new Set();
 	for (const s of subs) {
-		const isNameBlocked = isBlacklistedSectionName(s?.name);
+		const isNameBlocked = isBlockedSectionName(s?.name);
 		const parentBlocked = mainIds.has(String(s?.main_section ?? ''));
 		if (isNameBlocked || parentBlocked) subIds.add(String(s.id));
 	}
 
 	const secondaryIds = new Set();
 	for (const sec of secondaries) {
-		const isNameBlocked = isBlacklistedSectionName(sec?.name);
+		const isNameBlocked = isBlockedSectionName(sec?.name);
 		const parentBlocked = subIds.has(String(sec?.sub_section ?? ''));
 		if (isNameBlocked || parentBlocked) secondaryIds.add(String(sec.id));
 	}
@@ -165,11 +195,18 @@ export async function buildSectionsTree() {
 		secondariesBySub.get(k).push(s);
 	}
 
-	const tree = mains.map((m) => {
+	const byOrder = (a, b) => {
+		const ao = Number(a?.order_index ?? 0);
+		const bo = Number(b?.order_index ?? 0);
+		if (ao !== bo) return ao - bo;
+		return Number(a?.id ?? 0) - Number(b?.id ?? 0);
+	};
+
+	const tree = [...mains].sort(byOrder).map((m) => {
 		const mainId = String(m.id);
-		const subChildren = (subsByMain.get(mainId) || []).map((sub) => {
+		const subChildren = [...(subsByMain.get(mainId) || [])].sort(byOrder).map((sub) => {
 			const subId = String(sub.id);
-			const secChildren = (secondariesBySub.get(subId) || []).map((sec) => ({
+			const secChildren = [...(secondariesBySub.get(subId) || [])].sort(byOrder).map((sec) => ({
 				id: String(sec.id),
 				name: String(sec.name || ''),
 				parentId: subId
@@ -225,7 +262,8 @@ export function serializeTreeAsPlainText(tree) {
 /**
  * يتحقّق أنّ المسار الذي اقترحه المصنِّف أو المستخدم سليم وفق القاعدة الذهبيّة:
  *   main_section_id موجود — sub.main_section === main_section_id —
- *   secondary.sub_section === sub.id (إن وُجد).
+ *   secondary.sub_section === sub.id. القسم الثانوي مطلوب لمحرّك Noor
+ *   حتى لا يُضاف محتوى مباشرةً تحت قسم فرعي عام.
  *
  * @returns {{ valid: boolean, reason?: string, resolved?: { main: any, sub: any, secondary: any|null } }}
  */
@@ -244,13 +282,11 @@ export function validateHierarchyPath(
 		return { valid: false, reason: 'sub_does_not_belong_to_main' };
 	}
 
-	let secondary = null;
-	if (secondaryId) {
-		secondary = index.secondariesById[String(secondaryId)];
-		if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
-		if (String(secondary.sub_section ?? '') !== String(subId)) {
-			return { valid: false, reason: 'secondary_does_not_belong_to_sub' };
-		}
+	if (!secondaryId) return { valid: false, reason: 'secondary_section_required' };
+	const secondary = index.secondariesById[String(secondaryId)];
+	if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
+	if (String(secondary.sub_section ?? '') !== String(subId)) {
+		return { valid: false, reason: 'secondary_does_not_belong_to_sub' };
 	}
 
 	return { valid: true, resolved: { main, sub, secondary } };

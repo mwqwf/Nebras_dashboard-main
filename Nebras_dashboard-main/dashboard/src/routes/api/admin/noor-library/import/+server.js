@@ -13,7 +13,7 @@
  *   {
  *     url: string,                            // رابط صفحة الكتاب
  *     metadata: { title, description?, author?, thumbnail? },
- *     hierarchy: { mainId, subId, secondaryId? },     // المسار الذهبي المُختار
+ *     hierarchy: { mainId, subId, secondaryId },      // المسار الثلاثي المطلوب
  *     overrideFileUrl?: string,               // (نادر) لو أراد المستخدم تجاوز الكشف الآلي
  *     listed?: boolean
  *   }
@@ -113,7 +113,7 @@ export async function POST(event) {
 				{
 					error: 'invalid_hierarchy',
 					reason: validation.reason,
-					message: 'المسار المُختار لا يحترم القاعدة الذهبيّة [main → sub → secondary].',
+					message: 'المسار المُختار لا يحترم القاعدة الذهبيّة [main → sub → secondary]، والقسم الثانوي مطلوب.',
 					jobId
 				},
 				{ status: 422 }

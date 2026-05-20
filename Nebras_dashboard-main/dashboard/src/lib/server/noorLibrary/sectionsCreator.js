@@ -12,8 +12,8 @@
  *
  * المسارات المكتوبة:
  *   sections_unified/main/{id}       — { id, name, order_index, is_listed, thumbnail, created_at }
- *   sections_unified/sub/{id}        — { id, name, main_section, is_listed, thumbnail, created_at }
- *   sections_unified/secondary/{id}  — { id, name, sub_section,  is_listed, thumbnail, created_at }
+ *   sections_unified/sub/{id}        — { id, name, main_section, order_index, is_listed, thumbnail, created_at }
+ *   sections_unified/secondary/{id}  — { id, name, sub_section, order_index, is_listed, thumbnail, created_at }
  *
  * كلّ سجلّ يحمل علامة `__createdBy: 'noor_library_engine'` لكي يستطيع
  * زرّ "إعادة ضبط المصنع" مسحَه دون المساس بأقسام أنشأها مدير بشري.
@@ -34,7 +34,7 @@ import {
 	adminFsDeleteSectionRecord
 } from '$lib/server/nebrasUnifiedFirestoreAdmin.js';
 import {
-	isBlacklistedSectionName,
+	isBlockedSectionName,
 	computeBlacklistedIds
 } from './sectionsTree.js';
 
@@ -146,7 +146,7 @@ export async function createMainSectionAdmin(name) {
 			status: 400
 		});
 	}
-	if (isBlacklistedSectionName(cleanedName)) {
+	if (isBlockedSectionName(cleanedName)) {
 		throw blacklistError(
 			`اسم القسم "${cleanedName}" محظور — لا يمكن للمحرّك إنشاؤه.`
 		);
@@ -197,7 +197,7 @@ export async function createSubSectionAdmin(mainSectionId, name) {
 			status: 400
 		});
 	}
-	if (isBlacklistedSectionName(cleanedName)) {
+	if (isBlockedSectionName(cleanedName)) {
 		throw blacklistError(
 			`اسم القسم الفرعي "${cleanedName}" محظور — لا يمكن للمحرّك إنشاؤه.`
 		);
@@ -227,6 +227,7 @@ export async function createSubSectionAdmin(mainSectionId, name) {
 		id,
 		name: cleanedName,
 		main_section: mainNum,
+		order_index: 0,
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
@@ -261,7 +262,7 @@ export async function createSecondarySectionAdmin(subSectionId, name) {
 			status: 400
 		});
 	}
-	if (isBlacklistedSectionName(cleanedName)) {
+	if (isBlockedSectionName(cleanedName)) {
 		throw blacklistError(
 			`اسم القسم الثانوي "${cleanedName}" محظور — لا يمكن للمحرّك إنشاؤه.`
 		);
@@ -290,6 +291,7 @@ export async function createSecondarySectionAdmin(subSectionId, name) {
 		id,
 		name: cleanedName,
 		sub_section: subNum,
+		order_index: 0,
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
