@@ -392,6 +392,33 @@ async function processBook({ url, bookId, sections }) {
 	const createdSectionsIds = [];
 	let sectionsCreatedDelta = 0;
 
+	async function createSecondaryUnder(subSectionId, secondaryName, parentSubName = '') {
+		if (!subSectionId || !secondaryName) return null;
+		const created = await createSecondarySectionAdmin(subSectionId, secondaryName);
+		const id = String(created.id);
+		if (!created.alreadyExisted) {
+			createdSectionsIds.push(id);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			const parentSub = sections.index.subsById[String(subSectionId)] || { name: parentSubName };
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName: parentSub?.name || '',
+				sectionId: created.id,
+				parentId: subSectionId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSub?.name || ''}"`,
+				sectionId: created.id,
+				parentId: subSectionId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
+		return id;
+	}
+
 	if (decision.kind === 'create_main') {
 		// أعلى مستوى من الإنشاء — main + sub أوّل تحته في عمليّة واحدة.
 		const createdMain = await createMainSectionAdmin(decision.newMainName);
@@ -436,6 +463,8 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+
+		secondaryId = await createSecondaryUnder(subId, decision.newSecondaryName, createdSub.name);
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
@@ -461,35 +490,21 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+		secondaryId = await createSecondaryUnder(subId, decision.newSecondaryName, created.name);
 	} else if (decision.kind === 'create_secondary') {
 		subId = decision.subId;
-		const created = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
-		secondaryId = String(created.id);
-		if (!created.alreadyExisted) {
-			createdSectionsIds.push(secondaryId);
-			sectionsCreatedDelta += 1;
-			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-			const parentSub = sections.index.subsById[subId];
-			await notifyFcmSectionCreated({
-				level: 'secondary',
-				name: created.name,
-				parentName: parentSub?.name || '',
-				sectionId: created.id,
-				parentId: subId
-			});
-			await appendLog({
-				level: 'success',
-				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSub?.name || ''}"`,
-				sectionId: created.id,
-				parentId: subId,
-				kind: 'secondary_section_created'
-			}).catch(() => {});
-		}
+		secondaryId = await createSecondaryUnder(subId, decision.newSecondaryName);
 	}
 
 	if (!subId) {
 		throw Object.assign(new Error('فشل تحديد subId بعد التصنيف.'), {
 			reason: 'no_sub_after_classify',
+			status: 500
+		});
+	}
+	if (!secondaryId) {
+		throw Object.assign(new Error('فشل تحديد secondaryId بعد التصنيف — الهيكل الثلاثي إلزامي.'), {
+			reason: 'no_secondary_after_classify',
 			status: 500
 		});
 	}
@@ -503,6 +518,12 @@ async function processBook({ url, bookId, sections }) {
 	if (!main || !sub) {
 		throw Object.assign(new Error('main أو sub لم يُعثر عليه بعد التصنيف.'), {
 			reason: 'hierarchy_resolution_failed',
+			status: 500
+		});
+	}
+	if (!secondary) {
+		throw Object.assign(new Error('secondary لم يُعثر عليه بعد التصنيف — المحتوى لا يُرفع دون مستوى ثالث.'), {
+			reason: 'secondary_resolution_failed',
 			status: 500
 		});
 	}
@@ -522,12 +543,8 @@ async function processBook({ url, bookId, sections }) {
 		main_section_name: String(main.name || ''),
 		subsection: String(sub.id),
 		subsection_name: String(sub.name || ''),
-		...(secondary
-			? {
-					secondary_subsection: String(secondary.id),
-					secondary_subsection_name: String(secondary.name || '')
-				}
-			: { secondary_subsection: null })
+		secondary_subsection: String(secondary.id),
+		secondary_subsection_name: String(secondary.name || '')
 	};
 
 	const result = await adminUploadAndRegister({

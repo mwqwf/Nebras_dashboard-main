@@ -30,6 +30,7 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { existsSync } from 'node:fs';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -63,7 +64,8 @@ function readBoolEnv(name, fallback) {
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * نُجرّب أوّلاً `puppeteer-extra` مع stealth. الرجوع إلى Puppeteer العادي
+ * معطّل افتراضياً لأن Noor/Cloudflare يحتاجان Stealth Mode فعلياً.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,6 +83,12 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		if (readBoolEnv('NOOR_REQUIRE_STEALTH', true)) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'Stealth Mode مطلوب لكن puppeteer-extra أو puppeteer-extra-plugin-stealth غير متاح. شغّل npm install أو عطّل NOOR_REQUIRE_STEALTH صراحةً للتطوير فقط.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {
@@ -97,6 +105,22 @@ async function loadPuppeteer() {
 			return null;
 		}
 	}
+}
+
+function resolveExecutablePath() {
+	const configured =
+		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim();
+	if (configured) return configured;
+	for (const candidate of [
+		'/usr/local/bin/google-chrome',
+		'/usr/bin/google-chrome',
+		'/usr/bin/google-chrome-stable',
+		'/usr/bin/chromium',
+		'/usr/bin/chromium-browser'
+	]) {
+		if (existsSync(candidate)) return candidate;
+	}
+	return undefined;
 }
 
 /**
@@ -139,9 +163,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = resolveExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({
