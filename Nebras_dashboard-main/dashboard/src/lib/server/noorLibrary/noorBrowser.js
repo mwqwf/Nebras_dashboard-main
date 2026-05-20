@@ -20,6 +20,8 @@
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
  *                                          true إن كانت الحزمة موجودة).
+ *       NOOR_REQUIRE_STEALTH=true|false — إلزام puppeteer-extra + stealth
+ *                                          (افتراضي true لمحرك نور).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
  *
@@ -60,10 +62,12 @@ function readBoolEnv(name, fallback) {
 }
 
 /**
- * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
- * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
+ * يحاول تحميل puppeteer-extra + stealth plugin. في محرك نور نُلزم stealth
+ * افتراضياً لأنّ noor-book.com يعتمد فحوص bot/Cloudflare؛ يمكن تعطيل
+ * الإلزام فقط للتطوير المحلي عبر NOOR_REQUIRE_STEALTH=false.
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط
+ * فقط إذا سمحت البيئة بذلك.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,6 +85,12 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		if (readBoolEnv('NOOR_REQUIRE_STEALTH', true)) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'NOOR_REQUIRE_STEALTH=true لكن puppeteer-extra أو stealth plugin غير متاح. ثبّت puppeteer-extra و puppeteer-extra-plugin-stealth أو عطّل الإلزام محلياً.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {

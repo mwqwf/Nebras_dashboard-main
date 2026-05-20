@@ -41,7 +41,9 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بتدكصهك',
 	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
-	'دروس بترخيصه'
+	'دروس بترخيصه',
+	'دروس بترخيص',
+	'دروس بتراخيصها'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -69,7 +71,12 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (blocked.length >= 4 && (n.includes(blocked) || blocked.includes(n))) return true;
+	}
+	// typo معروف في قاعدة الأقسام: أي صيغة تحتوي هذا الجذر المشوّه تُحجب.
+	return n.includes('تدكص');
 }
 
 async function readLevel(level) {
@@ -225,7 +232,7 @@ export function serializeTreeAsPlainText(tree) {
 /**
  * يتحقّق أنّ المسار الذي اقترحه المصنِّف أو المستخدم سليم وفق القاعدة الذهبيّة:
  *   main_section_id موجود — sub.main_section === main_section_id —
- *   secondary.sub_section === sub.id (إن وُجد).
+ *   secondary_section_id موجود — secondary.sub_section === sub.id.
  *
  * @returns {{ valid: boolean, reason?: string, resolved?: { main: any, sub: any, secondary: any|null } }}
  */
@@ -244,13 +251,13 @@ export function validateHierarchyPath(
 		return { valid: false, reason: 'sub_does_not_belong_to_main' };
 	}
 
-	let secondary = null;
-	if (secondaryId) {
-		secondary = index.secondariesById[String(secondaryId)];
-		if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
-		if (String(secondary.sub_section ?? '') !== String(subId)) {
-			return { valid: false, reason: 'secondary_does_not_belong_to_sub' };
-		}
+	if (!secondaryId) {
+		return { valid: false, reason: 'secondary_section_required' };
+	}
+	const secondary = index.secondariesById[String(secondaryId)];
+	if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
+	if (String(secondary.sub_section ?? '') !== String(subId)) {
+		return { valid: false, reason: 'secondary_does_not_belong_to_sub' };
 	}
 
 	return { valid: true, resolved: { main, sub, secondary } };

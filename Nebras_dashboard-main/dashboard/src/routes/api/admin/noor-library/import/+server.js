@@ -13,7 +13,7 @@
  *   {
  *     url: string,                            // رابط صفحة الكتاب
  *     metadata: { title, description?, author?, thumbnail? },
- *     hierarchy: { mainId, subId, secondaryId? },     // المسار الذهبي المُختار
+ *     hierarchy: { mainId, subId, secondaryId },      // المسار الثلاثي الذهبي المُختار
  *     overrideFileUrl?: string,               // (نادر) لو أراد المستخدم تجاوز الكشف الآلي
  *     listed?: boolean
  *   }
@@ -173,12 +173,8 @@ export async function POST(event) {
 			main_section_name: String(main.name || ''),
 			subsection: String(sub.id),
 			subsection_name: String(sub.name || ''),
-			...(secondary
-				? {
-						secondary_subsection: String(secondary.id),
-						secondary_subsection_name: String(secondary.name || '')
-					}
-				: { secondary_subsection: null })
+			secondary_subsection: String(secondary.id),
+			secondary_subsection_name: String(secondary.name || '')
 		};
 
 		const result = await adminUploadAndRegister({
