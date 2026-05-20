@@ -57,19 +57,49 @@ async function readUpTo(res, maxBytes) {
 	return Buffer.concat(chunks.map((u) => Buffer.from(u))).subarray(0, maxBytes);
 }
 
-async function fetchRange(url, range, timeoutMs) {
-	const ac = new AbortController();
-	const timer = setTimeout(() => ac.abort(new Error('probe_timeout')), timeoutMs);
-	try {
-		return await fetch(url, {
-			method: 'GET',
-			redirect: 'follow',
-			signal: ac.signal,
-			headers: { 'User-Agent': USER_AGENT, Accept: '*/*', Range: range }
-		});
-	} finally {
-		clearTimeout(timer);
+function sleep(ms) {
+	return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * fetch لنطاق مع إعادة محاولة على أخطاء IA المؤقّتة (429/5xx). خادم
+ * archive.org يردّ أحياناً HTTP 500 عابراً على /download؛ محاولة ثانية بعد
+ * backoff قصير تنجح غالباً وتمنع إسقاط عنصر صالح.
+ */
+async function fetchRange(url, range, timeoutMs, { maxRetries = 2, baseDelayMs = 600 } = {}) {
+	let lastErr = null;
+	for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+		const ac = new AbortController();
+		const timer = setTimeout(() => ac.abort(new Error('probe_timeout')), timeoutMs);
+		try {
+			const res = await fetch(url, {
+				method: 'GET',
+				redirect: 'follow',
+				signal: ac.signal,
+				headers: { 'User-Agent': USER_AGENT, Accept: '*/*', Range: range }
+			});
+			const transient = res.status === 429 || (res.status >= 500 && res.status <= 599);
+			if (transient && attempt < maxRetries) {
+				try {
+					await res.body?.cancel();
+				} catch {
+					/* ignore */
+				}
+				clearTimeout(timer);
+				await sleep(baseDelayMs * Math.pow(2, attempt));
+				continue;
+			}
+			return res;
+		} catch (err) {
+			lastErr = err;
+			if (attempt >= maxRetries) throw err;
+			await sleep(baseDelayMs * Math.pow(2, attempt));
+		} finally {
+			clearTimeout(timer);
+		}
 	}
+	if (lastErr) throw lastErr;
+	throw new Error(`fetchRange exhausted retries for ${url}`);
 }
 
 /**

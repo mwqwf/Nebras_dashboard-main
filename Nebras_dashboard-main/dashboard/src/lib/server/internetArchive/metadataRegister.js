@@ -16,7 +16,6 @@
  * ╚══════════════════════════════════════════════════════════════════╝
  */
 
-import { FieldValue } from 'firebase-admin/firestore';
 import { adminFsWriteFileMirrorBoth } from '$lib/server/nebrasUnifiedFirestoreAdmin.js';
 import { stripUndefinedDeep } from '$lib/nebrasUnifiedSanitize.js';
 import {
@@ -96,7 +95,8 @@ export async function adminRegisterIaMetadata(args) {
 	const thumbnailProxyUrl = iaThumbUrl ? `${base}/api/proxy/ia/${fileId}?t=thumb` : null;
 
 	const finalContentType = contentType || 'application/octet-stream';
-	const createdAtIso = new Date().toISOString();
+	const now = Date.now();
+	const createdAtIso = new Date(now).toISOString();
 	const finalMetadata = {
 		...metadata,
 		id: fileId,
@@ -118,7 +118,11 @@ export async function adminRegisterIaMetadata(args) {
 		fileSize: Number(size) || 0,
 		metadata: finalMetadata,
 		// لا storagePath — لا شيء على Storage.
-		createdAt: FieldValue.serverTimestamp(),
+		// ⚠️ createdAt = millis رقميّة لا serverTimestamp(): الـ sentinel
+		// يمرّ على stripUndefinedDeep مرّتين فيتحوّل إلى {} ويُكسر الترتيب
+		// الزمنيّ في التطبيق (compareContentOldestFirst يعتمد createdAt).
+		// التطبيق يقبل num millis في _parseDate. القيمة حقيقيّة وقابلة للفرز.
+		createdAt: now,
 
 		// علامات داخليّة — لا يقرأها التطبيق (ولا تكسر schema).
 		__provider: 'internet_archive',

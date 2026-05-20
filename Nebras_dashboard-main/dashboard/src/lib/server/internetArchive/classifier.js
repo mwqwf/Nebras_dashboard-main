@@ -149,18 +149,24 @@ function pickBestHint(subjects, collections, nebrasContentType) {
 			return labeled;
 		}
 	}
-	// 2) ثم أوّل subject عربي — بعد تنظيفه (أوّل مقطع نظيف + قصّ)
-	for (const s of subjects || []) {
-		if (!/[؀-ۿ]/.test(String(s || ''))) continue;
-		const clean = sanitizeSectionName(s);
-		if (clean && clean.length >= 2) return clean;
+	// 2) ثم أوّل subject عربي — بعد تنظيفه (أوّل مقطع نظيف + قصّ).
+	//    ⚠️ للصوت/الفيديو نتخطّى هذه الخطوة: عناوين/مواضيع التلاوات هي
+	//    أسماء قُرّاء فريدة، فاشتقاق اسم القسم منها يُنتج قسماً لكلّ قارئ
+	//    (تشتّت شديد، يصعّب ظهور المحتوى). نتركها للكتب فقط حيث الـ subject
+	//    عادةً تصنيف حقيقيّ (فقه، تفسير، …).
+	if (nebrasContentType === 'document') {
+		for (const s of subjects || []) {
+			if (!/[؀-ۿ]/.test(String(s || ''))) continue;
+			const clean = sanitizeSectionName(s);
+			if (clean && clean.length >= 2) return clean;
+		}
 	}
 	// 3) ثم collection معرفة
 	for (const c of collections || []) {
 		const labeled = labelizeCollection(c);
 		if (labeled && labeled !== String(c).trim()) return labeled;
 	}
-	// 4) fallback افتراضي بحسب النوع
+	// 4) fallback افتراضي بحسب النوع (للصوت/الفيديو: قسم مستقرّ موحَّد)
 	return defaultSubNameByType(nebrasContentType);
 }
 
