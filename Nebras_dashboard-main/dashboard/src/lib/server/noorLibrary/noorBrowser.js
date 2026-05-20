@@ -20,6 +20,8 @@
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
  *                                          true إن كانت الحزمة موجودة).
+ *       NOOR_REQUIRE_STEALTH=true|false — لا يبدأ محرّك نور إلا عبر
+ *                                          puppeteer-extra + stealth (افتراضي true).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
  *
@@ -61,9 +63,8 @@ function readBoolEnv(name, fallback) {
 
 /**
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
- * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
- *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * null دون رمي خطأ. الافتراضي لمحرّك نور هو اشتراط stealth حتى لا يعمل
+ * crawler عاديّاً ضد Cloudflare ويُنتج فشلاً أو حظراً متكرراً.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,8 +82,14 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		const requireStealth = readBoolEnv('NOOR_REQUIRE_STEALTH', true);
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'puppeteer-extra أو stealth-plugin غير متاح — محرّك Noor يتطلب Stealth Mode. ثبّت puppeteer-extra وpuppeteer-extra-plugin-stealth أو اضبط NOOR_REQUIRE_STEALTH=false للتطوير فقط.';
+			return null;
+		}
+		// fallback تطويري فقط عند تعطيل NOOR_REQUIRE_STEALTH صراحةً.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;

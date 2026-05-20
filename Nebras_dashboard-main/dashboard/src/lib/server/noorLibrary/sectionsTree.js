@@ -61,6 +61,32 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+const COMPACT_BLACKLIST = new Set(
+	BLACKLISTED_SECTION_NAMES.map((name) => normalizeArabic(name).replace(/\s+/g, '')).filter(Boolean)
+);
+
+function levenshteinWithin(a, b, maxDistance = 2) {
+	if (!a || !b) return false;
+	if (Math.abs(a.length - b.length) > maxDistance) return false;
+	const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+	for (let i = 1; i <= a.length; i += 1) {
+		let left = i;
+		let diag = i - 1;
+		let rowMin = left;
+		for (let j = 1; j <= b.length; j += 1) {
+			const up = prev[j] + 1;
+			const replace = diag + (a[i - 1] === b[j - 1] ? 0 : 1);
+			const insert = left + 1;
+			diag = prev[j];
+			left = Math.min(up, replace, insert);
+			prev[j] = left;
+			if (left < rowMin) rowMin = left;
+		}
+		if (rowMin > maxDistance) return false;
+	}
+	return prev[b.length] <= maxDistance;
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +95,17 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	const compact = n.replace(/\s+/g, '');
+	for (const blocked of COMPACT_BLACKLIST) {
+		if (!blocked) continue;
+		if (compact.includes(blocked) || blocked.includes(compact)) return true;
+		if (blocked.length >= 8 && levenshteinWithin(compact, blocked, 2)) return true;
+	}
+	// نمط احترازي للأخطاء الإملائية حول "دروس بترخيصها": وجود "دروس"
+	// مع جذر "ترخيص" أو أحد أخطائه القريبة يكفي لمنع القسم آلياً.
+	if (n.includes('دروس') && /(ترخيص|ترخيس|برخيص|بتدكصهك)/u.test(n)) return true;
+	return false;
 }
 
 async function readLevel(level) {
