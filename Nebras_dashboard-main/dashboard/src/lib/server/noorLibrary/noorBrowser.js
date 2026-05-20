@@ -21,7 +21,10 @@
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
  *                                          true إن كانت الحزمة موجودة).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
- *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
+ *       PUPPETEER_EXECUTABLE_PATH      — مسار Chrome/Chromium مخصّص (اختياري).
+ *                                          إن تُرك فارغاً نكتشف مسارات Linux
+ *                                          الشائعة مثل /usr/bin/google-chrome.
+ *       NOOR_ALLOW_PLAIN_PUPPETEER     — تطوير فقط: السماح بلا Stealth.
  *
  * الواجهة العامّة:
  *   - isPuppeteerEnabled() → boolean
@@ -30,6 +33,8 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { constants } from 'node:fs';
+import { access } from 'node:fs/promises';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -51,6 +56,17 @@ const DEFAULT_USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
 	'(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+const CHROME_EXECUTABLE_CANDIDATES = Object.freeze([
+	'/usr/bin/google-chrome',
+	'/usr/bin/google-chrome-stable',
+	'/usr/local/bin/google-chrome',
+	'/usr/bin/chromium',
+	'/usr/bin/chromium-browser',
+	'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+	'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+	'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+]);
+
 function readBoolEnv(name, fallback) {
 	const raw = String(env[name] ?? process.env[name] ?? '').trim().toLowerCase();
 	if (raw === '') return fallback;
@@ -59,11 +75,44 @@ function readBoolEnv(name, fallback) {
 	return fallback;
 }
 
+async function isExecutableFile(path) {
+	if (!path) return false;
+	try {
+		await access(path, constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function resolveChromeExecutablePath() {
+	const state = getGlobalState();
+	const configured = String(
+		env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || ''
+	).trim();
+	if (configured) {
+		if (await isExecutableFile(configured)) return configured;
+		state.lastError = `PUPPETEER_EXECUTABLE_PATH غير صالح أو غير قابل للتنفيذ: ${configured}`;
+		throw Object.assign(new Error(state.lastError), {
+			reason: 'invalid_puppeteer_executable_path',
+			status: 500
+		});
+	}
+
+	for (const candidate of CHROME_EXECUTABLE_CANDIDATES) {
+		if (await isExecutableFile(candidate)) return candidate;
+	}
+
+	return undefined;
+}
+
 /**
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * نُشغّل `puppeteer-extra` مع Stealth افتراضياً. الرجوع إلى Puppeteer العادي
+ * يحتاج تفعيل NOOR_ALLOW_PLAIN_PUPPETEER=true صراحةً لأنّ مكتبة نور تعتمد
+ * Cloudflare ولا ينبغي تشغيل محرك السحب بلا Stealth في الإنتاج.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,8 +130,14 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		if (!readBoolEnv('NOOR_ALLOW_PLAIN_PUPPETEER', false)) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'puppeteer-extra + stealth مطلوبان لتشغيل محرك مكتبة نور. ثبّت الحزم أو فعّل NOOR_ALLOW_PLAIN_PUPPETEER=true للتطوير فقط.';
+			return null;
+		}
+
+		// retry with plain puppeteer للتطوير المحلي فقط عند تفعيله صراحةً.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
@@ -139,9 +194,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = await resolveChromeExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({

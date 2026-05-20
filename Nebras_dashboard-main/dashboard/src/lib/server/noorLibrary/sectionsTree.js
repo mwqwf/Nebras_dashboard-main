@@ -41,7 +41,10 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بتدكصهك',
 	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
-	'دروس بترخيصه'
+	'دروس بترخيصه',
+	'دروس بترخيص',
+	'دروس مرخصة',
+	'دروس مرخصه'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -61,6 +64,44 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+function levenshteinDistance(a, b) {
+	const left = String(a || '');
+	const right = String(b || '');
+	if (left === right) return 0;
+	if (!left) return right.length;
+	if (!right) return left.length;
+
+	const prev = Array.from({ length: right.length + 1 }, (_, i) => i);
+	const curr = Array(right.length + 1).fill(0);
+	for (let i = 1; i <= left.length; i += 1) {
+		curr[0] = i;
+		for (let j = 1; j <= right.length; j += 1) {
+			const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+			curr[j] = Math.min(
+				curr[j - 1] + 1,
+				prev[j] + 1,
+				prev[j - 1] + cost
+			);
+		}
+		for (let j = 0; j <= right.length; j += 1) prev[j] = curr[j];
+	}
+	return prev[right.length];
+}
+
+function looksLikeBlacklistedTypo(normalizedName) {
+	if (!normalizedName) return false;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (!blocked) continue;
+		if (normalizedName.includes(blocked) || blocked.includes(normalizedName)) return true;
+		const maxLen = Math.max(normalizedName.length, blocked.length);
+		if (maxLen < 8) continue;
+		const distance = levenshteinDistance(normalizedName, blocked);
+		const similarity = 1 - distance / maxLen;
+		if (similarity >= 0.72) return true;
+	}
+	return false;
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +110,7 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return NORMALIZED_BLACKLIST.has(n) || looksLikeBlacklistedTypo(n);
 }
 
 async function readLevel(level) {
