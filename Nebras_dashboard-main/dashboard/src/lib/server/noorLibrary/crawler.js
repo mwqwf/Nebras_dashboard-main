@@ -19,7 +19,12 @@
  * يحوي روابط كتب جديدة.
  */
 
-import { isPuppeteerEnabled, fetchHtmlViaBrowser } from './noorBrowser.js';
+import {
+	isPuppeteerEnabled,
+	isStealthRequired,
+	getPuppeteerLastError,
+	fetchHtmlViaBrowser
+} from './noorBrowser.js';
 
 const USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -76,7 +81,21 @@ function makeError(message, reason, status = 0, cause = null) {
  * فنُجرّبها أوّلاً ثمّ نعتمد على المتصفّح فقط عند الرفض.
  */
 async function fetchHtml(url) {
-	const usePuppeteer = await isPuppeteerEnabled().catch(() => false);
+	const stealthRequired = isStealthRequired();
+	let puppeteerProbeError = null;
+	const usePuppeteer = await isPuppeteerEnabled().catch((err) => {
+		puppeteerProbeError = err;
+		return false;
+	});
+	if (stealthRequired && !usePuppeteer) {
+		throw makeError(
+			getPuppeteerLastError() ||
+				'Stealth mode مطلوب لمكتبة نور، لكن Puppeteer Stealth غير متاح.',
+			'stealth_not_available',
+			501,
+			puppeteerProbeError
+		);
+	}
 
 	// إن كان Puppeteer متاحاً نُجرّبه مباشرةً للأمان (Noor خلف Cloudflare غالباً).
 	if (usePuppeteer) {
@@ -92,6 +111,14 @@ async function fetchHtml(url) {
 			);
 		} catch (err) {
 			if (err?.reason === 'cloudflare_challenge_persistent') throw err;
+			if (stealthRequired) {
+				throw makeError(
+					`فشل Puppeteer Stealth أثناء جلب مكتبة نور: ${err?.message || String(err)}`,
+					err?.reason || 'stealth_fetch_failed',
+					err?.status || 500,
+					err
+				);
+			}
 			// خطأ Puppeteer؟ نسقط لـ fetch العاديّ كاحتياط.
 		}
 	}

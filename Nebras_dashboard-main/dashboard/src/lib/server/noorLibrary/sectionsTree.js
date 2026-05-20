@@ -61,6 +61,42 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+function boundedEditDistance(a, b, maxDistance = 2) {
+	if (Math.abs(a.length - b.length) > maxDistance) return maxDistance + 1;
+	const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+	for (let i = 1; i <= a.length; i += 1) {
+		let left = i;
+		let diag = i - 1;
+		let rowMin = left;
+		for (let j = 1; j <= b.length; j += 1) {
+			const up = prev[j] + 1;
+			const insert = left + 1;
+			const replace = diag + (a[i - 1] === b[j - 1] ? 0 : 1);
+			diag = prev[j];
+			left = Math.min(up, insert, replace);
+			prev[j] = left;
+			if (left < rowMin) rowMin = left;
+		}
+		if (rowMin > maxDistance) return maxDistance + 1;
+	}
+	return prev[b.length];
+}
+
+function hasBlacklistedTypo(name) {
+	const n = normalizeArabic(name);
+	if (!n) return false;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (!blocked) continue;
+		if (n.includes(blocked) || blocked.includes(n)) return true;
+		// نطبّق fuzzy matching فقط على الأسماء القصيرة القريبة من صيغة
+		// القائمة السوداء حتى لا نحجب أقساماً شرعية بطريق الخطأ.
+		if (n.length <= blocked.length + 3 && boundedEditDistance(n, blocked, 2) <= 2) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +105,7 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return NORMALIZED_BLACKLIST.has(n) || hasBlacklistedTypo(n);
 }
 
 async function readLevel(level) {

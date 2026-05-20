@@ -20,6 +20,8 @@
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
  *                                          true إن كانت الحزمة موجودة).
+ *       NOOR_REQUIRE_STEALTH=true|false — اجعل stealth-plugin إلزامياً
+ *                                          (افتراضي true لمكتبة نور).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
  *
@@ -63,12 +65,15 @@ function readBoolEnv(name, fallback) {
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * الوضع الافتراضي لمكتبة نور يجعل Stealth إلزامياً، لأنّ الرجوع إلى
+ * `puppeteer` العاديّ يعطي انطباعاً كاذباً بأنّ المحرّك يعمل بينما يفشل
+ * عملياً أمام Cloudflare. يمكن تعطيله صراحةً بـ NOOR_REQUIRE_STEALTH=false.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
 	if (state.puppeteerModule) return state.puppeteerModule;
 	if (state.puppeteerEnabled === false) return null;
+	const requireStealth = readBoolEnv('NOOR_REQUIRE_STEALTH', true);
 
 	try {
 		// dynamic import لكي لا تنكسر البناءات حيث puppeteer غير مثبّت.
@@ -79,8 +84,15 @@ async function loadPuppeteer() {
 		puppeteerExtra.use(StealthPlugin());
 		state.puppeteerModule = puppeteerExtra;
 		state.puppeteerEnabled = true;
+		state.lastError = null;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'Stealth mode مطلوب لمحرّك مكتبة نور، لكن puppeteer-extra أو puppeteer-extra-plugin-stealth غير متاح.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {
@@ -112,6 +124,10 @@ export async function isPuppeteerEnabled() {
 	if (!enabledFlag) return false;
 	const mod = await loadPuppeteer();
 	return mod !== null;
+}
+
+export function isStealthRequired() {
+	return readBoolEnv('NOOR_REQUIRE_STEALTH', true);
 }
 
 async function getBrowser() {

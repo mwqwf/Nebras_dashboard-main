@@ -18,6 +18,8 @@
 
 import {
 	isPuppeteerEnabled,
+	isStealthRequired,
+	getPuppeteerLastError,
 	fetchHtmlViaBrowser,
 	downloadBufferViaBrowser,
 	findBookFileUrlViaBrowser
@@ -85,7 +87,21 @@ function makeError(message, reason, status = 0, cause = null) {
  * في كلتا الحالتيْن يفشل بوضوح لو وُجد تحدّي Cloudflare في الـ HTML.
  */
 async function fetchHtml(url) {
-	const usePuppeteer = await isPuppeteerEnabled().catch(() => false);
+	const stealthRequired = isStealthRequired();
+	let puppeteerProbeError = null;
+	const usePuppeteer = await isPuppeteerEnabled().catch((err) => {
+		puppeteerProbeError = err;
+		return false;
+	});
+	if (stealthRequired && !usePuppeteer) {
+		throw makeError(
+			getPuppeteerLastError() ||
+				'Stealth mode مطلوب لمكتبة نور، لكن Puppeteer Stealth غير متاح.',
+			'stealth_not_available',
+			501,
+			puppeteerProbeError
+		);
+	}
 
 	if (usePuppeteer) {
 		try {
@@ -100,6 +116,14 @@ async function fetchHtml(url) {
 			);
 		} catch (err) {
 			if (err?.reason === 'cloudflare_challenge_persistent') throw err;
+			if (stealthRequired) {
+				throw makeError(
+					`فشل Puppeteer Stealth أثناء جلب مكتبة نور: ${err?.message || String(err)}`,
+					err?.reason || 'stealth_fetch_failed',
+					err?.status || 500,
+					err
+				);
+			}
 			// نسقط لـ fetch العاديّ كمحاولة أخيرة.
 		}
 	}
