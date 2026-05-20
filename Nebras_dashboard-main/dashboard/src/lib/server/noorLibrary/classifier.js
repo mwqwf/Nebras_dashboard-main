@@ -22,6 +22,306 @@ function normalizeArabic(s) {
 		.toLowerCase();
 }
 
+const STOP_WORDS = new Set([
+	'كتاب',
+	'كتب',
+	'في',
+	'من',
+	'الى',
+	'علي',
+	'عن',
+	'مع',
+	'هذا',
+	'هذه',
+	'ذلك',
+	'تلك',
+	'دار',
+	'مكتبه',
+	'نور',
+	'اسلاميه',
+	'الاسلاميه',
+	'العربيه',
+	'العربي'
+]);
+
+/**
+ * خريطة موضوعيّة محافظة تمنع خلط المجالات المتقاربة ظاهرياً:
+ * الآداب/الأخلاق لا تُرمى في الفقه، والتاريخ لا يُرمى في العقيدة، وهكذا.
+ */
+const TAXONOMY_RULES = Object.freeze([
+	{
+		id: 'quran',
+		mainNames: ['القرآن الكريم وعلومه', 'التفسير وعلوم القرآن', 'علوم القرآن'],
+		subNames: ['التفسير وعلوم القرآن', 'التفسير', 'علوم القرآن'],
+		secondaryNames: ['التفسير وعلوم القرآن'],
+		keywords: ['قران', 'القران', 'تفسير', 'تفاسير', 'المصحف', 'تجويد', 'قراءات', 'اسباب النزول']
+	},
+	{
+		id: 'hadith',
+		mainNames: ['الحديث الشريف وعلومه', 'الحديث وعلومه', 'السنة النبوية'],
+		subNames: ['الحديث وعلومه', 'علوم الحديث', 'كتب الحديث'],
+		secondaryNames: ['علوم الحديث وشروحه'],
+		keywords: ['حديث', 'احاديث', 'سنه', 'السنه', 'اسناد', 'رواه', 'البخاري', 'مسلم', 'سنن', 'صحيح']
+	},
+	{
+		id: 'aqeedah',
+		mainNames: ['العقيدة الإسلامية', 'العقيدة', 'التوحيد'],
+		subNames: ['العقيدة والتوحيد', 'التوحيد', 'العقيدة'],
+		secondaryNames: ['مسائل العقيدة والتوحيد'],
+		keywords: ['عقيده', 'توحيد', 'ايمان', 'اسماء الله', 'صفات', 'القدر', 'الشرك', 'الايمان']
+	},
+	{
+		id: 'usul-fiqh',
+		mainNames: ['الفقه الإسلامي', 'الفقه وأصوله', 'الفقه الاسلامي'],
+		subNames: ['أصول الفقه', 'اصول الفقه', 'الفقه وأصوله'],
+		secondaryNames: ['أصول الفقه والقواعد الفقهية'],
+		keywords: ['اصول الفقه', 'القواعد الفقهيه', 'مقاصد الشريعه', 'استنباط', 'الاجتهاد', 'القياس']
+	},
+	{
+		id: 'fiqh',
+		mainNames: ['الفقه الإسلامي', 'الفقه وأصوله', 'الفقه الاسلامي'],
+		subNames: ['الفقه', 'الفقه وأصوله', 'الأحكام الفقهية'],
+		secondaryNames: ['أحكام فقهية عامة'],
+		keywords: ['فقه', 'احكام', 'طهاره', 'صلاه', 'زكاه', 'صيام', 'حج', 'معاملات', 'نكاح', 'طلاق', 'فتاوي']
+	},
+	{
+		id: 'seerah',
+		mainNames: ['السيرة النبوية', 'السيرة والشمائل', 'السيرة'],
+		subNames: ['السيرة النبوية', 'الشمائل النبوية'],
+		secondaryNames: ['السيرة والشمائل'],
+		keywords: ['سيره', 'النبي', 'الرسول', 'محمد', 'شمائل', 'غزوات', 'الهجره']
+	},
+	{
+		id: 'history',
+		mainNames: ['التاريخ الإسلامي', 'التاريخ والسير', 'التاريخ'],
+		subNames: ['التاريخ الإسلامي', 'التراجم والسير'],
+		secondaryNames: ['أحداث وتراجم تاريخية'],
+		keywords: ['تاريخ', 'تراجم', 'سير اعلام', 'اعلام', 'خلفاء', 'دوله', 'اندلس', 'فتوح']
+	},
+	{
+		id: 'adab-akhlaq',
+		mainNames: ['التزكية والآداب والأخلاق', 'الآداب والأخلاق', 'التربية والتزكية'],
+		subNames: ['الآداب الشرعية', 'الأخلاق والآداب', 'التزكية'],
+		secondaryNames: ['طلب العلم وآدابه', 'آداب طالب العلم', 'النصائح والتوجيهات العلمية'],
+		keywords: [
+			'اداب',
+			'اخلاق',
+			'تزكيه',
+			'رقائق',
+			'نصيحه',
+			'نصائح',
+			'توجيهات',
+			'تعليمات علميه',
+			'طلب العلم',
+			'طالب العلم',
+			'العلماء',
+			'العلميه'
+		]
+	},
+	{
+		id: 'arabic',
+		mainNames: ['اللغة العربية', 'علوم اللغة العربية', 'العربية'],
+		subNames: ['النحو والصرف', 'اللغة العربية وعلومها'],
+		secondaryNames: ['علوم اللغة العربية'],
+		keywords: ['لغه عربيه', 'نحو', 'صرف', 'بلاغه', 'اعراب', 'معاجم', 'ادب عربي']
+	},
+	{
+		id: 'dawah',
+		mainNames: ['الدعوة والإرشاد', 'الدعوة الإسلامية'],
+		subNames: ['الدعوة والإرشاد', 'الخطب والدروس'],
+		secondaryNames: ['الدعوة والتوجيه'],
+		keywords: ['دعوه', 'ارشاد', 'خطب', 'محاضرات', 'دروس', 'وعظ']
+	},
+	{
+		id: 'general-islamic',
+		mainNames: ['المكتبة الإسلامية العامة', 'كتب إسلامية', 'الإسلام العام'],
+		subNames: ['موضوعات إسلامية متنوعة', 'كتب إسلامية عامة'],
+		secondaryNames: ['متفرقات إسلامية'],
+		keywords: ['اسلام', 'اسلاميه', 'الشريعه', 'الدين']
+	}
+]);
+
+function tokenizeNormalized(text) {
+	return normalizeArabic(text)
+		.split(' ')
+		.map((t) => t.trim())
+		.filter((t) => t.length >= 3 && !STOP_WORDS.has(t));
+}
+
+function contextForBook(bookMeta) {
+	return normalizeArabic(
+		[
+			bookMeta?.title,
+			bookMeta?.author,
+			bookMeta?.description,
+			...(bookMeta?.categoryHints || [])
+		]
+			.filter(Boolean)
+			.join(' ')
+	);
+}
+
+function scorePhrase(haystack, phrase) {
+	const n = normalizeArabic(phrase);
+	if (!n) return 0;
+	if (haystack.includes(n)) return n.includes(' ') ? 8 : 5;
+	let score = 0;
+	for (const token of tokenizeNormalized(n)) {
+		if (haystack.includes(token)) score += 2;
+	}
+	return score;
+}
+
+function scoreRule(rule, bookMeta) {
+	const haystack = contextForBook(bookMeta);
+	let score = 0;
+	for (const kw of rule.keywords || []) score += scorePhrase(haystack, kw);
+	for (const name of [
+		...(rule.mainNames || []),
+		...(rule.subNames || []),
+		...(rule.secondaryNames || [])
+	]) {
+		score += scorePhrase(haystack, name) * 0.5;
+	}
+	return score;
+}
+
+function pickTaxonomyRule(bookMeta) {
+	let best = null;
+	let bestScore = 0;
+	for (const rule of TAXONOMY_RULES) {
+		const score = scoreRule(rule, bookMeta);
+		if (score > bestScore) {
+			bestScore = score;
+			best = rule;
+		}
+	}
+	return best && bestScore >= 5 ? { rule: best, score: bestScore } : null;
+}
+
+function nodeNameScore(nodeName, candidateNames = [], haystack = '') {
+	const n = normalizeArabic(nodeName);
+	if (!n) return 0;
+	let score = 0;
+	for (const candidate of candidateNames) {
+		const c = normalizeArabic(candidate);
+		if (!c) continue;
+		if (n === c) score += 40;
+		else if (n.includes(c) || c.includes(n)) score += 28;
+		else {
+			const nodeTokens = new Set(tokenizeNormalized(n));
+			const candTokens = new Set(tokenizeNormalized(c));
+			score += tokenSetsOverlapRatio(nodeTokens, candTokens) * 18;
+		}
+	}
+	if (haystack && haystack.includes(n) && n.length >= 4) score += 8;
+	return score;
+}
+
+function pickBestNode(nodes = [], candidateNames = [], haystack = '', minScore = 12) {
+	let best = null;
+	let bestScore = 0;
+	for (const node of nodes) {
+		const score = nodeNameScore(node?.name, candidateNames, haystack);
+		if (score > bestScore) {
+			bestScore = score;
+			best = node;
+		}
+	}
+	return best && bestScore >= minScore ? { node: best, score: bestScore } : null;
+}
+
+function cleanSectionName(name) {
+	return String(name || '')
+		.replace(/\s+/g, ' ')
+		.replace(/^[\s:؛،,.-]+|[\s:؛،,.-]+$/g, '')
+		.slice(0, 80)
+		.trim();
+}
+
+function categoryHintName(bookMeta) {
+	const hints = (bookMeta?.categoryHints || [])
+		.map(cleanSectionName)
+		.filter((h) => h && !/^(الرئيسية|home|كتب|مكتبة نور)$/i.test(h));
+	const direct = hints.find((h) => normalizeArabic(h).length >= 5);
+	if (!direct) return '';
+	return cleanSectionName(
+		direct
+			.replace(/^كتب\s+(?:في|عن)?\s*/u, '')
+			.replace(/^الكتب\s+(?:في|عن)?\s*/u, '')
+	);
+}
+
+function proposedSecondaryName(rule, bookMeta) {
+	const hint = categoryHintName(bookMeta);
+	if (hint && normalizeArabic(hint) !== 'كتب اسلاميه') return hint;
+	return cleanSectionName(rule?.secondaryNames?.[0] || seriesStemFromTitle(bookMeta?.title || '') || 'متفرقات');
+}
+
+function classifyByTaxonomy(sections, bookMeta) {
+	const picked = pickTaxonomyRule(bookMeta);
+	if (!picked) return null;
+
+	const { rule, score } = picked;
+	const haystack = contextForBook(bookMeta);
+	const secondaryName = proposedSecondaryName(rule, bookMeta);
+	const mainPick = pickBestNode(sections.tree, rule.mainNames, haystack, 12);
+	if (!mainPick) {
+		return {
+			kind: 'create_main',
+			newMainName: rule.mainNames[0],
+			newSubName: rule.subNames[0],
+			newSecondaryName: secondaryName,
+			confidence: Math.min(0.68 + score * 0.01, 0.94),
+			reasoning: `تصنيف موضوعي (${rule.id}) — لا يوجد قسم رئيسي مناسب، سيُنشأ المسار الثلاثي.`,
+			method: 'taxonomy'
+		};
+	}
+
+	const main = mainPick.node;
+	const subPick = pickBestNode(main.children || [], rule.subNames, haystack, 12);
+	if (!subPick) {
+		return {
+			kind: 'create_sub',
+			mainId: String(main.id),
+			newSubName: rule.subNames[0],
+			newSecondaryName: secondaryName,
+			confidence: Math.min(0.7 + score * 0.01, 0.95),
+			reasoning: `تصنيف موضوعي (${rule.id}) — القسم الرئيسي موجود ولا يوجد فرعي مناسب.`,
+			method: 'taxonomy'
+		};
+	}
+
+	const sub = subPick.node;
+	const secPick = pickBestNode(
+		sub.children || [],
+		[secondaryName, ...(rule.secondaryNames || [])],
+		haystack,
+		10
+	);
+	if (!secPick) {
+		return {
+			kind: 'create_secondary',
+			mainId: String(main.id),
+			subId: String(sub.id),
+			newSecondaryName: secondaryName,
+			confidence: Math.min(0.72 + score * 0.01, 0.96),
+			reasoning: `تصنيف موضوعي (${rule.id}) — المسار موجود ويحتاج قسماً ثانوياً مناسباً.`,
+			method: 'taxonomy'
+		};
+	}
+
+	return {
+		kind: 'existing',
+		mainId: String(main.id),
+		subId: String(sub.id),
+		secondaryId: String(secPick.node.id),
+		confidence: Math.min(0.76 + score * 0.01, 0.98),
+		reasoning: `تصنيف موضوعي (${rule.id}) إلى مسار ثلاثي موجود.`,
+		method: 'taxonomy'
+	};
+}
+
 /**
  * Heuristic fallback — يعطي درجة لكلّ section بمقدار
  * تقاطع كلماتها مع (title + categoryHints + description). يختار أعلى main
@@ -75,7 +375,12 @@ function classifyHeuristic({ tree, index }, bookMeta) {
 		secondaryId: bestSec ? bestSec.id : null,
 		confidence: Math.min(0.5 + bestMainScore * 0.05 + bestSubScore * 0.05, 0.85),
 		reasoning: 'heuristic مطابقة محليّة',
-		method: 'heuristic'
+		method: 'heuristic',
+		scores: {
+			main: bestMainScore,
+			sub: bestSubScore,
+			secondary: bestSecScore
+		}
 	};
 }
 
@@ -214,15 +519,18 @@ export async function classifyAutonomous(sections, bookMeta) {
 			{ reason: 'empty_sections_tree', status: 412 }
 		);
 	}
+	const taxonomyDecision = classifyByTaxonomy(sections, bookMeta);
+	if (taxonomyDecision) return taxonomyDecision;
+
 	const sug = classifyHeuristic(sections, bookMeta);
 	if (!sug) {
 		return {
-			kind: 'existing',
-			mainId: sections.tree[0].id,
-			subId: sections.tree[0].children[0]?.id || '',
-			secondaryId: null,
+			kind: 'create_main',
+			newMainName: 'المكتبة الإسلامية العامة',
+			newSubName: 'موضوعات إسلامية متنوعة',
+			newSecondaryName: proposedSecondaryName(TAXONOMY_RULES.at(-1), bookMeta),
 			confidence: 0.1,
-			reasoning: 'لم تعطِ خوارزميّة المطابقة نتيجة — أوّل قسم رئيسي/فرعي.',
+			reasoning: 'لم تعطِ خوارزميّة المطابقة نتيجة آمنة — إنشاء مسار عام ثلاثي بدلاً من الخلط.',
 			method: 'heuristic'
 		};
 	}
@@ -233,6 +541,17 @@ export async function classifyAutonomous(sections, bookMeta) {
 			minScore: 9
 		});
 		if (autoSec) secId = autoSec.id;
+	}
+	if (!secId) {
+		return {
+			kind: 'create_secondary',
+			mainId: String(sug.mainId),
+			subId: String(sug.subId),
+			newSecondaryName: proposedSecondaryName(TAXONOMY_RULES.at(-1), bookMeta),
+			confidence: Math.max(0.35, Math.min(sug.confidence, 0.7)),
+			reasoning: 'وجد المصنّف قسماً رئيسياً وفرعياً فقط — إنشاء قسم ثانوي لإكمال الهيكل الثلاثي.',
+			method: 'heuristic'
+		};
 	}
 	return {
 		kind: 'existing',

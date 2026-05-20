@@ -44,6 +44,14 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بترخيصه'
 ]);
 
+const BLACKLISTED_SECTION_NAME_FRAGMENTS = Object.freeze([
+	'بتدكصهك',
+	'بترخيصها',
+	'بترخيصه',
+	'ترخيصها',
+	'ترخيصه'
+]);
+
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
 function normalizeArabic(s) {
 	return String(s || '')
@@ -60,6 +68,28 @@ function normalizeArabic(s) {
 const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
+const NORMALIZED_BLACKLIST_FRAGMENTS = BLACKLISTED_SECTION_NAME_FRAGMENTS
+	.map(normalizeArabic)
+	.filter(Boolean);
+
+function levenshteinLimited(a, b, limit = 2) {
+	if (Math.abs(a.length - b.length) > limit) return limit + 1;
+	const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+	for (let i = 1; i <= a.length; i += 1) {
+		let diagonal = prev[0];
+		prev[0] = i;
+		let rowMin = prev[0];
+		for (let j = 1; j <= b.length; j += 1) {
+			const old = prev[j];
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diagonal + cost);
+			diagonal = old;
+			if (prev[j] < rowMin) rowMin = prev[j];
+		}
+		if (rowMin > limit) return limit + 1;
+	}
+	return prev[b.length];
+}
 
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
@@ -69,7 +99,10 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	if ([...NORMALIZED_BLACKLIST].some((blocked) => n.includes(blocked))) return true;
+	if (NORMALIZED_BLACKLIST_FRAGMENTS.some((fragment) => n.includes(fragment))) return true;
+	return [...NORMALIZED_BLACKLIST].some((blocked) => levenshteinLimited(n, blocked, 2) <= 2);
 }
 
 async function readLevel(level) {
