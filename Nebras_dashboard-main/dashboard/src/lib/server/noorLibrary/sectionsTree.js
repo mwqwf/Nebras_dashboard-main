@@ -41,7 +41,11 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بتدكصهك',
 	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
-	'دروس بترخيصه'
+	'دروس بترخيصه',
+	'دروس بترخيص',
+	'دروس بالترخيص',
+	'دروس مرخصة',
+	'دروس مرخصه'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -61,6 +65,44 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+function levenshteinDistance(a, b, maxDistance = 3) {
+	if (a === b) return 0;
+	if (!a || !b) return Math.max(a.length, b.length);
+	if (Math.abs(a.length - b.length) > maxDistance) return maxDistance + 1;
+
+	let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+	for (let i = 1; i <= a.length; i += 1) {
+		const curr = [i];
+		let rowBest = curr[0];
+		for (let j = 1; j <= b.length; j += 1) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			const value = Math.min(
+				prev[j] + 1,
+				curr[j - 1] + 1,
+				prev[j - 1] + cost
+			);
+			curr[j] = value;
+			if (value < rowBest) rowBest = value;
+		}
+		if (rowBest > maxDistance) return maxDistance + 1;
+		prev = curr;
+	}
+	return prev[b.length];
+}
+
+function isLikelyBlacklistedTypo(normalizedName) {
+	if (!normalizedName || normalizedName.length < 8) return false;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (!blocked) continue;
+		if (normalizedName.includes(blocked) || blocked.includes(normalizedName)) return true;
+		const maxDistance = Math.max(2, Math.ceil(blocked.length * 0.22));
+		if (levenshteinDistance(normalizedName, blocked, maxDistance) <= maxDistance) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +111,7 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return NORMALIZED_BLACKLIST.has(n) || isLikelyBlacklistedTypo(n);
 }
 
 async function readLevel(level) {
@@ -245,12 +287,11 @@ export function validateHierarchyPath(
 	}
 
 	let secondary = null;
-	if (secondaryId) {
-		secondary = index.secondariesById[String(secondaryId)];
-		if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
-		if (String(secondary.sub_section ?? '') !== String(subId)) {
-			return { valid: false, reason: 'secondary_does_not_belong_to_sub' };
-		}
+	if (!secondaryId) return { valid: false, reason: 'secondary_section_required' };
+	secondary = index.secondariesById[String(secondaryId)];
+	if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
+	if (String(secondary.sub_section ?? '') !== String(subId)) {
+		return { valid: false, reason: 'secondary_does_not_belong_to_sub' };
 	}
 
 	return { valid: true, resolved: { main, sub, secondary } };
