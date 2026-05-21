@@ -15,13 +15,13 @@
  *   • Singleton على مستوى الـ Node process (محفوظ في globalThis لتجاوز HMR).
  *   • متصفّح واحد + N صفحات على حسب الحاجة. كلّ صفحة تُغلَق بعد الاستعمال
  *     لتفادي تسرّب الذاكرة (لا context pooling لتبسيط الإدارة).
- *   • Puppeteer + plugins يُحمَّلان عبر **dynamic import lazy** لكي لا
+ *   • Puppeteer + stealth plugin يُحمَّلان عبر **dynamic import lazy** لكي لا
  *     تنكسر بناءات serverless (Vercel) عند غيابهم.
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
  *                                          true إن كانت الحزمة موجودة).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
- *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
+ *       PUPPETEER_EXECUTABLE_PATH      — مسار Chrome/Chromium مخصّص (اختياري).
  *
  * الواجهة العامّة:
  *   - isPuppeteerEnabled() → boolean
@@ -63,7 +63,8 @@ function readBoolEnv(name, fallback) {
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * لا نرجع إلى puppeteer العاديّ: محرّك Noor يجب أن يعمل دائماً بوضع stealth
+ * حتى لا يرسل جلباً آلياً مكشوفاً إلى Cloudflare.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -79,23 +80,13 @@ async function loadPuppeteer() {
 		puppeteerExtra.use(StealthPlugin());
 		state.puppeteerModule = puppeteerExtra;
 		state.puppeteerEnabled = true;
+		state.lastError = null;
 		return puppeteerExtra;
-	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
-		try {
-			const mod = await import('puppeteer');
-			state.puppeteerModule = mod.default || mod;
-			state.puppeteerEnabled = true;
-			state.lastError =
-				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
-			return state.puppeteerModule;
-		} catch (errPlain) {
-			state.puppeteerEnabled = false;
-			state.lastError =
-				'لا puppeteer ولا puppeteer-extra مثبّتَيْن. شغّل: npm i -D puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
-			return null;
-		}
+	} catch {
+		state.puppeteerEnabled = false;
+		state.lastError =
+			'Stealth Mode غير متاح: ثبّت puppeteer-extra و puppeteer-extra-plugin-stealth واضبط PUPPETEER_EXECUTABLE_PATH عند الحاجة.';
+		return null;
 	}
 }
 
