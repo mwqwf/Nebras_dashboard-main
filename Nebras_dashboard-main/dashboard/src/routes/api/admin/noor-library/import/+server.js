@@ -105,7 +105,8 @@ export async function POST(event) {
 				subId: hierarchy.subId,
 				secondaryId: hierarchy.secondaryId || null
 			},
-			sections.index
+			sections.index,
+			{ requireSecondary: true }
 		);
 		if (!validation.valid) {
 			await writeJobPatch(jobId, { status: 'failed', failedReason: validation.reason }).catch(() => {});

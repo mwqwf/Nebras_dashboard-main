@@ -41,7 +41,10 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بتدكصهك',
 	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
-	'دروس بترخيصه'
+	'دروس بترخيصه',
+	'دروس بترخيسها',
+	'دروس بترخيسه',
+	'دروس برخصتها'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -61,6 +64,12 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+const NORMALIZED_BLACKLIST_PATTERNS = Object.freeze([
+	/^دروس بتدكصهك$/u,
+	/^دروس بترخي[صس](?:ها|ه)?$/u,
+	/^دروس برخصتها$/u
+]);
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +78,9 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	if ([...NORMALIZED_BLACKLIST].some((blocked) => blocked && n.includes(blocked))) return true;
+	return NORMALIZED_BLACKLIST_PATTERNS.some((pattern) => pattern.test(n));
 }
 
 async function readLevel(level) {
@@ -231,8 +242,10 @@ export function serializeTreeAsPlainText(tree) {
  */
 export function validateHierarchyPath(
 	{ mainId, subId, secondaryId },
-	index
+	index,
+	options = {}
 ) {
+	const requireSecondary = Boolean(options.requireSecondary);
 	if (!mainId) return { valid: false, reason: 'main_section_required' };
 	const main = index.mainsById[String(mainId)];
 	if (!main) return { valid: false, reason: 'main_section_not_found' };
@@ -245,6 +258,9 @@ export function validateHierarchyPath(
 	}
 
 	let secondary = null;
+	if (requireSecondary && !secondaryId) {
+		return { valid: false, reason: 'secondary_section_required' };
+	}
 	if (secondaryId) {
 		secondary = index.secondariesById[String(secondaryId)];
 		if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
