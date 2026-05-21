@@ -22,6 +22,8 @@
  *                                          true إن كانت الحزمة موجودة).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
+ *       NOOR_REQUIRE_STEALTH=true|false — منع الرجوع إلى Puppeteer عادي
+ *                                          (افتراضي true لمكتبة نور).
  *
  * الواجهة العامّة:
  *   - isPuppeteerEnabled() → boolean
@@ -60,15 +62,15 @@ function readBoolEnv(name, fallback) {
 }
 
 /**
- * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
- * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
- *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * يحاول تحميل puppeteer-extra + stealth plugin. مكتبة نور تحتاج Stealth
+ * فعلياً لتجاوز Cloudflare، لذلك الرجوع إلى Puppeteer عادي معطّل افتراضياً.
+ * يمكن تعطيله فقط عبر NOOR_REQUIRE_STEALTH=false أثناء التطوير المحلي.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
 	if (state.puppeteerModule) return state.puppeteerModule;
 	if (state.puppeteerEnabled === false) return null;
+	const requireStealth = readBoolEnv('NOOR_REQUIRE_STEALTH', true);
 
 	try {
 		// dynamic import لكي لا تنكسر البناءات حيث puppeteer غير مثبّت.
@@ -81,14 +83,19 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'Puppeteer Stealth مطلوب لمحرّك Noor Library. ثبّت puppeteer-extra و puppeteer-extra-plugin-stealth أو اضبط NOOR_REQUIRE_STEALTH=false للتطوير فقط.';
+			return null;
+		}
+		// retry with plain puppeteer للتطوير فقط عند تعطيل NOOR_REQUIRE_STEALTH.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
 			state.puppeteerEnabled = true;
 			state.lastError =
-				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
+				'NOOR_REQUIRE_STEALTH=false — استعمال puppeteer العاديّ بدون stealth للتطوير فقط.';
 			return state.puppeteerModule;
 		} catch (errPlain) {
 			state.puppeteerEnabled = false;

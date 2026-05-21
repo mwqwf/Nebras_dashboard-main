@@ -81,6 +81,16 @@ export async function POST(event) {
 	const userMetadata = body?.metadata || {};
 	const overrideFileUrl = String(body?.overrideFileUrl || '').trim();
 	const listed = body?.listed !== false;
+	if (!hierarchy.secondaryId) {
+		return json(
+			{
+				error: 'invalid_hierarchy',
+				reason: 'secondary_section_required',
+				message: 'استيراد مكتبة نور يلتزم دائماً بالمسار الثلاثي main → sub → secondary → content.'
+			},
+			{ status: 422 }
+		);
+	}
 
 	const jobId = makeJobId();
 	const startedAt = Date.now();
@@ -173,12 +183,8 @@ export async function POST(event) {
 			main_section_name: String(main.name || ''),
 			subsection: String(sub.id),
 			subsection_name: String(sub.name || ''),
-			...(secondary
-				? {
-						secondary_subsection: String(secondary.id),
-						secondary_subsection_name: String(secondary.name || '')
-					}
-				: { secondary_subsection: null })
+			secondary_subsection: String(secondary.id),
+			secondary_subsection_name: String(secondary.name || '')
 		};
 
 		const result = await adminUploadAndRegister({

@@ -41,7 +41,9 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بتدكصهك',
 	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
-	'دروس بترخيصه'
+	'دروس بترخيصه',
+	'دروس بتراخيصها',
+	'دروس بترخيضها'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -61,6 +63,11 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+const BLACKLISTED_SECTION_PATTERNS = Object.freeze([
+	// القسم الأصلي ونسخه ذات الأخطاء الإملائية بعد التطبيع: دروس بترخيصها.
+	/^دروس ب(?:ترخيص|تراخيص|ترخيض|تدكصهك)/u
+]);
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +76,7 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return NORMALIZED_BLACKLIST.has(n) || BLACKLISTED_SECTION_PATTERNS.some((re) => re.test(n));
 }
 
 async function readLevel(level) {
