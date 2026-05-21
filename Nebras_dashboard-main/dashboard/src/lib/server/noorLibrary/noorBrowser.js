@@ -22,6 +22,7 @@
  *                                          true إن كانت الحزمة موجودة).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
+ *       NOOR_REQUIRE_STEALTH=true|false — اجعل Stealth إلزامياً (افتراضي true).
  *
  * الواجهة العامّة:
  *   - isPuppeteerEnabled() → boolean
@@ -63,7 +64,8 @@ function readBoolEnv(name, fallback) {
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * نُجرّب أوّلاً `puppeteer-extra` مع stealth. الرجوع لـ `puppeteer` العاديّ
+ * متاح فقط إذا ضُبط NOOR_REQUIRE_STEALTH=false للتشخيص المحلي.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,8 +83,14 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		const requireStealth = readBoolEnv('NOOR_REQUIRE_STEALTH', true);
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'puppeteer-extra أو stealth plugin غير متاح — محرك Noor يتطلب Stealth Mode. شغّل: npm i -D puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
+			return null;
+		}
+		// retry with plain puppeteer (بدون stealth) فقط إذا عُطّل الشرط صراحةً.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;

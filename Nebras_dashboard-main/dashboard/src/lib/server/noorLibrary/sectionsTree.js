@@ -44,6 +44,12 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بترخيصه'
 ]);
 
+const BLACKLISTED_SECTION_PATTERNS = Object.freeze([
+	/^دروس\s+بترخيص[هة]?$/u,
+	/^دروس\s+بترخ[يى]ص[هة]?$/u,
+	/^دروس\s+بتدكصهك$/u
+]);
+
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
 function normalizeArabic(s) {
 	return String(s || '')
@@ -69,7 +75,16 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	if (BLACKLISTED_SECTION_PATTERNS.some((pattern) => pattern.test(n))) return true;
+
+	// احتراز ضد typos قريبة جداً من "دروس بترخيصها" دون حظر كل أقسام الدروس.
+	const compact = n.replace(/\s+/g, '');
+	return (
+		compact.startsWith('دروسبترخيص') ||
+		compact.startsWith('دروسبترخىص') ||
+		compact.startsWith('دروسبتدكص')
+	);
 }
 
 async function readLevel(level) {
