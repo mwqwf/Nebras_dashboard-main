@@ -109,10 +109,15 @@ service cloud.firestore {
 
     // ─── بلاغات المحتوى المخالف (من التطبيق) ─────────────────────
     // الإنشاء متاح لأيّ مستخدم (موقَّع أو ضيف) للإبلاغ عن مخالفة.
-    // القراءة والتحديث والحذف للمالك وحده عبر واجهة الإشراف الخاصّة به.
+    // القراءة والتحديث للمالك وحده عبر واجهة الإشراف الخاصّة به.
+    // الحذف: للمالك، **أو** لصاحب البلاغ نفسه (reporterUid == uid) —
+    // هذا الأخير يلبّي سياسة حذف بيانات Google Play: عند حذف الحساب
+    // يحذف التطبيق بلاغات المستخدم بنفسه قبل إزالة الهويّة.
     match /content_reports/{reportId} {
       allow create: if isValidContentReport();
-      allow read, update, delete: if hasOwnerRole();
+      allow read, update: if hasOwnerRole();
+      allow delete: if hasOwnerRole()
+        || (isSignedIn() && resource.data.reporterUid == request.auth.uid);
     }
 
     // ─── deny-by-default ────────────────────────────────────────
