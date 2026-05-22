@@ -32,6 +32,22 @@ service cloud.firestore {
       );
     }
 
+    // المالك وحده (وليس المشرفين العاديّين) — يُستخدم لمراجعة بلاغات
+    // المحتوى المخالف وحذفه من واجهة الإشراف الخاصّة بالمالك.
+    function hasOwnerRole() {
+      return isSignedIn() && request.auth.token.role == 'owner';
+    }
+
+    // تحقّق إنشاء بلاغ من التطبيق — يُسمح لأيّ مستخدم (موقَّع أو ضيف)
+    // بالإبلاغ، شرط وجود الحقول الأساسيّة وأن تكون الحالة 'pending'.
+    function isValidContentReport() {
+      return request.resource.data.keys().hasAll(
+          ['contentId', 'reasonCode', 'status', 'createdAt'])
+        && request.resource.data.contentId is string
+        && request.resource.data.reasonCode is string
+        && request.resource.data.status == 'pending';
+    }
+
     // تحديث عدّادات المشاهدة من التطبيق — حقول محدودة فقط، بدون UID.
     function isEngagementCounterUpdate() {
       return resource != null
@@ -89,6 +105,14 @@ service cloud.firestore {
     match /aggregates_popular/{docId} {
       allow read: if true;
       allow write: if false;
+    }
+
+    // ─── بلاغات المحتوى المخالف (من التطبيق) ─────────────────────
+    // الإنشاء متاح لأيّ مستخدم (موقَّع أو ضيف) للإبلاغ عن مخالفة.
+    // القراءة والتحديث والحذف للمالك وحده عبر واجهة الإشراف الخاصّة به.
+    match /content_reports/{reportId} {
+      allow create: if isValidContentReport();
+      allow read, update, delete: if hasOwnerRole();
     }
 
     // ─── deny-by-default ────────────────────────────────────────
