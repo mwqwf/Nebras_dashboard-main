@@ -19,7 +19,9 @@ import { json } from '@sveltejs/kit';
 import { requireOwner } from '$lib/server/authGuard.js';
 import { getNebrasFirestoreAdmin, isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import { deleteContentEverywhere } from '$lib/server/contentTakedown.js';
-import { scanRisk } from '$lib/server/contentRiskLexicon.js';
+import { scanRisk, DESCRIPTION_SAFE_PATTERNS } from '$lib/server/contentRiskLexicon.js';
+
+const DESC_SAFE = new Set(DESCRIPTION_SAFE_PATTERNS.map((s) => s.trim()));
 import {
 	NEBRAS_FS_CONTENT_FILES,
 	NEBRAS_FS_CONTENT_YOUTUBE
@@ -150,12 +152,25 @@ function computeFlags(data, isYouTube) {
 	const flagsSet = new Set();
 	const matched = [];
 
-	// إرهاب + جنس: العنوان + الوصف + القسم + المؤلّف.
-	const topicText = [title, section, desc, author].filter(Boolean).join(' \n ');
-	for (const r of scanRisk(topicText)) {
+	// إرهاب + جنس: من **العنوان** (+ القسم + المؤلّف) — الإشارة القويّة
+	// المقصودة. لا نفحص الوصف لأسماء التنظيمات العامّة (داعش/القاعدة) لأنّها
+	// تُذكر كثيراً في النقاش والذمّ والأخبار، فتُنتج إيجابيّات كاذبة.
+	const titleScope = [title, section, author].filter(Boolean).join(' \n ');
+	for (const r of scanRisk(titleScope)) {
 		if (r.category === 'terrorism' || r.category === 'sexual') {
 			flagsSet.add(r.category);
 			matched.push(...r.terms);
+		}
+	}
+
+	// الوصف: فقط أسماء الإصدارات المتطرّفة شديدة التحديد (مجلة دابق/صحيفة
+	// النبأ…) التي لا تظهر إلّا في المادّة نفسها — لا أسماء التنظيمات العامّة.
+	for (const r of scanRisk(desc)) {
+		if (r.category !== 'terrorism') continue;
+		const safe = r.terms.filter((t) => DESC_SAFE.has(t));
+		if (safe.length) {
+			flagsSet.add('terrorism');
+			matched.push(...safe);
 		}
 	}
 
