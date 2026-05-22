@@ -4,6 +4,7 @@
 -->
 <script>
 	import { onMount } from 'svelte';
+	import { runContentAudit, deleteAuditContent } from '$lib/api/moderation.js';
 
 	let items = $state([]);
 	let scanned = $state(0);
@@ -29,18 +30,13 @@
 		loading = true;
 		error = '';
 		try {
-			const res = await fetch('/api/admin/content-audit', { credentials: 'same-origin' });
-			if (!res.ok) {
-				error = res.status === 403 ? 'هذه الصفحة للمالك فقط.' : 'تعذّر تشغيل التدقيق.';
-				items = [];
-				return;
-			}
-			const data = await res.json();
+			const data = await runContentAudit();
 			items = data.items || [];
 			scanned = data.scanned || 0;
 			flaggedCount = data.flaggedCount || 0;
-		} catch {
-			error = 'تعذّر الاتصال بالخادم.';
+		} catch (e) {
+			error = e?.status === 403 ? 'هذه الصفحة للمالك فقط.' : (e?.message || 'تعذّر تشغيل التدقيق.');
+			items = [];
 		} finally {
 			loading = false;
 		}
@@ -53,24 +49,11 @@
 		if (!ok) return;
 		busyId = item.contentId;
 		try {
-			const res = await fetch('/api/admin/content-audit', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				credentials: 'same-origin',
-				body: JSON.stringify({
-					action: 'delete',
-					contentId: item.contentId,
-					contentType: item.contentType
-				})
-			});
-			if (!res.ok) {
-				alert('فشل الحذف. حاول مجدّداً.');
-				return;
-			}
+			await deleteAuditContent({ contentId: item.contentId, contentType: item.contentType });
 			items = items.filter((x) => x.contentId !== item.contentId);
 			flaggedCount = Math.max(0, flaggedCount - 1);
-		} catch {
-			alert('تعذّر الاتصال بالخادم.');
+		} catch (e) {
+			alert(e?.message || 'فشل الحذف. حاول مجدّداً.');
 		} finally {
 			busyId = '';
 		}

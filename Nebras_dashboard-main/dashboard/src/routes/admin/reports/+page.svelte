@@ -5,6 +5,7 @@
 -->
 <script>
 	import { onMount } from 'svelte';
+	import { listReports, deleteReportedContent, dismissReport } from '$lib/api/moderation.js';
 
 	let reports = $state([]);
 	let loading = $state(true);
@@ -28,16 +29,11 @@
 		loading = true;
 		error = '';
 		try {
-			const res = await fetch('/api/admin/reports', { credentials: 'same-origin' });
-			if (!res.ok) {
-				error = res.status === 403 ? 'هذه الصفحة للمالك فقط.' : 'تعذّر تحميل البلاغات.';
-				reports = [];
-				return;
-			}
-			const data = await res.json();
+			const data = await listReports();
 			reports = data.items || [];
 		} catch (e) {
-			error = 'تعذّر الاتصال بالخادم.';
+			error = e?.status === 403 ? 'هذه الصفحة للمالك فقط.' : (e?.message || 'تعذّر تحميل البلاغات.');
+			reports = [];
 		} finally {
 			loading = false;
 		}
@@ -52,25 +48,19 @@
 		}
 		busyId = report.id;
 		try {
-			const res = await fetch('/api/admin/reports', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				credentials: 'same-origin',
-				body: JSON.stringify({
-					action,
+			if (action === 'delete') {
+				await deleteReportedContent({
 					reportId: report.id,
 					contentId: report.contentId,
 					contentType: report.contentType
-				})
-			});
-			if (!res.ok) {
-				alert('فشل تنفيذ الإجراء. حاول مجدّداً.');
-				return;
+				});
+			} else {
+				await dismissReport(report.id);
 			}
 			// أزل البلاغ من القائمة محليّاً.
 			reports = reports.filter((r) => r.id !== report.id);
-		} catch {
-			alert('تعذّر الاتصال بالخادم.');
+		} catch (e) {
+			alert(e?.message || 'فشل تنفيذ الإجراء. حاول مجدّداً.');
 		} finally {
 			busyId = '';
 		}
