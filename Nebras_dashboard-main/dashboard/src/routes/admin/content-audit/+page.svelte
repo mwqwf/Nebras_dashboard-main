@@ -24,6 +24,18 @@
 		return FLAGS[code] || { label: code, color: '#374151', bg: '#f3f4f6' };
 	}
 
+	// ترتيب عرض التصنيفات (الأخطر أولاً).
+	const CATEGORY_ORDER = ['terrorism', 'sexual', 'copyright', 'archive_link'];
+
+	// تجميع العناصر حسب التصنيف — يظهر كلّ محتوًى تحت كلّ تصنيف يطابقه.
+	let groups = $derived(
+		CATEGORY_ORDER.map((cat) => ({
+			cat,
+			meta: flagMeta(cat),
+			items: items.filter((it) => (it.flags || []).includes(cat))
+		})).filter((g) => g.items.length > 0)
+	);
+
 	async function loadAudit() {
 		loading = true;
 		error = '';
@@ -75,35 +87,44 @@
 		<p class="state err">{error}</p>
 	{:else}
 		<p class="summary">فُحص {scanned} عنصراً · مُعلَّم: {flaggedCount}</p>
-		{#if items.length === 0}
+		{#if groups.length === 0}
 			<p class="state">لا يوجد محتوى مُعلَّم. ✅</p>
 		{:else}
-			<ul class="list">
-				{#each items as it (it.contentId)}
-					<li class="card">
-						<div class="flags">
-							{#each it.flags as f}
-								{@const m = flagMeta(f)}
-								<span class="badge" style="color:{m.color};background:{m.bg}">{m.label}</span>
-							{/each}
-							<span class="type">{it.contentType}</span>
-						</div>
-						<h3 class="title">{it.title || '(بدون عنوان)'}</h3>
-						{#if it.matched && it.matched.length}
-							<p class="matched">الكلمات المُطابِقة: <strong>{it.matched.join('، ')}</strong></p>
-						{/if}
-						<p class="cid">المعرّف: <code>{it.contentId}</code></p>
-						{#if it.sourceUrl}
-							<p class="src"><a href={it.sourceUrl} target="_blank" rel="noreferrer">عرض المصدر ↗</a></p>
-						{/if}
-						<div class="actions">
-							<button class="del" onclick={() => del(it)} disabled={busyId === it.contentId}>
-								{busyId === it.contentId ? '…' : 'حذف المحتوى'}
-							</button>
-						</div>
-					</li>
-				{/each}
-			</ul>
+			{#each groups as g (g.cat)}
+				<section class="group">
+					<h2 class="group-head" style="color:{g.meta.color};border-color:{g.meta.color}">
+						<span class="dot" style="background:{g.meta.bg}"></span>
+						{g.meta.label}
+						<span class="count">{g.items.length}</span>
+					</h2>
+					<ul class="list">
+						{#each g.items as it (g.cat + '|' + it.contentId)}
+							<li class="card">
+								<div class="flags">
+									{#each it.flags as f}
+										{@const m = flagMeta(f)}
+										<span class="badge" style="color:{m.color};background:{m.bg}">{m.label}</span>
+									{/each}
+									<span class="type">{it.contentType}</span>
+								</div>
+								<h3 class="title">{it.title || '(بدون عنوان)'}</h3>
+								{#if it.matched && it.matched.length}
+									<p class="matched">الكلمات المُطابِقة: <strong>{it.matched.join('، ')}</strong></p>
+								{/if}
+								<p class="cid">المعرّف: <code>{it.contentId}</code></p>
+								{#if it.sourceUrl}
+									<p class="src"><a href={it.sourceUrl} target="_blank" rel="noreferrer">عرض المصدر ↗</a></p>
+								{/if}
+								<div class="actions">
+									<button class="del" onclick={() => del(it)} disabled={busyId === it.contentId}>
+										{busyId === it.contentId ? '…' : 'حذف المحتوى'}
+									</button>
+								</div>
+							</li>
+						{/each}
+					</ul>
+				</section>
+			{/each}
 		{/if}
 	{/if}
 </div>
@@ -138,6 +159,33 @@
 		color: #374151;
 		font-weight: 600;
 		margin-bottom: 12px;
+	}
+	.group {
+		margin-bottom: 28px;
+	}
+	.group-head {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		font-size: 1.15rem;
+		font-weight: 800;
+		padding-bottom: 8px;
+		margin-bottom: 14px;
+		border-bottom: 2px solid;
+	}
+	.group-head .dot {
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		display: inline-block;
+	}
+	.group-head .count {
+		margin-inline-start: auto;
+		font-size: 0.85rem;
+		background: #f3f4f6;
+		color: #374151;
+		border-radius: 999px;
+		padding: 2px 10px;
 	}
 	.state {
 		padding: 32px;

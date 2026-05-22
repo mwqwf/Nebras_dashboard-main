@@ -45,7 +45,7 @@ export async function GET(event) {
 
 	const consider = (id, data, isYouTube) => {
 		scanned += 1;
-		const { flags, matched } = computeFlags(data);
+		const { flags, matched } = computeFlags(data, isYouTube);
 		if (flags.length === 0) return;
 		flagged.push({
 			contentId: String(data?.id || data?.fileId || id || ''),
@@ -108,27 +108,76 @@ function pickUrl(data) {
 	);
 }
 
-function computeFlags(data) {
-	// نفحص الحقول النصّيّة المرئيّة للمستخدم بحثاً عن إشارات خطر.
-	const text = [
-		data?.title,
-		data?.name,
-		data?.description,
-		data?.author,
-		data?.created_by,
-		data?.section_name,
-		data?.subsection_name
-	]
-		.filter(Boolean)
-		.join(' \n ');
+/** منصّات محميّة بحقوق — إن كان مضيف رابط المصدر منها فالمحتوى مأخوذ منها. */
+const COPYRIGHT_HOSTS = [
+	'youtube.com',
+	'youtu.be',
+	'netflix.com',
+	'disneyplus.com',
+	'shahid.mbc.net',
+	'hbomax.com',
+	'primevideo.com'
+];
 
-	const risks = scanRisk(text); // [{category, terms}]
-	const flags = risks.map((r) => r.category);
-	const matched = risks.flatMap((r) => r.terms);
+function stripHtml(s) {
+	return String(s || '').replace(/<[^>]*>/g, ' ');
+}
+
+function hostOf(url) {
+	try {
+		return new URL(String(url)).hostname.toLowerCase().replace(/^www\./, '');
+	} catch {
+		return '';
+	}
+}
+
+/**
+ * يحسب أعلام الخطر بدقّة عالية:
+ *   • إرهاب/جنس: نفحص العنوان + الوصف (بعد تجريد HTML) + القسم — لأنّ
+ *     الموضوع قد يُذكر في الوصف.
+ *   • حقوق/علامات تجاريّة: نفحص **العنوان فقط** (لا الوصف — فالوصف يذكر
+ *     روابط/منصّات بريئة كثيرة، وهذا سبب الإيجابيات الكاذبة)، بالإضافة
+ *     إلى **مضيف رابط المصدر** إن كان منصّة محميّة.
+ *   • محتوى يوتيوب المُضاف يدويّاً (مجموعة youtube) يُستثنى من علامة
+ *     الحقوق لأنّ له تعامله الخاصّ.
+ */
+function computeFlags(data, isYouTube) {
+	const title = String(data?.title || data?.name || '');
+	const section = [data?.section_name, data?.subsection_name].filter(Boolean).join(' ');
+	const desc = stripHtml(String(data?.description || ''));
+	const author = String(data?.author || data?.created_by || '');
+
+	const flagsSet = new Set();
+	const matched = [];
+
+	// إرهاب + جنس: العنوان + الوصف + القسم + المؤلّف.
+	const topicText = [title, section, desc, author].filter(Boolean).join(' \n ');
+	for (const r of scanRisk(topicText)) {
+		if (r.category === 'terrorism' || r.category === 'sexual') {
+			flagsSet.add(r.category);
+			matched.push(...r.terms);
+		}
+	}
+
+	// حقوق/علامات تجاريّة — العنوان فقط + مضيف الرابط (نستثني يوتيوب اليدويّ).
+	if (!isYouTube) {
+		const titleScope = [title, section].filter(Boolean).join(' \n ');
+		for (const r of scanRisk(titleScope)) {
+			if (r.category === 'copyright') {
+				flagsSet.add('copyright');
+				matched.push(...r.terms);
+			}
+		}
+		const host = hostOf(pickUrl(data));
+		const matchedHost = COPYRIGHT_HOSTS.find((h) => host === h || host.endsWith('.' + h));
+		if (matchedHost) {
+			flagsSet.add('copyright');
+			matched.push(matchedHost);
+		}
+	}
 
 	const url = pickUrl(data).toLowerCase();
-	if (url.includes('archive.org')) {
-		flags.push('archive_link');
-	}
-	return { flags, matched };
+	if (url.includes('archive.org')) flagsSet.add('archive_link');
+
+	return { flags: [...flagsSet], matched: [...new Set(matched)] };
 }
