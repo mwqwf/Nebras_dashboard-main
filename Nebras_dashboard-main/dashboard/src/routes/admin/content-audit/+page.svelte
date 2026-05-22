@@ -14,12 +14,10 @@
 	let busyId = $state('');
 
 	const FLAGS = {
-		unverified_source: {
-			label: 'مصدر غير مُتحقَّق (رفع يدويّ — راجع الترخيص)',
-			color: '#92400e',
-			bg: '#fef3c7'
-		},
-		archive_link: { label: 'رابط Archive.org', color: '#7f1d1d', bg: '#fee2e2' }
+		terrorism: { label: 'إصدار/تنظيم متطرّف', color: '#7f1d1d', bg: '#fee2e2' },
+		copyright: { label: 'علامة تجاريّة/حقوق نشر', color: '#92400e', bg: '#fef3c7' },
+		sexual: { label: 'ألفاظ جنسيّة صريحة', color: '#9d174d', bg: '#fce7f3' },
+		archive_link: { label: 'رابط Archive.org', color: '#374151', bg: '#f3f4f6' }
 	};
 
 	function flagMeta(code) {
@@ -91,6 +89,9 @@
 							<span class="type">{it.contentType}</span>
 						</div>
 						<h3 class="title">{it.title || '(بدون عنوان)'}</h3>
+						{#if it.matched && it.matched.length}
+							<p class="matched">الكلمات المُطابِقة: <strong>{it.matched.join('، ')}</strong></p>
+						{/if}
 						<p class="cid">المعرّف: <code>{it.contentId}</code></p>
 						{#if it.sourceUrl}
 							<p class="src"><a href={it.sourceUrl} target="_blank" rel="noreferrer">عرض المصدر ↗</a></p>
@@ -185,10 +186,14 @@
 		margin: 4px 0;
 	}
 	.cid,
-	.src {
+	.src,
+	.matched {
 		font-size: 0.85rem;
 		color: #4b5563;
 		margin: 2px 0;
+	}
+	.matched strong {
+		color: #b91c1c;
 	}
 	.actions {
 		margin-top: 12px;

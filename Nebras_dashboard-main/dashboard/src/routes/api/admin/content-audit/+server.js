@@ -1,21 +1,25 @@
 /**
  * /api/admin/content-audit — أداة تدقيق المحتوى (للمالك فقط).
  *
- * تفحص المحتوى الحاليّ وتُبرز ما يحتاج مراجعة بشريّة من ناحية الملكية
- * الفكرية / المصدر، بحيث يستطيع المالك حذفه إن كان مخالفاً:
+ * تفحص المحتوى الحاليّ وتُبرز **ما يحمل إشارات خطر حقيقيّة** ليراجعه
+ * المالك ويحذف المخالف:
  *
- *   • unverified_source : محتوى ليس من خطّ Internet Archive المُرخَّص
- *     (__provider != 'internet_archive') — غالباً رفع يدويّ بلا ضمان
- *     ترخيص آليّ، فيستحقّ التحقّق.
- *   • archive_link      : رابط مصدره archive.org (يجب ألّا يُخدَم).
+ *   • terrorism   : أسماء إصدارات/تنظيمات متطرّفة (النبأ/دابق/داعش…).
+ *   • copyright   : علامات تجاريّة/منصّات محميّة (YouTube/Netflix/MBC…)
+ *                   أو إشارات حقوق صريحة.
+ *   • sexual      : ألفاظ جنسيّة صريحة.
+ *   • archive_link: رابط مصدره archive.org (يجب ألّا يُخدَم).
  *
- * GET  → قائمة العناصر المُعلَّمة (مع أسباب العَلَم).
+ * لا نُعلّم المحتوى لمجرّد كونه رفعاً يدويّاً — الرفع اليدويّ مُراجَع أصلاً.
+ *
+ * GET  → قائمة العناصر المُعلَّمة (مع الفئات والكلمات المُطابِقة).
  * POST → { action: 'delete', contentId, contentType } يحذف العنصر فعليّاً.
  */
 import { json } from '@sveltejs/kit';
 import { requireOwner } from '$lib/server/authGuard.js';
 import { getNebrasFirestoreAdmin, isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import { deleteContentEverywhere } from '$lib/server/contentTakedown.js';
+import { scanRisk } from '$lib/server/contentRiskLexicon.js';
 import {
 	NEBRAS_FS_CONTENT_FILES,
 	NEBRAS_FS_CONTENT_YOUTUBE
@@ -41,7 +45,7 @@ export async function GET(event) {
 
 	const consider = (id, data, isYouTube) => {
 		scanned += 1;
-		const flags = computeFlags(data, isYouTube);
+		const { flags, matched } = computeFlags(data);
 		if (flags.length === 0) return;
 		flagged.push({
 			contentId: String(data?.id || data?.fileId || id || ''),
@@ -49,7 +53,8 @@ export async function GET(event) {
 			contentType: isYouTube ? 'youtube' : String(data?.content_type || 'file'),
 			sourceUrl: pickUrl(data),
 			provider: String(data?.__provider || ''),
-			flags
+			flags,
+			matched
 		});
 	};
 
@@ -103,15 +108,27 @@ function pickUrl(data) {
 	);
 }
 
-function computeFlags(data, isYouTube) {
-	const flags = [];
-	const provider = String(data?.__provider || '');
-	if (provider !== 'internet_archive') {
-		flags.push('unverified_source');
-	}
+function computeFlags(data) {
+	// نفحص الحقول النصّيّة المرئيّة للمستخدم بحثاً عن إشارات خطر.
+	const text = [
+		data?.title,
+		data?.name,
+		data?.description,
+		data?.author,
+		data?.created_by,
+		data?.section_name,
+		data?.subsection_name
+	]
+		.filter(Boolean)
+		.join(' \n ');
+
+	const risks = scanRisk(text); // [{category, terms}]
+	const flags = risks.map((r) => r.category);
+	const matched = risks.flatMap((r) => r.terms);
+
 	const url = pickUrl(data).toLowerCase();
 	if (url.includes('archive.org')) {
 		flags.push('archive_link');
 	}
-	return flags;
+	return { flags, matched };
 }
