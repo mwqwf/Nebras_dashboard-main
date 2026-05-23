@@ -790,6 +790,41 @@ export async function runEngineTick() {
 	};
 }
 
+/**
+ * نقطة دخول الـ Cron (Vercel/GitHub Action). على serverless لا تستمرّ الحلقة
+ * في الذاكرة، فالـ cron هو المُحرّك الفعليّ: ينفّذ tick واحداً في كلّ نداء.
+ *
+ *   • إن أوقف المستخدم المحرّك صراحةً (enabled=false) → نتخطّى بهدوء.
+ *   • إن غاب enabled (أوّل تشغيل) → نعتبره مفعَّلاً ونمضي (مثل سلوك IA).
+ *   • نُمسك أي خطأ ونعيده كنتيجة بدل أن نُسقط النداء.
+ */
+export async function runCronTick() {
+	const cfg = await readConfig();
+	// enabled افتراضيّاً true في DEFAULT_CONFIG=false؟ لا — DEFAULT_CONFIG.enabled=false.
+	// لكن لتشغيل تلقائيّ بلا تدخّل (مثل IA) نعتبر الغياب/التهيئة الأولى = تشغيل.
+	const snap = await getAdminDatabase().ref(`${CONFIG_PATH}/enabled`).get().catch(() => null);
+	const explicitlyDisabled = snap && snap.exists() && snap.val() === false;
+	if (explicitlyDisabled) {
+		return { ok: true, skipped: true, reason: 'engine_stopped_by_user' };
+	}
+	// تأكّد من وجود config (يكتب enabled=true عند أوّل نداء cron).
+	if (!snap || !snap.exists()) {
+		await writeConfig({ enabled: true });
+	}
+	try {
+		const result = await runEngineTick();
+		return { ok: true, cron: true, ...result };
+	} catch (err) {
+		await bumpStats({ lastError: err?.message || String(err), touchLastRun: true }).catch(() => {});
+		await appendLog({
+			level: 'error',
+			message: `cron tick فشل: ${err?.message || String(err)}`,
+			reason: err?.reason || 'cron_tick_failed'
+		}).catch(() => {});
+		return { ok: false, error: 'tick_failed', reason: err?.reason || 'unknown', message: err?.message || String(err) };
+	}
+}
+
 // ── Background loop control ─────────────────────────────────────────
 
 async function tickLoop() {

@@ -20,6 +20,7 @@
  */
 
 import { isPuppeteerEnabled, fetchHtmlViaBrowser } from './noorBrowser.js';
+import { crawl4aiFetchHtml } from '$lib/server/crawl4aiClient.js';
 
 const USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -76,6 +77,18 @@ function makeError(message, reason, status = 0, cause = null) {
  * فنُجرّبها أوّلاً ثمّ نعتمد على المتصفّح فقط عند الرفض.
  */
 async function fetchHtml(url) {
+	// 0) crawl4ai sidecar أولاً — متصفّح حقيقي يُصيّر JS ويجتاز تحدّي
+	//    Cloudflare، ويعمل على الخادم/serverless (Puppeteer لا يعمل على Vercel).
+	//    إن لم تكن الخدمة مضبوطة (CRAWL4AI_SERVICE_URL) يُعيد null فنُكمل للبدائل.
+	try {
+		const viaCrawl4ai = await crawl4aiFetchHtml(url, { timeoutMs: 60000 });
+		if (viaCrawl4ai && !looksLikeCloudflareChallenge(viaCrawl4ai.html)) {
+			return { html: viaCrawl4ai.html, finalUrl: viaCrawl4ai.finalUrl };
+		}
+	} catch {
+		// فشل crawl4ai؟ نسقط للبدائل (Puppeteer/fetch) بدون إنهاء الجولة.
+	}
+
 	const usePuppeteer = await isPuppeteerEnabled().catch(() => false);
 
 	// إن كان Puppeteer متاحاً نُجرّبه مباشرةً للأمان (Noor خلف Cloudflare غالباً).

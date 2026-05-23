@@ -27,3 +27,16 @@ env:
     secret: NEBRAS_SERVICE_ACCOUNT_JSON
     availability:
       - RUNTIME
+
+  # ── خدمة crawl4ai (Cloud Run في نفس المشروع) ────────────────────
+  # رابط خدمة crawl4ai الداخليّة + السرّ المشترك. اللوحة تستدعيها
+  # server-side فقط (محرّك مكتبة نور: زحف/جلب/تنزيل عبر متصفّح حقيقي).
+  # عيّن CRAWL4AI_SERVICE_URL إلى عنوان خدمة Cloud Run بعد نشرها.
+  - variable: CRAWL4AI_SERVICE_URL
+    value: ""
+    availability:
+      - RUNTIME
+  - variable: CRAWL4AI_SERVICE_SECRET
+    secret: CRAWL4AI_SERVICE_SECRET
+    availability:
+      - RUNTIME

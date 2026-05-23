@@ -1,0 +1,67 @@
+name: Library Engines Auto-Tick (Noor + Hindawi)
+
+# يضرب محرّكَيْ مكتبة نور ومؤسسة هنداوي دورياً، مثل ia-cron.yml لمحرّك
+# Internet Archive. كل محرّك ينفّذ tick واحداً يجلب الكتب الحرّة الترخيص.
+#
+# Stagger: نستعمل دقائق مزاحة (5,15,25...) كي لا تتداخل مع ia-cron
+# (الذي يعمل على 0,10,20...) فلا نضرب الخادم بثلاثة ticks في اللحظة نفسها.
+#
+# Secrets (كلها اختياريّة):
+#   • VERCEL_URL   — قاعدة عنوان النشر (افتراضي nebras-dashboard-main.vercel.app)
+#   • CRON_SECRET  — إن ضُبط في الخادم، يجب أن يطابقه
+
+on:
+  schedule:
+    - cron: '5-59/10 7-23 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: library-engines-cron
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  hit-engines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Resolve base URL
+        id: base
+        run: |
+          BASE="${{ secrets.VERCEL_URL }}"
+          if [ -z "$BASE" ]; then
+            BASE="https://nebras-dashboard-main.vercel.app"
+          fi
+          BASE="${BASE%/}"
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Tick engines (Noor then Hindawi)
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          BASE="${{ steps.base.outputs.base }}"
+          if [ -n "$CRON_SECRET" ]; then
+            AUTH_HEADER="Authorization: Bearer $CRON_SECRET"
+          else
+            AUTH_HEADER="X-No-Auth: 1"
+          fi
+
+          tick() {
+            local NAME="$1"; local PATH_="$2"
+            local URL="${BASE}${PATH_}"
+            echo "▶ $NAME: $URL"
+            HTTP_CODE=$(curl -sS --max-time 90 --retry 2 --retry-delay 5 --retry-connrefused \
+              -H "$AUTH_HEADER" -H "User-Agent: NebrasGitHubAction/1.0" \
+              -o "/tmp/${NAME}.json" -w "%{http_code}" "$URL") || HTTP_CODE="000"
+            echo "  HTTP $HTTP_CODE"
+            if [ -s "/tmp/${NAME}.json" ]; then head -c 1024 "/tmp/${NAME}.json"; echo ""; fi
+            case "$HTTP_CODE" in
+              2*) echo "  ✅ $NAME ok" ;;
+              *)  echo "  ⚠ $NAME non-2xx ($HTTP_CODE) — retried next schedule." ;;
+            esac
+          }
+
+          tick "noor"    "/api/cron/noor-library-tick"
+          tick "hindawi" "/api/cron/hindawi-library-tick"

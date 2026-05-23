@@ -37,12 +37,44 @@ CRAWL4AI_SERVICE_SECRET=
 
 ## HTTP API
 
-| Method | Path        | Purpose                                  |
-| ------ | ----------- | ---------------------------------------- |
-| GET    | `/health`   | Liveness ping                            |
-| GET    | `/status`   | Worker on/off, stats, current job        |
-| POST   | `/control`  | `{ "action": "start" \| "stop" }`        |
-| POST   | `/crawl`    | `{ "url": "https://..." }` enqueue a job |
-| GET    | `/jobs`     | Recent / queued / running jobs           |
+| Method | Path        | Purpose                                                            |
+| ------ | ----------- | ------------------------------------------------------------------ |
+| GET    | `/health`   | Liveness ping                                                      |
+| GET    | `/status`   | Worker on/off, stats, current job                                  |
+| POST   | `/control`  | `{ "action": "start" \| "stop" }`                                  |
+| POST   | `/crawl`    | `{ "url" }` enqueue an async job (stats only)                      |
+| GET    | `/jobs`     | Recent / queued / running jobs                                     |
+| POST   | `/fetch`    | `{ "url", "timeout_ms" }` → **returns rendered HTML** synchronously |
+| POST   | `/download` | `{ "url", "referer", "timeout_ms" }` → file bytes as base64        |
+
+`/fetch` and `/download` are what the Nebras **Noor Library engine** uses: a
+real Chromium (Playwright) renders JS and clears Cloudflare, then `/download`
+pulls the file through the same browser context (cookies + Referer) so
+Cloudflare-protected PDFs come through. Both run synchronously and do **not**
+depend on the queue worker.
 
 All non-health endpoints accept the `X-Crawl4AI-Secret` header when a secret is configured.
+
+## Deploy with the dashboard (Cloud Run, same Firebase project)
+
+The dashboard runs on **Firebase App Hosting** (Cloud Run under the hood). App
+Hosting only builds the SvelteKit app, so this Python + Chromium service ships
+as its own Cloud Run service **in the same GCP project** (`nebras-9118c`):
+
+```bash
+cd Nebras_dashboard-main/dashboard/crawl4ai_service
+CRAWL4AI_SERVICE_SECRET=your-shared-secret ./deploy-cloudrun.sh
+```
+
+Then set on the dashboard side (`apphosting.yaml` value + Secret Manager):
+
+```env
+CRAWL4AI_SERVICE_URL=https://nebras-crawl4ai-xxxxx-uc.a.run.app
+CRAWL4AI_SERVICE_SECRET=your-shared-secret
+```
+
+The deploy script uses `--allow-unauthenticated` guarded by a **mandatory**
+strong `CRAWL4AI_SERVICE_SECRET` (the dashboard client authenticates with the
+`X-Crawl4AI-Secret` header, not a Google ID token). Generate one with
+`openssl rand -hex 24`. If you prefer a fully private `--no-allow-unauthenticated`
+service, you must add Google ID-token minting to `crawl4aiClient.js`.

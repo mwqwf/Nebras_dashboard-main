@@ -22,6 +22,12 @@ import {
 	downloadBufferViaBrowser,
 	findBookFileUrlViaBrowser
 } from './noorBrowser.js';
+// نُعيد استعمال نفس بوّابة الترخيص الصارمة الخاصّة بمحرّك Internet Archive
+// (مصدر واحد للحقيقة في الامتثال لـ Google Play / DMCA). مكتبة نور لا تملك
+// ترخيصاً صريحاً لمعظم كتبها المعاصرة، لذا أيّ كتاب بلا ترخيص PD/CC واضح
+// يُرفض افتراضياً قبل التنزيل أو الرفع.
+import { evaluateLicense } from '../internetArchive/licenseFilter.js';
+import { crawl4aiFetchHtml, crawl4aiDownload } from '$lib/server/crawl4aiClient.js';
 
 const USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -85,6 +91,16 @@ function makeError(message, reason, status = 0, cause = null) {
  * في كلتا الحالتيْن يفشل بوضوح لو وُجد تحدّي Cloudflare في الـ HTML.
  */
 async function fetchHtml(url) {
+	// crawl4ai sidecar أولاً (متصفّح حقيقي على الخادم يجتاز Cloudflare).
+	try {
+		const viaCrawl4ai = await crawl4aiFetchHtml(url, { timeoutMs: 60000 });
+		if (viaCrawl4ai && !looksLikeCloudflareChallenge(viaCrawl4ai.html) && viaCrawl4ai.html.length >= 200) {
+			return { html: viaCrawl4ai.html, finalUrl: viaCrawl4ai.finalUrl };
+		}
+	} catch {
+		// نسقط للبدائل
+	}
+
 	const usePuppeteer = await isPuppeteerEnabled().catch(() => false);
 
 	if (usePuppeteer) {
@@ -259,6 +275,70 @@ function extractCategoryHints(html) {
 	return [...new Set(hints.filter(Boolean))].slice(0, 12);
 }
 
+/**
+ * يستخرج إشارات الترخيص من صفحة الكتاب (إن وُجدت):
+ *   - وسوم meta: og:license / dc.rights / license / rights / copyright
+ *   - روابط Creative Commons / Public Domain الصريحة في الـ HTML
+ *   - حقل license داخل JSON-LD
+ * النتيجة كائن متوافق مع evaluateLicense: { licenseurl, license, rights }.
+ * الغياب التامّ للإشارات = لا ترخيص صريح ⇒ سيُرفض الكتاب لاحقاً (آمن افتراضياً).
+ *
+ * @param {string} html
+ * @returns {{ licenseurl: string, license: string, rights: string }}
+ */
+function extractLicense(html) {
+	let licenseurl = '';
+	let license =
+		extractMeta(html, 'og:license') ||
+		extractMeta(html, 'license') ||
+		extractMeta(html, 'dc.license') ||
+		'';
+	let rights =
+		extractMeta(html, 'dc.rights') ||
+		extractMeta(html, 'rights') ||
+		extractMeta(html, 'copyright') ||
+		'';
+
+	// روابط Creative Commons / Public Domain صريحة في الصفحة.
+	const ccLink = html.match(
+		/href=["'](https?:\/\/creativecommons\.org\/(?:licenses|publicdomain)\/[^"']+)["']/i
+	);
+	if (ccLink) licenseurl = ccLink[1];
+
+	// JSON-LD: حقل license (قد يكون نصّاً أو كائناً فيه url/@id).
+	if (!licenseurl && !license) {
+		const ldRe =
+			/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+		let m;
+		while ((m = ldRe.exec(html))) {
+			try {
+				const data = JSON.parse(m[1].trim());
+				const items = Array.isArray(data) ? data : [data];
+				for (const it of items) {
+					const lic = it?.license;
+					if (typeof lic === 'string' && lic) {
+						license = lic;
+						break;
+					}
+					if (lic && (lic.url || lic['@id'])) {
+						licenseurl = String(lic.url || lic['@id']);
+						break;
+					}
+				}
+			} catch {
+				// تجاهل JSON المعطوب
+			}
+			if (licenseurl || license) break;
+		}
+	}
+
+	return {
+		licenseurl: String(licenseurl || '').trim(),
+		license: String(license || '').trim(),
+		rights: String(rights || '').trim()
+	};
+}
+
 function guessContentType(url) {
 	const lower = String(url || '').toLowerCase().split('?')[0];
 	if (lower.endsWith('.pdf')) return 'application/pdf';
@@ -408,6 +488,33 @@ export async function fetchBookMetadata(pageUrl) {
 	const author = extractAuthor(html);
 	const thumbnail = extractThumbnail(html);
 	const categoryHints = extractCategoryHints(html);
+
+	// ───────── 🚨 بوّابة الترخيص (Google Play / DMCA) ─────────
+	// فلسفة نور: مكتبة نور **نفسها** تمنع تحميل الكتب المحميّة (تسمح بعدد
+	// محدود/تحجب الباقي). فالقابل للتحميل = مسموح فعلاً. لذا لا نرفض لمجرّد
+	// "غياب ترخيص صريح" — نثق ببوّابة نور المصدرية. نُبقي الفحص كشبكة أمان:
+	// نرفض **فقط** إن صرّحت الصفحة بحقوق محفوظة (All Rights Reserved/copyright/
+	// NC/ND) أو حملت ترخيصاً غير حرّ صريحاً. الكتب التي يحجبها نور لا تصل أصلاً
+	// لأنّ downloadBookFile سيفشل (no_file_url / download_failed) فتُتخطّى.
+	const licenseSignals = extractLicense(html);
+	const lic = evaluateLicense(licenseSignals, {
+		trustedCollections: [],
+		allowMissingLicenseInTrustedCollections: false
+	});
+	const HARD_REJECT_REASONS = new Set([
+		'license_copyrighted_explicit',
+		'license_rights_copyrighted_explicit',
+		'license_not_allowed'
+	]);
+	if (!lic.ok && HARD_REJECT_REASONS.has(lic.reason)) {
+		throw makeError(
+			`الكتاب يحمل إشارة حقوق محفوظة صريحة (${lic.reason}) — رُفض احترامًا ` +
+				`لحقوق الملكية وسياسة Google Play.`,
+			lic.reason,
+			451
+		);
+	}
+
 	let file = extractFileUrl(html, finalUrl);
 
 	// خطّة بديلة: لو لم نجد رابط الملفّ في HTML الخام، نستعمل Puppeteer
@@ -453,6 +560,13 @@ export async function fetchBookMetadata(pageUrl) {
 		categoryHints,
 		fileUrl: file?.url || '',
 		fileType: file?.type || '',
+		license: {
+			matched: lic.licenseMatched || licenseSignals.licenseurl || licenseSignals.license || '',
+			reason: lic.reason,
+			// 'verified' لترخيص حرّ صريح، وإلا 'noor_download_permitted'
+			// (سمح نور بتحميله = غير محميّ بحسب بوّابة نور نفسها).
+			tier: lic.ok ? lic.licenseTier || 'verified' : 'noor_download_permitted'
+		},
 		source: {
 			url: parsed.canonicalUrl,
 			finalUrl,
@@ -473,6 +587,35 @@ export async function downloadBookFile(fileUrl, opts = {}) {
 	if (!fileUrl) throw makeError('لا يوجد رابط ملف للتنزيل.', 'no_file_url', 400);
 
 	const refererUrl = opts?.refererUrl || null;
+
+	// 🥇 crawl4ai sidecar أولاً: يجلب الملفّ داخل سياق متصفّح حقيقي بنفس
+	//    جلسة Cloudflare (cf_clearance + Referer) ويُعيد البايتات base64.
+	//    هذا المسار يعمل على الخادم/serverless حيث لا يعمل Puppeteer المحلّي.
+	try {
+		const viaCrawl4ai = await crawl4aiDownload(fileUrl, {
+			referer: refererUrl,
+			timeoutMs: 90000
+		});
+		if (viaCrawl4ai?.buffer && viaCrawl4ai.buffer.byteLength > 0) {
+			let filename = viaCrawl4ai.filename;
+			if (!filename) {
+				try {
+					filename = decodeURIComponent(new URL(fileUrl).pathname.split('/').pop() || 'book.pdf');
+				} catch {
+					filename = 'book.pdf';
+				}
+			}
+			return {
+				buffer: viaCrawl4ai.buffer,
+				contentType: viaCrawl4ai.contentType,
+				filename,
+				size: viaCrawl4ai.size
+			};
+		}
+	} catch {
+		// نسقط للبدائل (Puppeteer/fetch) بدون إنهاء العمليّة.
+	}
+
 	const usePuppeteer = await isPuppeteerEnabled().catch(() => false);
 	let lastPuppeteerErr = null;
 

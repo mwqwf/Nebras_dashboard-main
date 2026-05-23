@@ -17,6 +17,15 @@ export async function getDashboardOverview() {
 	return authedJson('/api/admin/aggregates/overview');
 }
 
+/**
+ * إحصاءات حقيقية لكلّ مصدر محتوى (الأرشيف/نور/هنداوي/يدويّ): عدد الكتب،
+ * الأقسام التي وُضعت فيها (رئيسي/فرعي/ثانوي)، وأعلى الأقسام لكلّ مصدر.
+ * @returns {Promise<Object>}
+ */
+export async function getLibrarySourceStats() {
+	return authedJson('/api/admin/aggregates/by-source');
+}
+
 // ─── Moderator Management ──────────────────────────────
 
 /**

@@ -23,9 +23,10 @@ name: Internet Archive Auto-Tick
 
 on:
   schedule:
-    # كل 10 دقائق ضمن ساعات نشاط معقولة (07:00-23:59 UTC) — يكفي لجلب
-    # ~100 عنصر يومياً مع batchSize=5، دون استنفاد ratelimits IA.
-    - cron: '*/10 7-23 * * *'
+    # كل 5 دقائق ضمن ساعات نشاط معقولة (07:00-23:59 UTC). مع batchSize=8
+    # وتزامن داخليّ (IMPORT_CONCURRENCY=4) يرفع الإنتاجيّة لعدّة مئات يومياً
+    # دون استنفاد ratelimit الأرشيف (concurrency:group يمنع تداخل الدورات).
+    - cron: '*/5 7-23 * * *'
   workflow_dispatch: # تشغيل يدوي من GitHub UI عند الحاجة
 
 # منع تشغيل أكثر من نسخة في نفس الوقت (يمنع تداخل ticks).

@@ -56,8 +56,14 @@ import {
 	recordFailure
 } from './registry.js';
 
-/** محاولات استيراد لكل tick (فشل سريع بالترخيص/الصيغة ثم عنصر تالي). */
-const MAX_IMPORT_ATTEMPTS_PER_TICK = 12;
+/** محاولات استيراد لكل tick (فشل سريع بالترخيص/الصيغة ثم عنصر تالي).
+ *  رُفِع للسرعة: نطاق مرشّحين أوسع لكل دورة. */
+const MAX_IMPORT_ATTEMPTS_PER_TICK = 24;
+/** عدد عمليّات الاستيراد المتوازية داخل الدورة الواحدة (تنزيل + رفع).
+ *  محدود عمداً (4) كي لا نتجاوز ratelimit الأرشيف ولا نستنزف ذاكرة الخادم.
+ *  التزامن يضاعف الإنتاجيّة دون المخاطرة بالتلف لأنّ كلّ عنصر يُتحقَّق
+ *  من magic bytes ومستقلّ تماماً عن غيره. */
+const IMPORT_CONCURRENCY = 4;
 /** مهلة تنزيل قصيرة للسرعة: مع preferSmallest الملفّات صغيرة، فالملفّ
  *  البطيء يُلغى بسرعة ويُنتقل للتالي بدل تعليق الدورة. */
 const CRON_DOWNLOAD_TIMEOUT_MS = 25_000;
@@ -168,17 +174,22 @@ export const SEARCH_QUERY_ROTATION = Object.freeze([
  */
 /**
  * إعدادات الإنتاج — مضبوطة للعمل على GitHub Action (60s timeout) + Vercel Pro/Hobby:
- *  - batchSize=5  → 5 عناصر بحدّ أقصى لكل tick (نجاحات؛ فشل سريع لا يُحتسب).
- *  - scrapeCount=200 → نطاق أوسع للمرشّحين قبل تطبيق الفلاتر.
- *  - allowMissingLicenseInTrustedCollections=true لتمرير عناصر opensource.
+ *  - batchSize=8  → حتى 8 عناصر ناجحة لكل tick (مُسرَّع، مع تزامن داخليّ).
+ *  - scrapeCount=300 → نطاق أوسع للمرشّحين قبل تطبيق الفلاتر.
+ *  - tickIntervalMs=6000 → دورات أكثف للحلقة المحليّة (الخادم طويل الأمد).
+ *  - allowMissingLicenseInTrustedCollections=true: نثق بالمجموعات المنسَّقة
+ *    (booksbylanguage_arabic/folkscanomy/audio_islamic/opensource...) كمصدر
+ *    آمن عند غياب حقل الترخيص الصريح (IA لا يفهرسه لمعظم العناصر العربيّة).
+ *    تبقى COPYRIGHT_DENY_PATTERNS شبكة أمان: أيّ عنصر يُصرّح بحقوق محفوظة
+ *    (All Rights Reserved / copyrighted / NC / ND) يُرفض فوراً.
  *  - trustedCollections موسَّعة لتشمل المجموعات الإسلاميّة/العربيّة الرئيسيّة.
  */
 const DEFAULT_CONFIG = Object.freeze({
 	enabled: true,
 	seeds: [...DEFAULT_SEEDS],
-	tickIntervalMs: 12000,
-	batchSize: 5,
-	scrapeCount: 200,
+	tickIntervalMs: 6000,
+	batchSize: 8,
+	scrapeCount: 300,
 	// مسمّيات المجموعات المُفهرسة فعلاً في IA — التحقّق تمّ بـ Scrape API مباشرة.
 	trustedCollections: [
 		'booksbylanguage_arabic',
@@ -249,7 +260,7 @@ async function readConfig() {
 		enabled: v.enabled === undefined ? true : Boolean(v.enabled),
 		seeds,
 		tickIntervalMs: Math.max(3000, Number(v.tickIntervalMs) || DEFAULT_CONFIG.tickIntervalMs),
-		batchSize: Math.max(1, Math.min(10, Number(v.batchSize) || DEFAULT_CONFIG.batchSize)),
+		batchSize: Math.max(1, Math.min(20, Number(v.batchSize) || DEFAULT_CONFIG.batchSize)),
 		scrapeCount: Math.max(100, Math.min(1000, Number(v.scrapeCount) || DEFAULT_CONFIG.scrapeCount)),
 		trustedCollections: Array.isArray(v.trustedCollections)
 			? v.trustedCollections
@@ -754,61 +765,76 @@ async function tryImportsFromPage(page, cfg, logCtx = {}) {
 
 	const targetSuccess = Math.max(1, Number(cfg.batchSize) || 1);
 	let attempts = 0;
+	let cursorIdx = 0;
 
-	for (const item of candidates) {
-		if (processed >= targetSuccess) break;
-		if (attempts >= MAX_IMPORT_ATTEMPTS_PER_TICK) break;
-		attempts += 1;
+	// تجمّع عمّال متزامن: كلّ عامل يسحب العنصر التالي ويعالجه مستقلّاً.
+	// JS أحاديّ الخيط، فزيادة العدّادات بين await آمنة (لا سباق حقيقيّ).
+	// قد نتجاوز targetSuccess بمقدار (poolSize-1) في أسوأ حالة — وهذا مقبول
+	// ومرغوب (كتب أكثر للتطبيق). كلّ عنصر مستقلّ ويُتحقَّق من magic bytes
+	// داخل importItem، فلا تلف من التزامن.
+	async function worker() {
+		for (;;) {
+			if (processed >= targetSuccess || attempts >= MAX_IMPORT_ATTEMPTS_PER_TICK) return;
+			const myIdx = cursorIdx++;
+			if (myIdx >= candidates.length) return;
 
-		const id = String(item?.identifier || '');
-		if (!id) continue;
-		if (await isItemImported(id).catch(() => false)) {
-			skipped += 1;
-			continue;
-		}
-		try {
-			const r = await importItem(id, {
-				...licenseOpts,
-				preferSmallestFile: true,
-				downloadTimeoutMs: CRON_DOWNLOAD_TIMEOUT_MS
-			});
-			processed += 1;
-			totalSectionsCreated += r.createdSectionsIds?.length || 0;
-			if (processedByType[r.nebrasContentType] !== undefined) {
-				processedByType[r.nebrasContentType] += 1;
+			const item = candidates[myIdx];
+			const id = String(item?.identifier || '');
+			if (!id) continue;
+			if (processed >= targetSuccess || attempts >= MAX_IMPORT_ATTEMPTS_PER_TICK) return;
+			attempts += 1;
+
+			if (await isItemImported(id).catch(() => false)) {
+				skipped += 1;
+				continue;
 			}
-			await appendLog({
-				level: 'success',
-				message: logCtx.successMessage
-					? logCtx.successMessage(r, id)
-					: `استورد "${r.title}"`,
-				identifier: id,
-				fileId: r.fileId,
-				seedId: logCtx.seedId,
-				mode: logCtx.mode
-			});
-		} catch (err) {
-			failed += 1;
-			const reason = err?.reason || 'unknown';
-			const message = (err?.message || String(err)).slice(0, 200);
-			if (failureSamples.length < 6) {
-				failureSamples.push({ id, reason, message });
+			try {
+				const r = await importItem(id, {
+					...licenseOpts,
+					preferSmallestFile: true,
+					downloadTimeoutMs: CRON_DOWNLOAD_TIMEOUT_MS
+				});
+				processed += 1;
+				totalSectionsCreated += r.createdSectionsIds?.length || 0;
+				if (processedByType[r.nebrasContentType] !== undefined) {
+					processedByType[r.nebrasContentType] += 1;
+				}
+				await appendLog({
+					level: 'success',
+					message: logCtx.successMessage
+						? logCtx.successMessage(r, id)
+						: `استورد "${r.title}"`,
+					identifier: id,
+					fileId: r.fileId,
+					seedId: logCtx.seedId,
+					mode: logCtx.mode
+				});
+			} catch (err) {
+				failed += 1;
+				const reason = err?.reason || 'unknown';
+				const message = (err?.message || String(err)).slice(0, 200);
+				if (failureSamples.length < 6) {
+					failureSamples.push({ id, reason, message });
+				}
+				await recordFailure(id, {
+					reason,
+					message,
+					iaSourceUrl: `https://archive.org/details/${id}`
+				}).catch(() => {});
+				await appendLog({
+					level: 'error',
+					message: `فشل "${id}": ${message}`,
+					identifier: id,
+					seedId: logCtx.seedId,
+					reason,
+					mode: logCtx.mode
+				});
 			}
-			await recordFailure(id, {
-				reason,
-				message,
-				iaSourceUrl: `https://archive.org/details/${id}`
-			}).catch(() => {});
-			await appendLog({
-				level: 'error',
-				message: `فشل "${id}": ${message}`,
-				identifier: id,
-				seedId: logCtx.seedId,
-				reason,
-				mode: logCtx.mode
-			});
 		}
 	}
+
+	const poolSize = Math.min(IMPORT_CONCURRENCY, Math.max(1, candidates.length));
+	await Promise.all(Array.from({ length: poolSize }, () => worker()));
 
 	return {
 		processed,

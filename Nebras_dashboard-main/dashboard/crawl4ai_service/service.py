@@ -35,7 +35,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from state import JobStatus, ServiceState
-from worker import start_worker, stop_worker
+from worker import start_worker, stop_worker, crawl_html_now, download_now
 
 load_dotenv()
 
@@ -68,6 +68,17 @@ class ControlBody(BaseModel):
 
 class CrawlBody(BaseModel):
     url: str = Field(..., min_length=4, description="https://...")
+
+
+class FetchBody(BaseModel):
+    url: str = Field(..., min_length=4, description="https://...")
+    timeout_ms: int = Field(default=60000, ge=5000, le=180000)
+
+
+class DownloadBody(BaseModel):
+    url: str = Field(..., min_length=4, description="https://... file URL")
+    referer: str | None = Field(default=None, description="page URL to establish session/clearance")
+    timeout_ms: int = Field(default=90000, ge=5000, le=180000)
 
 
 @app.get("/health")
@@ -115,6 +126,35 @@ async def crawl(
         raise HTTPException(status_code=400, detail="invalid_url")
     rec = await state.enqueue(url)
     return {"ok": True, "job": {"id": rec.id, "url": rec.url, "status": rec.status.value}}
+
+
+@app.post("/fetch")
+async def fetch(
+    body: FetchBody,
+    x_crawl4ai_secret: str | None = Header(default=None, alias="X-Crawl4AI-Secret"),
+) -> dict[str, Any]:
+    """Synchronous crawl that RETURNS rendered HTML (defeats JS/Cloudflare via
+    a real browser). Independent of the queue worker."""
+    _auth(x_crawl4ai_secret)
+    url = body.url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="invalid_url")
+    return await crawl_html_now(url, timeout_ms=body.timeout_ms)
+
+
+@app.post("/download")
+async def download(
+    body: DownloadBody,
+    x_crawl4ai_secret: str | None = Header(default=None, alias="X-Crawl4AI-Secret"),
+) -> dict[str, Any]:
+    """Download a binary file (PDF/audio/...) through a real browser context,
+    establishing Cloudflare clearance via the referer page first. Returns
+    base64 so the Node side can rebuild the Buffer."""
+    _auth(x_crawl4ai_secret)
+    url = body.url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="invalid_url")
+    return await download_now(url, referer=body.referer, timeout_ms=body.timeout_ms)
 
 
 @app.get("/jobs")
