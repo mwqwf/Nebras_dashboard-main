@@ -21,6 +21,7 @@
 
 import { isPuppeteerEnabled, fetchHtmlViaBrowser } from './noorBrowser.js';
 import { crawl4aiFetchHtml } from '$lib/server/crawl4aiClient.js';
+import { scraperFetchHtml } from '$lib/server/scraperProxy.js';
 
 const USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -86,7 +87,17 @@ async function fetchHtml(url) {
 			return { html: viaCrawl4ai.html, finalUrl: viaCrawl4ai.finalUrl };
 		}
 	} catch {
-		// فشل crawl4ai؟ نسقط للبدائل (Puppeteer/fetch) بدون إنهاء الجولة.
+		// فشل crawl4ai؟ نسقط للبدائل.
+	}
+
+	// وسيط API خارجيّ (إن ضُبط SCRAPER_API_URL_TEMPLATE) — يجتاز Cloudflare بمفتاح.
+	try {
+		const viaScraper = await scraperFetchHtml(url);
+		if (viaScraper && !looksLikeCloudflareChallenge(viaScraper.html)) {
+			return { html: viaScraper.html, finalUrl: viaScraper.finalUrl };
+		}
+	} catch {
+		/* نسقط للبدائل */
 	}
 
 	const usePuppeteer = await isPuppeteerEnabled().catch(() => false);

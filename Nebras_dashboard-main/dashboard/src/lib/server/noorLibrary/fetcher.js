@@ -28,6 +28,7 @@ import {
 // يُرفض افتراضياً قبل التنزيل أو الرفع.
 import { evaluateLicense } from '../internetArchive/licenseFilter.js';
 import { crawl4aiFetchHtml, crawl4aiDownload } from '$lib/server/crawl4aiClient.js';
+import { scraperFetchHtml, scraperDownloadBuffer } from '$lib/server/scraperProxy.js';
 
 const USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -99,6 +100,16 @@ async function fetchHtml(url) {
 		}
 	} catch {
 		// نسقط للبدائل
+	}
+
+	// وسيط API خارجيّ (SCRAPER_API_URL_TEMPLATE) — يجتاز Cloudflare بمفتاح.
+	try {
+		const viaScraper = await scraperFetchHtml(url);
+		if (viaScraper && !looksLikeCloudflareChallenge(viaScraper.html) && viaScraper.html.length >= 200) {
+			return { html: viaScraper.html, finalUrl: viaScraper.finalUrl };
+		}
+	} catch {
+		/* نسقط للبدائل */
 	}
 
 	const usePuppeteer = await isPuppeteerEnabled().catch(() => false);
@@ -614,6 +625,28 @@ export async function downloadBookFile(fileUrl, opts = {}) {
 		}
 	} catch {
 		// نسقط للبدائل (Puppeteer/fetch) بدون إنهاء العمليّة.
+	}
+
+	// وسيط API خارجيّ (SCRAPER_API_DOWNLOAD_TEMPLATE/URL_TEMPLATE) — يجلب الـ PDF
+	// متجاوزاً Cloudflare بمفتاح، دون نشر أي خادم.
+	try {
+		const viaScraper = await scraperDownloadBuffer(fileUrl);
+		if (viaScraper?.buffer && viaScraper.buffer.byteLength > 0) {
+			let filename = '';
+			try {
+				filename = decodeURIComponent(new URL(fileUrl).pathname.split('/').pop() || 'book.pdf');
+			} catch {
+				filename = 'book.pdf';
+			}
+			return {
+				buffer: viaScraper.buffer,
+				contentType: viaScraper.contentType || 'application/pdf',
+				filename,
+				size: viaScraper.buffer.byteLength
+			};
+		}
+	} catch {
+		/* نسقط للبدائل */
 	}
 
 	const usePuppeteer = await isPuppeteerEnabled().catch(() => false);
