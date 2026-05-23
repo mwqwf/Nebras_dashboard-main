@@ -79,28 +79,29 @@ export async function GET(event) {
 	const cf = looksLikeCloudflare(html);
 	steps.push({ step: 'fetch_listing', url: sampleUrl, ok: fetchOk, method, cloudflareChallenge: cf, detail: fetchDetail || `طول HTML = ${html.length}` });
 
-	if (!fetchOk || cf) {
-		if (source === 'hindawi') {
-			verdict = '⛔ تعذّر جلب صفحة هنداوي (غير متوقّع — هنداوي بلا Cloudflare).';
-			nextStep = 'أعد المحاولة بعد دقيقة؛ إن تكرّر بلّغني بنصّ هذا التشخيص.';
-		} else {
-			verdict = '⚠ نور محجوبة بـ Cloudflare للطلب المباشر — تحتاج crawl4ai فعلاً.';
-			nextStep = 'انشر crawl4ai (deploy-all.ps1) واضبط CRAWL4AI_SERVICE_URL/SECRET في Vercel. أو اكتفِ بهنداوي + الأرشيف.';
-		}
+	// 3) استخراج روابط الكتب (الحَكَم الفعليّ): إن استُخرجت روابط فالجلب ناجح،
+	//    بصرف النظر عن إشارة Cloudflare الاستدلاليّة (قد تكون إيجابيّة كاذبة).
+	const links = fetchOk ? (source === 'hindawi' ? hindawiExtract(html) : noorExtract(html, sampleUrl)) : [];
+	steps.push({ step: 'extract_book_links', count: links.length, sample: links.slice(0, 3) });
+
+	if (links.length > 0) {
+		verdict = `✅ سليم: الصفحة تُجلب (الطريقة: ${method || '—'}) واستُخرج ${links.length} رابط كتاب. اضغط «دورة الآن» لبدء الجلب.`;
+		nextStep = 'شغّل «دورة الآن» وراقب السجلّ. الـ cron سيواصل تلقائياً.';
 		return json({ ok: true, source, sampleUrl, steps, verdict, nextStep });
 	}
 
-	// 3) استخراج روابط الكتب
-	const links = source === 'hindawi' ? hindawiExtract(html) : noorExtract(html, sampleUrl);
-	steps.push({ step: 'extract_book_links', count: links.length, sample: links.slice(0, 3) });
-
-	if (links.length === 0) {
-		verdict = '⚠ جُلِبت الصفحة لكن لم تُستخرج روابط كتب (تغيّر بنية الموقع؟).';
-		nextStep = 'بلّغني — أحدّث أنماط الاستخراج (regex) في crawler الخاص بهذا المصدر.';
+	// لا روابط: فرّق بين حجب فعليّ وتغيّر بنية.
+	if (!fetchOk || cf) {
+		if (source === 'hindawi') {
+			verdict = '⛔ تعذّر جلب صفحة هنداوي فعلاً.';
+			nextStep = 'أعد المحاولة بعد دقيقة؛ إن تكرّر بلّغني بنصّ هذا التشخيص.';
+		} else {
+			verdict = '⚠ نور محجوبة بـ Cloudflare للطلب المباشر — تحتاج وسيطاً.';
+			nextStep = 'اضبط SCRAPER_API_URL_TEMPLATE في Vercel (مفتاح خدمة scraping) أو انشر crawl4ai.';
+		}
 	} else {
-		verdict = `✅ كل شيء سليم: crawl4ai تعمل، والصفحة تُجلب، واستُخرج ${links.length} رابط كتاب. اضغط «دورة الآن» لبدء الجلب.`;
-		nextStep = 'شغّل «دورة الآن» وراقب السجلّ. الـ cron سيواصل تلقائياً.';
+		verdict = '⚠ جُلِبت الصفحة لكن لم تُستخرج روابط كتب (تغيّر بنية الموقع؟).';
+		nextStep = 'بلّغني — أحدّث أنماط الاستخراج (regex).';
 	}
-
 	return json({ ok: true, source, sampleUrl, steps, verdict, nextStep });
 }

@@ -315,7 +315,10 @@ export async function runEngineTick() {
 	if (cursor.categoryIndex >= cats.length) cursor.categoryIndex = 0;
 	const category = cats[cursor.categoryIndex];
 	const pages = { ...(cursor.pages || {}) };
-	const startPage = Math.max(1, Number(pages[category.slug]) || 1);
+	// مفاتيح RTDB لا تقبل . # $ / [ ] — وبعض الـ slugs فيها نقطة
+	// (literary.criticism, science.fiction…). نُرمّز المفتاح بأمان.
+	const pk = category.slug.replace(/[.#$/[\]]/g, '_');
+	const startPage = Math.max(1, Number(pages[pk]) || 1);
 	// round-robin: ننتقل لتصنيف مختلف في كل دورة → تتنوّع الأقسام بسرعة.
 	const nextCat = (cursor.categoryIndex + 1) % cats.length;
 
@@ -336,7 +339,7 @@ export async function runEngineTick() {
 
 	// إن نفد التصنيف الحاليّ أو لا جديد فيه → نُصفّر صفحته وننتقل للتالي.
 	if (discovery.newBooks.length === 0 || discovery.exhausted) {
-		pages[category.slug] = 1;
+		pages[pk] = 1;
 		await writeCursor({ categoryIndex: nextCat, pages });
 		await appendLog({
 			level: 'info',
@@ -380,7 +383,7 @@ export async function runEngineTick() {
 	}
 
 	const nextPage = discovery.nextPage || startPage + 1;
-	pages[category.slug] = nextPage;
+	pages[pk] = nextPage;
 	await writeCursor({ categoryIndex: nextCat, pages });
 
 	await bumpStats({

@@ -13,12 +13,18 @@
 import { json } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { isAdminConfigured } from '$lib/server/firebaseAdmin.js';
-import { autoBootIfNeeded } from '$lib/server/internetArchive/engine.js';
+import { autoBootIfNeeded, runEngineTick } from '$lib/server/internetArchive/engine.js';
 
 /** Vercel Pro: حتى 300s؛ Hobby: 10s — نطلب 60 حيث يُسمح. */
 export const config = {
 	maxDuration: 60
 };
+
+// تسريع: ننفّذ عدّة دورات في نداء cron واحد ضمن ميزانية زمنيّة آمنة بدل
+// دورة واحدة. يضاعف الإنتاجيّة دون تجاوز مهلة Vercel ودون لمس المجلوب سابقاً
+// (الـ registry يمنع التكرار + تحقّق magic bytes يمنع التلف).
+const CRON_TIME_BUDGET_MS = 45_000;
+const CRON_MAX_TICKS = 8;
 
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
@@ -46,28 +52,46 @@ export async function GET(event) {
 	}
 
 	try {
-		// المحرّك يعمل دائماً في الخلفية — لا يعتمد على لوحة تحكّم أو أزرار.
-		const r = await autoBootIfNeeded({ runInlineTick: true, forceTick: true });
-		if (!r.booted) {
-			return json({ ok: true, skipped: true, reason: r.reason });
+		// 1) نضمن وجود الإعدادات (enabled/seeds) بلا دورة inline.
+		//    إن كان booted=false فالمستخدم أوقف المحرّك صراحةً → نحترم القرار.
+		const boot = await autoBootIfNeeded({ runInlineTick: false });
+		if (!boot.booted) {
+			return json({ ok: true, skipped: true, reason: boot.reason || 'engine_disabled' });
 		}
-		if (r.tickError) {
-			return json(
-				{
-					ok: false,
-					cron: true,
-					error: 'tick_failed',
-					...r.tickError,
-					...(r.inlineTickResult || {})
-				},
-				{ status: 500 }
-			);
+
+		// 2) حلقة دورات ضمن الميزانية الزمنيّة — تسريع آمن.
+		const startedAt = Date.now();
+		let ticks = 0;
+		let processed = 0;
+		let skipped = 0;
+		let failed = 0;
+		let lastError = null;
+		const samples = [];
+		while (ticks < CRON_MAX_TICKS && Date.now() - startedAt < CRON_TIME_BUDGET_MS) {
+			try {
+				const t = await runEngineTick();
+				ticks += 1;
+				processed += Number(t?.processed || 0);
+				skipped += Number(t?.skipped || 0);
+				failed += Number(t?.failed || 0);
+				if (Array.isArray(t?.failureSamples) && samples.length < 6) {
+					samples.push(...t.failureSamples.slice(0, 6 - samples.length));
+				}
+			} catch (e) {
+				lastError = e?.message || String(e);
+				break; // خطأ دورة → نتوقّف بهدوء (الـ cron التالي يعيد).
+			}
 		}
 		return json({
 			ok: true,
 			cron: true,
-			skippedInlineTick: Boolean(r.skippedInlineTick),
-			...(r.inlineTickResult || {})
+			ticks,
+			processed,
+			skipped,
+			failed,
+			elapsedMs: Date.now() - startedAt,
+			lastError,
+			failureSamples: samples
 		});
 	} catch (err) {
 		console.error('[cron/internet-archive-tick]', err);
