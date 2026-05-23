@@ -91,18 +91,18 @@ async function writeConfig(patch) {
 
 async function readCursor() {
 	const snap = await getAdminDatabase().ref(CURSOR_PATH).get();
-	if (!snap.exists()) return { categoryIndex: 0, page: 1 };
+	if (!snap.exists()) return { categoryIndex: 0, pages: {} };
 	const v = snap.val() || {};
 	return {
 		categoryIndex: Math.max(0, Number(v.categoryIndex) || 0),
-		page: Math.max(1, Number(v.page) || 1)
+		pages: v.pages && typeof v.pages === 'object' ? v.pages : {}
 	};
 }
 
 async function writeCursor(cursor) {
 	await getAdminDatabase().ref(CURSOR_PATH).set({
 		categoryIndex: Math.max(0, Number(cursor.categoryIndex) || 0),
-		page: Math.max(1, Number(cursor.page) || 1),
+		pages: cursor.pages && typeof cursor.pages === 'object' ? cursor.pages : {},
 		updatedAt: { '.sv': 'timestamp' }
 	});
 }
@@ -312,8 +312,12 @@ export async function runEngineTick() {
 	const cfg = await readConfig();
 	const cats = HINDAWI_CATEGORIES;
 	let cursor = await readCursor();
-	if (cursor.categoryIndex >= cats.length) cursor = { categoryIndex: 0, page: 1 };
+	if (cursor.categoryIndex >= cats.length) cursor.categoryIndex = 0;
 	const category = cats[cursor.categoryIndex];
+	const pages = { ...(cursor.pages || {}) };
+	const startPage = Math.max(1, Number(pages[category.slug]) || 1);
+	// round-robin: ننتقل لتصنيف مختلف في كل دورة → تتنوّع الأقسام بسرعة.
+	const nextCat = (cursor.categoryIndex + 1) % cats.length;
 
 	let knownIds;
 	try {
@@ -324,22 +328,22 @@ export async function runEngineTick() {
 
 	const discovery = await discoverNewBooksInCategory({
 		slug: category.slug,
-		startPage: cursor.page,
+		startPage,
 		batchSize: cfg.batchSize,
 		maxPagesPerCall: cfg.maxPagesPerCall,
 		knownIds
 	});
 
-	// إن نفد التصنيف الحاليّ أو لا جديد فيه → التصنيف التالي (page=1).
+	// إن نفد التصنيف الحاليّ أو لا جديد فيه → نُصفّر صفحته وننتقل للتالي.
 	if (discovery.newBooks.length === 0 || discovery.exhausted) {
-		const nextCat = (cursor.categoryIndex + 1) % cats.length;
-		await writeCursor({ categoryIndex: nextCat, page: 1 });
+		pages[category.slug] = 1;
+		await writeCursor({ categoryIndex: nextCat, pages });
 		await appendLog({
 			level: 'info',
 			message: `تصنيف «${category.name}» استُنفد/لا جديد — الانتقال إلى «${cats[nextCat].name}».`,
 			category: category.slug
 		});
-		return { processed: 0, created: 0, skipped: 0, failed: 0, category: category.name, cursor: { categoryIndex: nextCat, page: 1 }, sample: [] };
+		return { processed: 0, created: 0, skipped: 0, failed: 0, category: category.name, cursor: { categoryIndex: nextCat }, sample: [] };
 	}
 
 	const sample = [];
@@ -375,8 +379,9 @@ export async function runEngineTick() {
 		}
 	}
 
-	const nextPage = discovery.nextPage || cursor.page + 1;
-	await writeCursor({ categoryIndex: cursor.categoryIndex, page: nextPage });
+	const nextPage = discovery.nextPage || startPage + 1;
+	pages[category.slug] = nextPage;
+	await writeCursor({ categoryIndex: nextCat, pages });
 
 	await bumpStats({
 		totalFetchedDelta: processed,
