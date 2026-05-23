@@ -12,7 +12,7 @@ import { json } from '@sveltejs/kit';
 import { isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import { crawl4aiHealth, crawl4aiFetchHtml, crawl4aiConfigured } from '$lib/server/crawl4aiClient.js';
 import { extractBookLinks as noorExtract, DEFAULT_SEED_URLS } from '$lib/server/noorLibrary/crawler.js';
-import { extractBookLinks as hindawiExtract, buildListingUrl } from '$lib/server/hindawi/crawler.js';
+import { extractBookLinks as hindawiExtract, buildCategoryUrl } from '$lib/server/hindawi/crawler.js';
 
 function looksLikeCloudflare(html) {
 	const s = String(html || '').toLowerCase();
@@ -35,7 +35,7 @@ export async function GET(event) {
 
 	const source = String(event.url.searchParams.get('source') || 'noor').toLowerCase();
 	const sampleUrl =
-		source === 'hindawi' ? buildListingUrl(1) : DEFAULT_SEED_URLS[0];
+		source === 'hindawi' ? buildCategoryUrl('history', 1) : DEFAULT_SEED_URLS[0];
 
 	const steps = [];
 	let verdict = '';

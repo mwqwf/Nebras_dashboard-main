@@ -28,17 +28,14 @@ import {
 } from '$lib/server/firebaseAdmin.js';
 import { adminFsBulkDeleteFileMirrorIds } from '$lib/server/nebrasUnifiedFirestoreAdmin.js';
 import { NEBRAS_FS_UPLOADS, NEBRAS_FS_CONTENT_FILES } from '$lib/firebase/nebrasUnifiedPaths.js';
-import { buildSectionsTree } from '../noorLibrary/sectionsTree.js';
-import { classifyAutonomous } from '../noorLibrary/classifier.js';
-import {
-	createMainSectionAdmin,
-	createSubSectionAdmin,
-	createSecondarySectionAdmin
-} from '../noorLibrary/sectionsCreator.js';
+import { createMainSectionAdmin, createSubSectionAdmin } from '../noorLibrary/sectionsCreator.js';
 import { fetchBookMetadata, downloadBookFile } from './fetcher.js';
-import { discoverNewBooks, MAX_LISTING_PAGES } from './crawler.js';
+import { HINDAWI_CATEGORIES, discoverNewBooksInCategory } from './crawler.js';
 import { isBookImported, partitionKnownBooks, recordImported, recordFailure } from './registry.js';
 import { adminUploadAndRegister } from './adminUploader.js';
+
+// القسم الفرعيّ الموحَّد تحت كل تصنيف رئيسيّ (يميّز مصدر هنداوي ويُسهّل الفصل).
+const HINDAWI_SUB_NAME = 'كتب هنداوي';
 
 const ENGINE_ROOT = 'hindawi_library_engine';
 const CONFIG_PATH = `${ENGINE_ROOT}/config`;
@@ -94,12 +91,17 @@ async function writeConfig(patch) {
 
 async function readCursor() {
 	const snap = await getAdminDatabase().ref(CURSOR_PATH).get();
-	if (!snap.exists()) return { page: 1 };
-	return { page: Math.max(1, Number(snap.val()?.page) || 1) };
+	if (!snap.exists()) return { categoryIndex: 0, page: 1 };
+	const v = snap.val() || {};
+	return {
+		categoryIndex: Math.max(0, Number(v.categoryIndex) || 0),
+		page: Math.max(1, Number(v.page) || 1)
+	};
 }
 
 async function writeCursor(cursor) {
 	await getAdminDatabase().ref(CURSOR_PATH).set({
+		categoryIndex: Math.max(0, Number(cursor.categoryIndex) || 0),
 		page: Math.max(1, Number(cursor.page) || 1),
 		updatedAt: { '.sv': 'timestamp' }
 	});
@@ -202,9 +204,11 @@ async function notifyFcmContentAdded(info) {
 	}
 }
 
-// ── Core: process one book ───────────────────────────────────────────
-async function processBook({ url, bookId, sections }) {
-	// 1) metadata (PDF url مضمون البناء من المعرّف)
+// ── Core: process one book → قسم تصنيفه الحقيقيّ ──────────────────────
+// categoryName = الاسم العربيّ لتصنيف هنداوي (التاريخ/الفلسفة/الأدب…) الذي
+// جاء منه الكتاب. يصبح القسم الرئيسيّ، وتحته فرعيّ موحَّد «كتب هنداوي».
+async function processBook({ url, bookId, categoryName }) {
+	// 1) metadata (رابط PDF يُبنى من المعرّف)
 	const meta = await fetchBookMetadata(url);
 	if (!meta.fileUrl) {
 		throw Object.assign(new Error(`لا رابط PDF لـ "${meta.title || bookId}".`), {
@@ -213,7 +217,7 @@ async function processBook({ url, bookId, sections }) {
 		});
 	}
 
-	// 2) تنزيل الـ PDF فعلياً قبل أيّ كتابة (مع تحقّق magic bytes داخل الجالب)
+	// 2) تنزيل الـ PDF فعلياً قبل أيّ كتابة (تحقّق magic bytes داخل الجالب)
 	const downloaded = await downloadBookFile(meta.fileUrl, {
 		refererUrl: meta.source?.url || url
 	});
@@ -221,80 +225,23 @@ async function processBook({ url, bookId, sections }) {
 		throw Object.assign(new Error('PDF فارغ.'), { reason: 'empty_download', status: 422 });
 	}
 
-	// 3) تصنيف محليّ
-	const decision = await classifyAutonomous(sections, meta);
-
-	let mainId = decision.mainId;
-	let subId = decision.subId || null;
-	let secondaryId = decision.secondaryId || null;
+	// 3) ضمان قسم التصنيف: رئيسيّ = اسم التصنيف، فرعيّ = «كتب هنداوي».
 	const createdSectionsIds = [];
 	let sectionsCreatedDelta = 0;
 
-	if (decision.kind === 'create_main') {
-		const createdMain = await createMainSectionAdmin(decision.newMainName);
-		mainId = String(createdMain.id);
-		if (!createdMain.alreadyExisted) {
-			createdSectionsIds.push(mainId);
-			sectionsCreatedDelta += 1;
-			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-		}
-		const createdSub = await createSubSectionAdmin(mainId, decision.newSubName);
-		subId = String(createdSub.id);
-		if (!createdSub.alreadyExisted) {
-			createdSectionsIds.push(subId);
-			sectionsCreatedDelta += 1;
-			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-		}
-	} else if (decision.kind === 'create_sub') {
-		const created = await createSubSectionAdmin(mainId, decision.newSubName);
-		subId = String(created.id);
-		if (!created.alreadyExisted) {
-			createdSectionsIds.push(subId);
-			sectionsCreatedDelta += 1;
-			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-		}
-	} else if (decision.kind === 'create_secondary') {
-		subId = decision.subId;
-		const created = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
-		secondaryId = String(created.id);
-		if (!created.alreadyExisted) {
-			createdSectionsIds.push(secondaryId);
-			sectionsCreatedDelta += 1;
-			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-		}
+	const createdMain = await createMainSectionAdmin(categoryName);
+	const mainId = String(createdMain.id);
+	if (!createdMain.alreadyExisted) {
+		createdSectionsIds.push(mainId);
+		sectionsCreatedDelta += 1;
+		await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
 	}
-
-	// إن لم يُرجع المصنّف قسماً فرعياً صالحاً (مثلاً القسم الرئيسيّ الأوّل بلا
-	// أقسام فرعيّة)، ننشئ بنية منظّمة لهنداوي تلقائياً بدل رفض الكتاب:
-	//   رئيسيّ «مؤسسة هنداوي» → فرعيّ حسب تصنيف الكتاب (categoryHints) أو «كتب عامة».
-	if (!subId) {
-		const createdMain = await createMainSectionAdmin('مؤسسة هنداوي');
-		mainId = String(createdMain.id);
-		if (!createdMain.alreadyExisted) {
-			createdSectionsIds.push(mainId);
-			sectionsCreatedDelta += 1;
-			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-		}
-		const hint = Array.isArray(meta.categoryHints) ? (meta.categoryHints[0] || '') : '';
-		const subName = String(hint || '').trim().slice(0, 60) || 'كتب عامة';
-		const createdSub = await createSubSectionAdmin(mainId, subName);
-		subId = String(createdSub.id);
-		if (!createdSub.alreadyExisted) {
-			createdSectionsIds.push(subId);
-			sectionsCreatedDelta += 1;
-			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
-		}
-	}
-
-	const refreshed = await buildSectionsTree();
-	const main = refreshed.index.mainsById[mainId];
-	const sub = refreshed.index.subsById[subId];
-	const secondary = secondaryId ? refreshed.index.secondariesById[secondaryId] : null;
-	if (!main || !sub) {
-		throw Object.assign(new Error('main أو sub لم يُعثر عليه بعد التصنيف.'), {
-			reason: 'hierarchy_resolution_failed',
-			status: 500
-		});
+	const createdSub = await createSubSectionAdmin(mainId, HINDAWI_SUB_NAME);
+	const subId = String(createdSub.id);
+	if (!createdSub.alreadyExisted) {
+		createdSectionsIds.push(subId);
+		sectionsCreatedDelta += 1;
+		await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
 	}
 
 	const finalMetadata = {
@@ -304,17 +251,12 @@ async function processBook({ url, bookId, sections }) {
 		thumbnail: meta.thumbnail || null,
 		is_listed: true,
 		content_type: 'document',
-		main_section: String(main.id),
-		main_section_id: String(main.id),
-		main_section_name: String(main.name || ''),
-		subsection: String(sub.id),
-		subsection_name: String(sub.name || ''),
-		...(secondary
-			? {
-					secondary_subsection: String(secondary.id),
-					secondary_subsection_name: String(secondary.name || '')
-				}
-			: { secondary_subsection: null })
+		main_section: mainId,
+		main_section_id: mainId,
+		main_section_name: String(createdMain.name || categoryName),
+		subsection: subId,
+		subsection_name: HINDAWI_SUB_NAME,
+		secondary_subsection: null
 	};
 
 	const result = await adminUploadAndRegister({
@@ -336,23 +278,19 @@ async function processBook({ url, bookId, sections }) {
 		fileId: result.fileId,
 		title: meta.title,
 		url: meta.source?.url || url,
-		hierarchy: {
-			mainId: String(main.id),
-			subId: String(sub.id),
-			secondaryId: secondary ? String(secondary.id) : null
-		},
+		hierarchy: { mainId, subId, secondaryId: null },
 		createdSectionsIds
 	});
 
 	await notifyFcmContentAdded({
 		title: meta.title,
 		contentId: result.fileId,
-		mainSectionId: main.id,
-		subSectionId: sub.id,
-		secondarySectionId: secondary?.id || '',
-		mainSectionName: main.name,
-		subSectionName: sub.name,
-		secondarySectionName: secondary?.name || '',
+		mainSectionId: mainId,
+		subSectionId: subId,
+		secondarySectionId: '',
+		mainSectionName: String(createdMain.name || categoryName),
+		subSectionName: HINDAWI_SUB_NAME,
+		secondarySectionName: '',
 		sourceUrl: meta.source?.url || url
 	});
 
@@ -360,20 +298,22 @@ async function processBook({ url, bookId, sections }) {
 		fileId: result.fileId,
 		title: meta.title,
 		hierarchy: {
-			main: { id: String(main.id), name: main.name },
-			sub: { id: String(sub.id), name: sub.name },
-			secondary: secondary ? { id: String(secondary.id), name: secondary.name } : null
+			main: { id: mainId, name: String(createdMain.name || categoryName) },
+			sub: { id: subId, name: HINDAWI_SUB_NAME },
+			secondary: null
 		},
 		createdSectionsIds,
 		sectionsCreatedDelta
 	};
 }
 
-// ── Tick ─────────────────────────────────────────────────────────────
+// ── Tick — يتنقّل بين تصنيفات هنداوي ──────────────────────────────────
 export async function runEngineTick() {
 	const cfg = await readConfig();
+	const cats = HINDAWI_CATEGORIES;
 	let cursor = await readCursor();
-	if (cursor.page > MAX_LISTING_PAGES) cursor = { page: 1 };
+	if (cursor.categoryIndex >= cats.length) cursor = { categoryIndex: 0, page: 1 };
+	const category = cats[cursor.categoryIndex];
 
 	let knownIds;
 	try {
@@ -382,32 +322,24 @@ export async function runEngineTick() {
 		knownIds = new Set();
 	}
 
-	const discovery = await discoverNewBooks({
+	const discovery = await discoverNewBooksInCategory({
+		slug: category.slug,
 		startPage: cursor.page,
 		batchSize: cfg.batchSize,
 		maxPagesPerCall: cfg.maxPagesPerCall,
 		knownIds
 	});
 
+	// إن نفد التصنيف الحاليّ أو لا جديد فيه → التصنيف التالي (page=1).
 	if (discovery.newBooks.length === 0 || discovery.exhausted) {
-		const nextPage = discovery.exhausted ? 1 : (discovery.nextPage || cursor.page + 1);
-		await writeCursor({ page: nextPage });
+		const nextCat = (cursor.categoryIndex + 1) % cats.length;
+		await writeCursor({ categoryIndex: nextCat, page: 1 });
 		await appendLog({
 			level: 'info',
-			message: discovery.exhausted
-				? 'استُنفدت صفحات الفهرسة — العودة إلى الصفحة 1.'
-				: `لا كتب جديدة في الصفحة ${cursor.page} — التقدّم.`,
-			page: nextPage
+			message: `تصنيف «${category.name}» استُنفد/لا جديد — الانتقال إلى «${cats[nextCat].name}».`,
+			category: category.slug
 		});
-		return { processed: 0, created: 0, skipped: 0, failed: 0, cursor: { page: nextPage }, sample: [] };
-	}
-
-	let sections;
-	try {
-		sections = await buildSectionsTree();
-	} catch (err) {
-		await bumpStats({ touchLastRun: true, lastError: `sections_read_failed: ${err?.message}` });
-		throw err;
+		return { processed: 0, created: 0, skipped: 0, failed: 0, category: category.name, cursor: { categoryIndex: nextCat, page: 1 }, sample: [] };
 	}
 
 	const sample = [];
@@ -423,7 +355,7 @@ export async function runEngineTick() {
 			continue;
 		}
 		try {
-			const r = await processBook({ url: link.url, bookId: link.bookId, sections });
+			const r = await processBook({ url: link.url, bookId: link.bookId, categoryName: category.name });
 			processed += 1;
 			createdSectionsTotal += r.sectionsCreatedDelta;
 			sample.push({ fileId: r.fileId, title: r.title, url: link.url, status: 'ok', hierarchy: r.hierarchy });
@@ -444,7 +376,7 @@ export async function runEngineTick() {
 	}
 
 	const nextPage = discovery.nextPage || cursor.page + 1;
-	await writeCursor({ page: nextPage > MAX_LISTING_PAGES ? 1 : nextPage });
+	await writeCursor({ categoryIndex: cursor.categoryIndex, page: nextPage });
 
 	await bumpStats({
 		totalFetchedDelta: processed,
@@ -463,7 +395,7 @@ export async function runEngineTick() {
 		await getAdminDatabase().ref(`${STATS_PATH}/consecutiveEmptyRuns`).set(0).catch(() => {});
 	}
 
-	return { processed, created: createdSectionsTotal, skipped, failed, cursor: { page: nextPage }, sample };
+	return { processed, created: createdSectionsTotal, skipped, failed, category: category.name, cursor: { categoryIndex: cursor.categoryIndex, page: nextPage }, sample };
 }
 
 /** نقطة دخول Cron — تحترم إيقاف المستخدم الصريح. */
@@ -550,9 +482,9 @@ export async function autoBootIfNeeded() {
 }
 
 export async function resetCursor() {
-	await writeCursor({ page: 1 });
-	await appendLog({ level: 'info', message: 'إعادة المؤشّر إلى الصفحة 1.' });
-	return { page: 1 };
+	await writeCursor({ categoryIndex: 0, page: 1 });
+	await appendLog({ level: 'info', message: 'إعادة المؤشّر إلى أوّل تصنيف/صفحة 1.' });
+	return { categoryIndex: 0, page: 1 };
 }
 
 /**
