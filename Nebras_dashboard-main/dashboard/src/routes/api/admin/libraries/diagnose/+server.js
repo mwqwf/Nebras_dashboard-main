@@ -41,50 +41,52 @@ export async function GET(event) {
 	let verdict = '';
 	let nextStep = '';
 
-	// 1) صحّة crawl4ai
+	const UA =
+		'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+		'(KHTML, like Gecko) Chrome/124.0 Safari/537.36 NebrasDashboard/1.0';
+
+	// 1) صحّة crawl4ai (معلوماتيّة فقط — ليست شرطاً؛ هنداوي تعمل بـ fetch عاديّ).
 	const health = await crawl4aiHealth();
 	steps.push({ step: 'crawl4ai_health', ...health });
 
-	if (!health.configured) {
-		verdict = '⛔ crawl4ai غير مضبوطة — لهذا لا يجلب المحرّك شيئاً.';
-		nextStep = 'انشر crawl4ai عبر deploy-all.ps1 ثمّ اضبط CRAWL4AI_SERVICE_URL و CRAWL4AI_SERVICE_SECRET في Vercel وأعد النشر.';
-		return json({ ok: true, source, sampleUrl, steps, verdict, nextStep });
-	}
-	if (!health.reachable) {
-		verdict = '⛔ crawl4ai مضبوطة لكنّها لا تستجيب (الرابط/السرّ خطأ أو الخدمة متوقّفة).';
-		nextStep = 'تأكّد أنّ خدمة Cloud Run تعمل وأنّ CRAWL4AI_SERVICE_URL/SECRET مطابقان لها.';
-		return json({ ok: true, source, sampleUrl, steps, verdict, nextStep });
-	}
-
-	// 2) جلب صفحة فهرسة فعليّة عبر crawl4ai
+	// 2) جلب صفحة الفهرسة بنفس منطق المحرّك: crawl4ai أولاً (إن وُجد) ثمّ fetch عاديّ.
 	let html = '';
 	let fetchOk = false;
+	let method = '';
 	let fetchDetail = '';
-	try {
-		const r = await crawl4aiFetchHtml(sampleUrl, { timeoutMs: 60000 });
-		if (r && r.html) {
-			html = r.html;
-			fetchOk = true;
-			fetchDetail = `طول HTML = ${html.length}`;
-		} else {
-			fetchDetail = 'لا HTML من crawl4ai.';
+	if (health.configured && health.reachable) {
+		try {
+			const r = await crawl4aiFetchHtml(sampleUrl, { timeoutMs: 60000 });
+			if (r && r.html) { html = r.html; fetchOk = true; method = 'crawl4ai'; }
+		} catch (e) {
+			fetchDetail = `crawl4ai: ${e?.message || String(e)}`;
 		}
-	} catch (e) {
-		fetchDetail = e?.message || String(e);
+	}
+	if (!fetchOk) {
+		// fallback: طلب HTTP مباشر (يكفي لهنداوي؛ نور غالباً يُحجب بـ Cloudflare).
+		try {
+			const res = await fetch(sampleUrl, {
+				headers: { 'User-Agent': UA, Accept: 'text/html,*/*;q=0.8', 'Accept-Language': 'ar,en;q=0.7' },
+				redirect: 'follow'
+			});
+			const body = await res.text();
+			if (res.ok && body && body.length >= 200) { html = body; fetchOk = true; method = 'plain_fetch'; }
+			else fetchDetail = `fetch: HTTP ${res.status}, طول ${body?.length || 0}`;
+		} catch (e) {
+			fetchDetail = `fetch: ${e?.message || String(e)}`;
+		}
 	}
 	const cf = looksLikeCloudflare(html);
-	steps.push({ step: 'fetch_listing', url: sampleUrl, ok: fetchOk, cloudflareChallenge: cf, detail: fetchDetail });
+	steps.push({ step: 'fetch_listing', url: sampleUrl, ok: fetchOk, method, cloudflareChallenge: cf, detail: fetchDetail || `طول HTML = ${html.length}` });
 
-	if (!fetchOk) {
-		verdict = '⛔ crawl4ai تعمل لكنّها لم تُرجع HTML للصفحة (مهلة/خطأ متصفّح).';
-		nextStep = 'راجع سجلّ خدمة Cloud Run (الذاكرة/المهلة). جرّب رفع memory إلى 4Gi.';
-		return json({ ok: true, source, sampleUrl, steps, verdict, nextStep });
-	}
-	if (cf) {
-		verdict = '⚠ Cloudflare يحجب الصفحة حتى عبر المتصفّح (شائع مع IP مراكز البيانات).';
-		nextStep = source === 'noor'
-			? 'نور خلف Cloudflare صارم؛ قد لا تنجح من IP السحابة. هنداوي بديل موثوق (CDN مفتوح).'
-			: 'غير متوقّع لهنداوي — أعد المحاولة، وإن تكرّر بلّغني.';
+	if (!fetchOk || cf) {
+		if (source === 'hindawi') {
+			verdict = '⛔ تعذّر جلب صفحة هنداوي (غير متوقّع — هنداوي بلا Cloudflare).';
+			nextStep = 'أعد المحاولة بعد دقيقة؛ إن تكرّر بلّغني بنصّ هذا التشخيص.';
+		} else {
+			verdict = '⚠ نور محجوبة بـ Cloudflare للطلب المباشر — تحتاج crawl4ai فعلاً.';
+			nextStep = 'انشر crawl4ai (deploy-all.ps1) واضبط CRAWL4AI_SERVICE_URL/SECRET في Vercel. أو اكتفِ بهنداوي + الأرشيف.';
+		}
 		return json({ ok: true, source, sampleUrl, steps, verdict, nextStep });
 	}
 

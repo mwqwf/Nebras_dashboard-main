@@ -8,7 +8,7 @@
  */
 
 import { json } from '@sveltejs/kit';
-import { startEngine } from '$lib/server/noorLibrary/engine.js';
+import { startEngine, runEngineTick } from '$lib/server/noorLibrary/engine.js';
 import { isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
@@ -31,7 +31,15 @@ export async function POST(event) {
 
 	try {
 		const result = await startEngine();
-		return json({ ok: true, ...result });
+		// دورة فوريّة (serverless لا تُبقي الحلقة). نور تحتاج crawl4ai فقد تفشل
+		// الدورة بهدوء — لا نُفشل التشغيل بسببها.
+		let tick = null;
+		try {
+			tick = await runEngineTick();
+		} catch (e) {
+			tick = { tickError: e?.message || String(e), reason: e?.reason || 'tick_failed' };
+		}
+		return json({ ok: true, ...result, tick, processed: tick?.processed, skipped: tick?.skipped, failed: tick?.failed });
 	} catch (err) {
 		return json(
 			{

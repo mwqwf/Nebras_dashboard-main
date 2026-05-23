@@ -132,7 +132,7 @@
 						{#if st.step === 'crawl4ai_health'}
 							مضبوطة={st.configured ? 'نعم' : 'لا'}، تستجيب={st.reachable ? 'نعم' : 'لا'} — {st.detail}
 						{:else if st.step === 'fetch_listing'}
-							نجح={st.ok ? 'نعم' : 'لا'}، Cloudflare={st.cloudflareChallenge ? 'نعم' : 'لا'} — {st.detail}
+							نجح={st.ok ? 'نعم' : 'لا'}، الطريقة={st.method || '—'}، Cloudflare={st.cloudflareChallenge ? 'نعم' : 'لا'} — {st.detail}
 						{:else if st.step === 'extract_book_links'}
 							عدد الروابط={st.count}
 						{/if}
