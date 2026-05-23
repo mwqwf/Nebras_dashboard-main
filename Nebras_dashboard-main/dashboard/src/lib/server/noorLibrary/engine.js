@@ -487,11 +487,25 @@ async function processBook({ url, bookId, sections }) {
 		}
 	}
 
+	// إن غاب القسم الفرعيّ بعد التصنيف (قسم رئيسيّ بلا فروع)، ننشئ بنية
+	// منظّمة تلقائياً بدل رفض الكتاب: رئيسيّ «مكتبة نور» → فرعيّ حسب تصنيفه.
 	if (!subId) {
-		throw Object.assign(new Error('فشل تحديد subId بعد التصنيف.'), {
-			reason: 'no_sub_after_classify',
-			status: 500
-		});
+		const createdMain = await createMainSectionAdmin('مكتبة نور');
+		mainId = String(createdMain.id);
+		if (!createdMain.alreadyExisted) {
+			createdSectionsIds.push(mainId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+		}
+		const hint = Array.isArray(meta.categoryHints) ? (meta.categoryHints[0] || '') : '';
+		const subName = String(hint || '').trim().slice(0, 60) || 'كتب عامة';
+		const createdSub = await createSubSectionAdmin(mainId, subName);
+		subId = String(createdSub.id);
+		if (!createdSub.alreadyExisted) {
+			createdSectionsIds.push(subId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+		}
 	}
 
 	// إعادة قراءة الأقسام (لجلب أسماء الأقسام الجديدة).

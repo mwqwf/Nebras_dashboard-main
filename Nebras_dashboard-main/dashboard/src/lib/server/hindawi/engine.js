@@ -264,11 +264,26 @@ async function processBook({ url, bookId, sections }) {
 		}
 	}
 
+	// إن لم يُرجع المصنّف قسماً فرعياً صالحاً (مثلاً القسم الرئيسيّ الأوّل بلا
+	// أقسام فرعيّة)، ننشئ بنية منظّمة لهنداوي تلقائياً بدل رفض الكتاب:
+	//   رئيسيّ «مؤسسة هنداوي» → فرعيّ حسب تصنيف الكتاب (categoryHints) أو «كتب عامة».
 	if (!subId) {
-		throw Object.assign(new Error('فشل تحديد subId بعد التصنيف.'), {
-			reason: 'no_sub_after_classify',
-			status: 500
-		});
+		const createdMain = await createMainSectionAdmin('مؤسسة هنداوي');
+		mainId = String(createdMain.id);
+		if (!createdMain.alreadyExisted) {
+			createdSectionsIds.push(mainId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+		}
+		const hint = Array.isArray(meta.categoryHints) ? (meta.categoryHints[0] || '') : '';
+		const subName = String(hint || '').trim().slice(0, 60) || 'كتب عامة';
+		const createdSub = await createSubSectionAdmin(mainId, subName);
+		subId = String(createdSub.id);
+		if (!createdSub.alreadyExisted) {
+			createdSectionsIds.push(subId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+		}
 	}
 
 	const refreshed = await buildSectionsTree();
