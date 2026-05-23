@@ -58,6 +58,21 @@
 							icon: 'archive'
 						},
 						{
+							label: 'مكتبة نور',
+							href: '/admin/noor-library',
+							icon: 'noorImport'
+						},
+						{
+							label: 'مؤسسة هنداوي',
+							href: '/admin/hindawi-library',
+							icon: 'content'
+						},
+						{
+							label: 'الإحصاءات',
+							href: '/admin/statistics',
+							icon: 'stats'
+						},
+						{
 							label: 'بلاغات المحتوى',
 							href: '/admin/reports',
 							icon: 'reports'
