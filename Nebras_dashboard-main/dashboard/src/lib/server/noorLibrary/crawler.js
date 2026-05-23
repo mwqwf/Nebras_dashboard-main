@@ -159,6 +159,25 @@ async function fetchHtml(url) {
  * @param {string} baseUrl
  * @returns {Array<{ url: string, bookId: string }>}
  */
+// أنماط slugs ليست كتباً (صفحات معلومات/سياسات يلتقطها نمط /كتاب-..).
+// مثال من السجلّ: ".../كتاب-مه-نور-وحقوق-النشر-pdf" (صفحة حقوق النشر).
+const NON_BOOK_SLUG_PATTERNS = [
+	/حقوق.?النشر/, // copyright
+	/سياسة|الخصوصية|privacy|policy/i,
+	/اتصل|تواصل|contact|about|من-نحن/i,
+	/شروط|terms|اتفاقية/i,
+	/تسجيل|login|register|signup/i
+];
+
+function isLikelyBookSlug(slug) {
+	const s = decodeURIComponent(String(slug || ''));
+	if (!s) return false;
+	for (const re of NON_BOOK_SLUG_PATTERNS) {
+		if (re.test(s)) return false;
+	}
+	return true;
+}
+
 export function extractBookLinks(html, baseUrl) {
 	const out = new Map(); // bookId → url (de-dup)
 
@@ -169,7 +188,7 @@ export function extractBookLinks(html, baseUrl) {
 		try {
 			const abs = new URL(m[1], baseUrl).toString();
 			const slug = decodeURIComponent(abs.split('/').filter(Boolean).pop() || '');
-			if (slug && !out.has(slug)) out.set(slug, abs);
+			if (slug && isLikelyBookSlug(slug) && !out.has(slug)) out.set(slug, abs);
 		} catch {
 			// تجاهل
 		}
@@ -181,7 +200,7 @@ export function extractBookLinks(html, baseUrl) {
 		try {
 			const abs = new URL(m[1], baseUrl).toString();
 			const slug = decodeURIComponent(abs.split('/').filter(Boolean).pop() || '');
-			if (slug && !out.has(slug)) out.set(slug, abs);
+			if (slug && isLikelyBookSlug(slug) && !out.has(slug)) out.set(slug, abs);
 		} catch {
 			// تجاهل
 		}
@@ -193,7 +212,7 @@ export function extractBookLinks(html, baseUrl) {
 		try {
 			const abs = new URL(m[1], baseUrl).toString();
 			const slug = decodeURIComponent(abs.split('/').filter(Boolean).pop() || '');
-			if (slug && !out.has(slug)) out.set(slug, abs);
+			if (slug && isLikelyBookSlug(slug) && !out.has(slug)) out.set(slug, abs);
 		} catch {
 			// تجاهل
 		}

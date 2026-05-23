@@ -69,7 +69,11 @@ async function fetchHtml(url) {
  */
 export function extractBookLinks(html) {
 	const out = new Map();
-	const re = /href=["'](?:https?:\/\/(?:www\.)?hindawi\.org)?\/books\/(\d{4,})\/?["']/gi;
+	// متين: نلتقط أيّ مسار /books/{id رقم ≥ 4 خانات} أينما ورد (href بأيّ نوع
+	// اقتباس، أو داخل JSON/سمات data). معرّفات كتب هنداوي أرقام كبيرة (7-8
+	// خانات) بينما صفحات الفهرسة 1..~260 (تُستبعَد بـ \d{4,}). نتجاهل أيّ slug
+	// بعد المعرّف. تحقّقنا من البنية حيّاً (href='/books/{id}/').
+	const re = /\/books\/(\d{4,})(?:\/[^"'\s<>]*)?/gi;
 	let m;
 	while ((m = re.exec(html))) {
 		const bookId = m[1];

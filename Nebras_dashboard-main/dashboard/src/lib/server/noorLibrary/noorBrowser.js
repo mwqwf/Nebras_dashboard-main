@@ -108,7 +108,12 @@ async function loadPuppeteer() {
  * @returns {Promise<boolean>}
  */
 export async function isPuppeteerEnabled() {
-	const enabledFlag = readBoolEnv('NOOR_USE_PUPPETEER', true);
+	// الافتراضي false: على Vercel/serverless لا يعمل Puppeteer (لا Chromium)،
+	// ومحاولة تحميل puppeteer-extra-plugin-stealth تكسر بـ
+	// "Cannot find module .../evasions/chrome.app" وتملأ السجلّ. المسار
+	// المعتمد لتجاوز Cloudflare هو crawl4ai. فعّله صراحةً (NOOR_USE_PUPPETEER=true)
+	// فقط على خادم طويل الأمد مثبَّت عليه Chromium.
+	const enabledFlag = readBoolEnv('NOOR_USE_PUPPETEER', false);
 	if (!enabledFlag) return false;
 	const mod = await loadPuppeteer();
 	return mod !== null;
