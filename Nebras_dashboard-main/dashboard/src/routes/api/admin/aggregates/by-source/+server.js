@@ -83,7 +83,13 @@ export async function GET(event) {
 		manual: emptyBucket()
 	};
 
+	// توزيع خام لكلّ قيمة __provider فعليّة (للتشخيص الصريح): يكشف ما إذا كان
+	// المحتوى اليدويّ بلا وسم (none) فيُحتسب «يدويّاً»، أو يحمل وسماً غير متوقّع.
+	const rawProviders = {};
+
 	function ingest(d, isYoutube) {
+		const rawKey = String(d?.__provider || '').trim() || '(none/manual)';
+		rawProviders[rawKey] = (rawProviders[rawKey] || 0) + 1;
 		const b = buckets[providerBucket(d)];
 		b.total += 1;
 		const t = isYoutube ? 'youtube' : pickType(d);
@@ -135,6 +141,7 @@ export async function GET(event) {
 				secondary: Object.keys(secs).length
 			}
 		},
-		sources
+		sources,
+		rawProviders
 	});
 }

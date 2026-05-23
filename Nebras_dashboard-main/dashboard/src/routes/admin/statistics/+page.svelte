@@ -119,6 +119,18 @@
 			{/each}
 		</section>
 
+		{#if bySource.rawProviders}
+			<section class="raw">
+				<h3>توزيع الوسوم الخام (تشخيص: المصدر الفعليّ لكل عنصر)</h3>
+				<div class="chips">
+					{#each Object.entries(bySource.rawProviders) as [prov, n] (prov)}
+						<span class="chip">{prov}: {n}</span>
+					{/each}
+				</div>
+				<p class="hint">«(none/manual)» = محتوى بلا وسم مصدر = رفع يدويّ. يظهر ضمن بطاقة «رفع يدويّ».</p>
+			</section>
+		{/if}
+
 		{#if overview?.byType}
 			<section class="totals">
 				<div class="tcard"><span>كتب</span><strong>{overview.byType.document}</strong></div>
@@ -159,4 +171,7 @@
 	.top li { display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px dashed #e2e8f0; font-size: 0.85rem; }
 	.top li:last-child { border-bottom: none; }
 	.top .count { font-weight: 700; color: var(--accent); }
+	.raw { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 0.9rem 1rem; margin-bottom: 1.25rem; }
+	.raw h3 { font-size: 0.95rem; font-weight: 700; margin: 0 0 0.6rem; }
+	.raw .hint { color: #94a3b8; font-size: 0.78rem; margin: 0.6rem 0 0; }
 </style>
