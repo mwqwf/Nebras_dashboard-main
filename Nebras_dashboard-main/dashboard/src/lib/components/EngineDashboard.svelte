@@ -18,6 +18,7 @@
 	let actionInFlight = $state('');
 	let actionError = $state('');
 	let actionResult = $state(null);
+	let diag = $state(null);
 	let timer = null;
 
 	const AUTO_REFRESH_MS = 15000;
@@ -54,6 +55,20 @@
 	function onFactory() {
 		if (!confirm('سيحذف هذا كلّ ما رفعه هذا المحرّك (محتواه فقط). تأكيد؟')) return;
 		runAction('factory', () => api.resetEngine('factory'));
+	}
+
+	async function onDiagnose() {
+		if (actionInFlight || !api.diagnose) return;
+		actionInFlight = 'diagnose';
+		actionError = '';
+		diag = null;
+		try {
+			diag = await api.diagnose();
+		} catch (e) {
+			actionError = e?.message || String(e);
+		} finally {
+			actionInFlight = '';
+		}
 	}
 
 	function fmtDate(ts) {
@@ -100,8 +115,32 @@
 		<button class="btn" disabled={actionInFlight !== ''} onclick={() => runAction('tick', api.runOneTick)}>⟳ دورة الآن</button>
 		<button class="btn" disabled={actionInFlight !== ''} onclick={() => runAction('reset', () => api.resetEngine('cursor'))}>↺ تصفير المؤشّر</button>
 		<button class="btn danger" disabled={actionInFlight !== ''} onclick={onFactory}>🗑 حذف الكل</button>
+		{#if api.diagnose}
+			<button class="btn warn" disabled={actionInFlight !== ''} onclick={onDiagnose}>🔎 تشخيص السبب</button>
+		{/if}
 		<button class="btn ghost" disabled={loading} onclick={refresh}>تحديث</button>
 	</div>
+
+	{#if diag}
+		<section class="diag">
+			<div class="verdict">{diag.verdict}</div>
+			{#if diag.nextStep}<div class="next">الخطوة التالية: {diag.nextStep}</div>{/if}
+			<ul class="dsteps">
+				{#each diag.steps as st (st.step)}
+					<li>
+						<strong>{st.step}</strong>:
+						{#if st.step === 'crawl4ai_health'}
+							مضبوطة={st.configured ? 'نعم' : 'لا'}، تستجيب={st.reachable ? 'نعم' : 'لا'} — {st.detail}
+						{:else if st.step === 'fetch_listing'}
+							نجح={st.ok ? 'نعم' : 'لا'}، Cloudflare={st.cloudflareChallenge ? 'نعم' : 'لا'} — {st.detail}
+						{:else if st.step === 'extract_book_links'}
+							عدد الروابط={st.count}
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
 
 	{#if actionInFlight}<div class="note">جارٍ تنفيذ: {actionInFlight}…</div>{/if}
 	{#if actionError}<div class="alert">{actionError}</div>{/if}
@@ -152,7 +191,14 @@
 	.btn:disabled { opacity: 0.5; cursor: default; }
 	.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 	.btn.danger { color: #b91c1c; border-color: #fecaca; }
+	.btn.warn { color: #b45309; border-color: #fde68a; background: #fffbeb; }
 	.btn.ghost { color: #64748b; }
+	.diag { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.7rem; padding: 0.9rem 1rem; margin-bottom: 1rem; }
+	.diag .verdict { font-weight: 700; margin-bottom: 0.3rem; }
+	.diag .next { color: #475569; font-size: 0.85rem; margin-bottom: 0.5rem; }
+	.diag .dsteps { list-style: none; margin: 0; padding: 0; font-size: 0.82rem; }
+	.diag .dsteps li { padding: 0.25rem 0; border-bottom: 1px dashed #e2e8f0; }
+	.diag .dsteps li:last-child { border-bottom: none; }
 	.note { color: #475569; font-size: 0.85rem; margin-bottom: 0.6rem; }
 	.note.ok { color: #15803d; }
 	.alert { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; padding: 0.6rem 0.9rem; border-radius: 0.6rem; margin-bottom: 0.8rem; font-size: 0.85rem; }

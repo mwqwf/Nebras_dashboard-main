@@ -49,6 +49,30 @@ export async function crawl4aiFetch(path, init = {}) {
 }
 
 /**
+ * Health probe for the crawl4ai sidecar. Never throws — returns a verdict
+ * the dashboard can show directly.
+ * @returns {Promise<{ configured: boolean, reachable: boolean, status: number|null, detail: string }>}
+ */
+export async function crawl4aiHealth() {
+	if (!crawl4aiConfigured()) {
+		return { configured: false, reachable: false, status: null, detail: 'CRAWL4AI_SERVICE_URL غير مضبوط في بيئة الخادم.' };
+	}
+	try {
+		const res = await crawl4aiFetch('/health', { method: 'GET' });
+		if (!res) return { configured: true, reachable: false, status: null, detail: 'لا استجابة (غير مضبوط؟).' };
+		const text = await res.text().catch(() => '');
+		return {
+			configured: true,
+			reachable: res.ok,
+			status: res.status,
+			detail: res.ok ? `الخدمة تعمل: ${text.slice(0, 120)}` : `حالة ${res.status}: ${text.slice(0, 160)}`
+		};
+	} catch (e) {
+		return { configured: true, reachable: false, status: null, detail: `تعذّر الوصول: ${e?.message || String(e)}` };
+	}
+}
+
+/**
  * Synchronously fetch a page's rendered HTML through the crawl4ai sidecar
  * (real browser → defeats JS/Cloudflare challenges). Returns null when the
  * sidecar is not configured so callers can fall back to plain fetch/Puppeteer.

@@ -33,3 +33,8 @@ export async function runOneTick() {
 export async function resetEngine(mode = 'cursor') {
 	return authedJson(`${BASE}/reset`, { method: 'POST', body: { mode } });
 }
+
+/** تشخيص حيّ: crawl4ai + جلب صفحة + استخراج الروابط. */
+export async function diagnose() {
+	return authedJson('/api/admin/libraries/diagnose?source=hindawi');
+}

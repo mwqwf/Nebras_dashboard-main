@@ -6,7 +6,8 @@
 		startEngine,
 		stopEngine,
 		runOneTick,
-		resetEngine
+		resetEngine,
+		diagnose
 	} from '$lib/api/hindawiLibrary.js';
 
 	const api = {
@@ -14,7 +15,8 @@
 		startEngine: () => startEngine(),
 		stopEngine: () => stopEngine(),
 		runOneTick: () => runOneTick(),
-		resetEngine: (mode) => resetEngine(mode)
+		resetEngine: (mode) => resetEngine(mode),
+		diagnose: () => diagnose()
 	};
 </script>
 

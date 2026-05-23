@@ -129,3 +129,8 @@ export async function runEngineTickRemote() {
 export async function factoryResetEngine() {
 	return authedJson('/api/admin/noor-library/engine/reset', { method: 'DELETE' });
 }
+
+/** تشخيص حيّ: crawl4ai + جلب صفحة + استخراج الروابط. */
+export async function diagnose() {
+	return authedJson('/api/admin/libraries/diagnose?source=noor');
+}

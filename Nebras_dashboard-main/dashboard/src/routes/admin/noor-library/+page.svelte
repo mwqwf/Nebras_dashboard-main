@@ -7,7 +7,8 @@
 		stopEngineRemote,
 		runEngineTickRemote,
 		resetEngineCursor,
-		factoryResetEngine
+		factoryResetEngine,
+		diagnose
 	} from '$lib/api/noorLibrary.js';
 
 	const api = {
@@ -15,7 +16,8 @@
 		startEngine: () => startEngineRemote(),
 		stopEngine: () => stopEngineRemote(),
 		runOneTick: () => runEngineTickRemote(),
-		resetEngine: (mode) => (mode === 'factory' ? factoryResetEngine() : resetEngineCursor())
+		resetEngine: (mode) => (mode === 'factory' ? factoryResetEngine() : resetEngineCursor()),
+		diagnose: () => diagnose()
 	};
 </script>
 
