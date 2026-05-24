@@ -85,19 +85,17 @@
 		distChart = new Chart(ctx, {
 			type: 'doughnut',
 			data: {
-				labels: [t('content.video'), t('content.audio'), t('content.document'), t('content.youtube')],
+				labels: [t('content.video'), t('content.audio'), t('content.document')],
 				datasets: [{
 					data: [
 						distributionData.video || 0,
 						distributionData.audio || 0,
-						distributionData.document || 0,
-						distributionData.youtube || 0
+						distributionData.document || 0
 					],
 					backgroundColor: [
 						'#10b981', // Primary green
 						'#3b82f6', // Blue
-						'#f59e0b', // Gold
-						'#ef4444'  // Red (YouTube)
+						'#f59e0b'  // Gold
 					],
 					borderWidth: 0,
 					hoverOffset: 4
@@ -125,18 +123,16 @@
 		const dates = [...new Set(contentChartData.map(d => d.date))].sort();
 		const labels = dates.map(d => formatDateShort(d));
 
-		const types = ['video', 'audio', 'document', 'youtube'];
+		const types = ['video', 'audio', 'document'];
 		const bgColors = {
 			video: '#10b981',
 			audio: '#3b82f6',
-			document: '#f59e0b',
-			youtube: '#ef4444'
+			document: '#f59e0b'
 		};
 		const translatedLabels = {
 			video: t('content.video'),
 			audio: t('content.audio'),
-			document: t('content.document'),
-			youtube: t('content.youtube')
+			document: t('content.document')
 		};
 
 		const datasets = types.map(type => {
@@ -213,14 +209,6 @@
 				</div>
 			</div>
 
-			<div class="stat-card">
-				<div class="stat-icon section"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" stroke-linecap="round" stroke-linejoin="round" /></svg></div>
-				<div class="stat-content">
-					<p class="stat-label">{t('common.total')} {t('content.youtube')}</p>
-					<h3 class="stat-value">{totals.total_youtube_videos || 0}</h3>
-				</div>
-			</div>
-			
 			<div class="stat-card">
 				<div class="stat-icon chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" stroke-linecap="round" stroke-linejoin="round" /></svg></div>
 				<div class="stat-content">
@@ -317,7 +305,6 @@
 	}
 
 	.stat-icon.content { background: rgba(59, 130, 246, 0.1); color: #60a5fa; }
-	.stat-icon.section { background: rgba(245, 158, 11, 0.1); color: #fbbf24; }
 	.stat-icon.chat { background: rgba(239, 68, 68, 0.1); color: #f87171; }
 
 	.stat-content {

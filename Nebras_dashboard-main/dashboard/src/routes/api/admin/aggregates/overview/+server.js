@@ -12,8 +12,7 @@ import { json } from '@sveltejs/kit';
 import { getNebrasFirestoreAdmin, isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import {
 	NEBRAS_FS_SECTIONS,
-	NEBRAS_FS_CONTENT_FILES,
-	NEBRAS_FS_CONTENT_YOUTUBE
+	NEBRAS_FS_CONTENT_FILES
 } from '$lib/firebase/nebrasUnifiedPaths.js';
 import { requireAdminRole } from '$lib/server/adminApiAuth.js';
 
@@ -32,12 +31,11 @@ export async function GET(event) {
 	}
 
 	const fs = getNebrasFirestoreAdmin();
-	const [mainDoc, subDoc, secDoc, filesSnap, ytSnap] = await Promise.all([
+	const [mainDoc, subDoc, secDoc, filesSnap] = await Promise.all([
 		fs.collection(NEBRAS_FS_SECTIONS).doc('main').get(),
 		fs.collection(NEBRAS_FS_SECTIONS).doc('sub').get(),
 		fs.collection(NEBRAS_FS_SECTIONS).doc('secondary').get(),
-		fs.collection(NEBRAS_FS_CONTENT_FILES).get(),
-		fs.collection(NEBRAS_FS_CONTENT_YOUTUBE).get()
+		fs.collection(NEBRAS_FS_CONTENT_FILES).get()
 	]);
 
 	const mains = mainDoc.exists ? mainDoc.data() || {} : {};
@@ -49,7 +47,8 @@ export async function GET(event) {
 	const subToMain = {};
 	for (const [id, v] of Object.entries(subs)) subToMain[String(id)] = String(v?.main_section ?? '');
 
-	const byType = { document: 0, audio: 0, video: 0, youtube: ytSnap.size };
+	// ميزة يوتيوب أُزيلت — نُبقي المفتاح youtube=0 لتوافق الواجهات القديمة.
+	const byType = { document: 0, audio: 0, video: 0, youtube: 0 };
 	const contentByMain = {};
 	let iaCount = 0;
 
@@ -63,15 +62,8 @@ export async function GET(event) {
 		const mainId = subToMain[subId] || String(d.main_section ?? d.metadata?.main_section ?? '');
 		if (mainId) contentByMain[mainId] = (contentByMain[mainId] || 0) + 1;
 	}
-	// وزّع يوتيوب على الأقسام أيضاً
-	for (const doc of ytSnap.docs) {
-		const d = doc.data() || {};
-		const subId = String(d.subsection ?? d.metadata?.subsection ?? '');
-		const mainId = subToMain[subId] || String(d.main_section ?? d.metadata?.main_section ?? '');
-		if (mainId) contentByMain[mainId] = (contentByMain[mainId] || 0) + 1;
-	}
 
-	const totalContent = filesSnap.size + ytSnap.size;
+	const totalContent = filesSnap.size;
 	const topSections = Object.entries(contentByMain)
 		.map(([id, count]) => ({ id, name: mainNameById[id] || id, content_count: count }))
 		.sort((a, b) => b.content_count - a.content_count)
@@ -88,7 +80,7 @@ export async function GET(event) {
 		content: {
 			total: totalContent,
 			files: filesSnap.size,
-			youtube: ytSnap.size,
+			youtube: 0,
 			fromInternetArchive: iaCount
 		},
 		byType,

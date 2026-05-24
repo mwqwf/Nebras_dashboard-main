@@ -325,59 +325,6 @@ export async function deleteSecondarySection(id) {
     return true;
 }
 
-// ─── YouTube Video Management (Admin) ──────────────────
-
-/**
- * List all YouTube videos (admin — all creators).
- * @param {Object} params - { search?, created_by?, subsection?, main_section?, content_type?, page? }
- */
-export async function listAllYoutubeVideos({
-    search = '', created_by, subsection, main_section, content_type, page = 1
-} = {}) {
-    const qp = new URLSearchParams();
-    if (search) qp.set('search', search);
-    if (created_by) qp.set('metadata__created_by', String(created_by));
-    if (subsection) qp.set('metadata__subsection', String(subsection));
-    if (main_section) qp.set('metadata__subsection__main_section', String(main_section));
-    if (content_type) qp.set('metadata__content_type', content_type);
-    if (page > 1) qp.set('page', String(page));
-
-    const query = qp.toString();
-    const res = await apiGet(`/api/admin/content/youtube/${query ? `?${query}` : ''}`);
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to fetch YouTube videos');
-    }
-    return res.json();
-}
-
-/**
- * Update a YouTube video as admin (PATCH).
- * @param {number} id
- * @param {Object} data
- */
-export async function patchAdminYoutubeVideo(id, data) {
-    const res = await apiPatch(`/api/admin/content/youtube/${id}/`, data);
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(JSON.stringify(err));
-    }
-    return res.json();
-}
-
-/**
- * Delete a YouTube video as admin.
- * @param {number} id
- */
-export async function deleteAdminYoutubeVideo(id) {
-    const res = await apiDelete(`/api/admin/content/youtube/${id}/`);
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to delete YouTube video');
-    }
-    return true;
-}
-
 // ─── R2 File Management (Admin) ────────────────────────
 
 /**

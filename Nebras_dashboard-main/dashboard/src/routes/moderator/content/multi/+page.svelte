@@ -37,10 +37,6 @@
 		resumeAll,
 		setLastSections,
 		setConcurrency,
-		addYoutubeItem,
-		removeYoutubeItem,
-		clearCompletedYoutube,
-		startAllYoutube,
 		requestUploadNotificationPermission,
 		restoreQueueFromStorage,
 		DEFAULT_CONCURRENCY
@@ -49,15 +45,11 @@
 
 	const multi = getMultiUploadState();
 
-	/** @type {'files'|'youtube'} */
-	let pageTab = $state('files');
 	let isDragging = $state(false);
 	let fileSizeWarning = $state('');
 	let dragReorderFrom = $state(null);
 
 	let mainSectionsList = $state([]);
-	let youtubeUrlsText = $state('');
-	let youtubeFormError = $state('');
 
 	let showItemModal = $state(false);
 	let editingItemId = $state(null);
@@ -72,29 +64,19 @@
 	let sectionsPrefilled = $state(false);
 
 	let completedCount = $derived(
-		pageTab === 'files'
-			? multi.queue.filter((it) => it.status === 'completed').length
-			: multi.youtubeQueue.filter((it) => it.status === 'completed').length
+		multi.queue.filter((it) => it.status === 'completed').length
 	);
-	let totalCount = $derived(
-		pageTab === 'files' ? multi.queue.length : multi.youtubeQueue.length
-	);
-	let hasQueue = $derived(
-		pageTab === 'files' ? multi.queue.length > 0 : multi.youtubeQueue.length > 0
-	);
+	let totalCount = $derived(multi.queue.length);
+	let hasQueue = $derived(multi.queue.length > 0);
 	let canStart = $derived(
 		!multi.isUploading &&
-			(pageTab === 'files'
-				? multi.queue.some((it) => it.status === 'queued' || it.status === 'failed')
-				: multi.youtubeQueue.some((it) => it.status === 'queued' || it.status === 'failed'))
+			multi.queue.some((it) => it.status === 'queued' || it.status === 'failed')
 	);
 	let hasActiveUpload = $derived(multi.isUploading);
 	let allDone = $derived(
 		multi.allDoneAt > 0 &&
-			(pageTab === 'files'
-				? multi.queue.length > 0 && multi.queue.every((it) => it.status === 'completed')
-				: multi.youtubeQueue.length > 0 &&
-					multi.youtubeQueue.every((it) => it.status === 'completed'))
+			multi.queue.length > 0 &&
+			multi.queue.every((it) => it.status === 'completed')
 	);
 	let isMultiFileMode = $derived(!editingItemId && itemFiles.length > 1);
 
@@ -413,8 +395,7 @@
 	}
 
 	function handleStart() {
-		if (pageTab === 'youtube') startAllYoutube();
-		else startAll();
+		startAll();
 	}
 
 	function handleStop() {
@@ -427,61 +408,6 @@
 
 	function handleResume() {
 		resumeAll();
-	}
-
-	function extractYoutubeId(url) {
-		const u = String(url || '').trim();
-		const m = u.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([\w-]{11})/);
-		return m ? m[1] : null;
-	}
-
-	function saveYoutubeLinksToQueue() {
-		youtubeFormError = '';
-		if (!itemForm.main_section) {
-			youtubeFormError = t('sections.main_section');
-			return;
-		}
-		if (!itemForm.subsection) {
-			youtubeFormError = t('sections.sub_section');
-			return;
-		}
-		const lines = youtubeUrlsText
-			.split(/\r?\n/)
-			.map((l) => l.trim())
-			.filter(Boolean);
-		if (!lines.length) {
-			youtubeFormError = t('content.youtube_urls_label');
-			return;
-		}
-		const mainName =
-			mainSectionsList.find((m) => String(m.id) === String(itemForm.main_section))?.name || '';
-		const subName =
-			itemSubOptions.find((s) => String(s.id) === String(itemForm.subsection))?.name || '';
-		const secName = itemForm.secondary_subsection
-			? itemSecondaryOptions.find(
-					(s) => String(s.id) === String(itemForm.secondary_subsection)
-				)?.name || ''
-			: '';
-		const labels = { main: mainName, sub: subName, secondary: secName };
-		for (const url of lines) {
-			if (!extractYoutubeId(url)) {
-				youtubeFormError = t('content.invalid_youtube_url');
-				return;
-			}
-			const title = itemForm.title?.trim() || `YouTube ${extractYoutubeId(url)}`;
-			addYoutubeItem({
-				video_url: url,
-				form: { ...itemForm, title },
-				labels,
-				title
-			});
-		}
-		youtubeUrlsText = '';
-		setLastSections({
-			main_section: itemForm.main_section,
-			subsection: itemForm.subsection,
-			secondary_subsection: itemForm.secondary_subsection
-		});
 	}
 
 	function handleConcurrencyChange(e) {
@@ -513,7 +439,6 @@
 			<p class="page-desc">{t('content.multi_upload_desc')}</p>
 		</div>
 		<div class="header-actions">
-			{#if pageTab === 'files'}
 			<label class="concurrency-picker" title={t('content.concurrency_label')}>
 				<span class="concurrency-label">{t('content.parallel_hint')}</span>
 				<select
@@ -529,54 +454,27 @@
 					<option value={5}>5</option>
 				</select>
 			</label>
-			{/if}
 			<button class="btn btn-secondary" disabled={!hasQueue} onclick={handleReset}>
 				{t('content.reset_queue')}
 			</button>
-			{#if pageTab === 'files'}
-				<button class="btn btn-primary" onclick={openAddModal}>
-					<svg
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						class="btn-icon"><path d="M12 5v14m-7-7h14" /></svg
-					>
-					{t('content.add_to_queue_multi')}
-				</button>
-			{/if}
+			<button class="btn btn-primary" onclick={openAddModal}>
+				<svg
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					class="btn-icon"><path d="M12 5v14m-7-7h14" /></svg
+				>
+				{t('content.add_to_queue_multi')}
+			</button>
 		</div>
 	</div>
 
 	<div class="tabs">
-		<a href="/moderator/content/youtube" class="tab">{t('content.youtube_videos')}</a>
 		<a href="/moderator/content/files" class="tab">{t('content.file_uploads')}</a>
 		<a href="/moderator/content/multi" class="tab active">{t('content.multi_upload')}</a>
-	</div>
-
-	<div class="mode-tabs" role="tablist">
-		<button
-			type="button"
-			class="mode-tab"
-			class:active={pageTab === 'files'}
-			role="tab"
-			aria-selected={pageTab === 'files'}
-			onclick={() => (pageTab = 'files')}
-		>
-			{t('content.multi_tab_files')}
-		</button>
-		<button
-			type="button"
-			class="mode-tab"
-			class:active={pageTab === 'youtube'}
-			role="tab"
-			aria-selected={pageTab === 'youtube'}
-			onclick={() => (pageTab = 'youtube')}
-		>
-			{t('content.multi_tab_youtube')}
-		</button>
 	</div>
 
 	<div class="summary-strip">
@@ -607,7 +505,7 @@
 				<button
 					class="btn btn-secondary"
 					disabled={!completedCount}
-					onclick={() => (pageTab === 'youtube' ? clearCompletedYoutube() : handleClearCompleted())}
+					onclick={handleClearCompleted}
 				>
 					{t('content.clear_completed')}
 				</button>
@@ -635,56 +533,8 @@
 		<p class="hint-note hint-info">• {t('content.upload_commit_order_note')}</p>
 		<p class="hint-note hint-info">• {t('content.remove_during_upload_hint')}</p>
 		<p class="hint-note hint-info">• {t('content.background_hint')}</p>
-		{#if pageTab === 'files'}
-			<p class="hint-note hint-info">• {t('content.drag_reorder_hint')}</p>
-		{/if}
+		<p class="hint-note hint-info">• {t('content.drag_reorder_hint')}</p>
 	</div>
-
-	{#if pageTab === 'youtube'}
-		<div class="youtube-batch-panel">
-			<p class="page-desc">{t('content.youtube_batch_desc')}</p>
-			{#if youtubeFormError}<div class="alert alert-error">{youtubeFormError}</div>{/if}
-			<div class="form-group">
-				<label for="yt-main" class="form-label">{t('sections.main_section')} *</label>
-				<select
-					id="yt-main"
-					class="form-input"
-					bind:value={itemForm.main_section}
-					onchange={handleMainChange}
-				>
-					<option value="">{t('common.select')}</option>
-					{#each mainSectionsList as ms}<option value={ms.id}>{ms.name}</option>{/each}
-				</select>
-			</div>
-			{#if itemForm.main_section}
-				<div class="form-group">
-					<label for="yt-sub" class="form-label">{t('sections.sub_section')} *</label>
-					<select
-						id="yt-sub"
-						class="form-input"
-						bind:value={itemForm.subsection}
-						onchange={handleSubChange}
-					>
-						<option value="">{t('common.select')}</option>
-						{#each itemSubOptions as ss}<option value={ss.id}>{ss.name}</option>{/each}
-					</select>
-				</div>
-			{/if}
-			<div class="form-group">
-				<label for="yt-urls" class="form-label">{t('content.youtube_urls_label')}</label>
-				<textarea
-					id="yt-urls"
-					class="form-input form-textarea"
-					rows="6"
-					bind:value={youtubeUrlsText}
-					placeholder={t('content.youtube_urls_placeholder')}
-				></textarea>
-			</div>
-			<button type="button" class="btn btn-primary" onclick={saveYoutubeLinksToQueue}>
-				{t('content.add_youtube_to_queue')}
-			</button>
-		</div>
-	{/if}
 
 	<div class="queue-container">
 		{#if !hasQueue}
@@ -701,50 +551,11 @@
 						stroke-linejoin="round"
 					/></svg
 				>
-				<p>
-					{pageTab === 'youtube' ? t('content.youtube_queue_empty') : t('content.queue_empty')}
-				</p>
-				{#if pageTab === 'files'}
-					<button class="btn btn-primary btn-sm" onclick={openAddModal}
-						>{t('content.add_to_queue_multi')}</button
-					>
-				{/if}
+				<p>{t('content.queue_empty')}</p>
+				<button class="btn btn-primary btn-sm" onclick={openAddModal}
+					>{t('content.add_to_queue_multi')}</button
+				>
 			</div>
-		{:else if pageTab === 'youtube'}
-			<ul class="queue-list">
-				{#each multi.youtubeQueue as item, idx (item.id)}
-					<li
-						class="queue-item"
-						class:is-active={item.status === 'uploading'}
-						class:is-completed={item.status === 'completed'}
-						class:is-failed={item.status === 'failed'}
-					>
-						<div class="queue-order">{idx + 1}</div>
-						<div class="queue-thumb queue-thumb-fallback">▶</div>
-						<div class="queue-main">
-							<div class="queue-title-row">
-								<span class="queue-title">{item.form.title}</span>
-								<span class="queue-chip queue-chip-{item.status}"
-									>{statusLabel(item.status)}</span
-								>
-							</div>
-							<div class="queue-meta-row">
-								<span class="queue-filename">{item.video_url}</span>
-							</div>
-							{#if item.error}<div class="queue-error">{item.error}</div>{/if}
-						</div>
-						<div class="queue-actions">
-							<button
-								class="icon-btn delete"
-								title={t('content.remove_from_queue')}
-								onclick={() => removeYoutubeItem(item.id)}
-							>
-								×
-							</button>
-						</div>
-					</li>
-				{/each}
-			</ul>
 		{:else}
 			<ul class="queue-list">
 				{#each multi.queue as item, idx (item.id)}
@@ -1141,39 +952,6 @@
 	.page-desc { font-size: 0.8125rem; color: var(--color-surface-400); margin-top: 0.25rem; max-width: 680px; line-height: 1.5; }
 	.header-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 
-	.mode-tabs {
-		display: inline-flex;
-		gap: 0.25rem;
-		padding: 0.25rem;
-		background: var(--color-surface-800);
-		border: 1px solid var(--color-surface-700);
-		border-radius: 10px;
-		width: fit-content;
-	}
-	.mode-tab {
-		padding: 0.5rem 1rem;
-		font-size: 0.8125rem;
-		font-weight: 600;
-		border: none;
-		border-radius: 8px;
-		background: transparent;
-		color: var(--color-surface-400);
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.mode-tab.active {
-		background: var(--color-surface-700);
-		color: var(--color-primary-400);
-	}
-	.youtube-batch-panel {
-		display: flex;
-		flex-direction: column;
-		gap: 1rem;
-		padding: 1rem 1.25rem;
-		background: var(--color-surface-800);
-		border: 1px solid var(--color-surface-700);
-		border-radius: 14px;
-	}
 	.upload-zone.is-dragging {
 		border-color: var(--color-primary-500);
 		background: rgba(5, 150, 105, 0.08);

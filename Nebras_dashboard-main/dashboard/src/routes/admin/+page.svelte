@@ -75,10 +75,10 @@
 		distChart = new Chart(ctx, {
 			type: 'doughnut',
 			data: {
-				labels: [t('content.document'), t('content.audio'), t('content.video'), t('content.youtube')],
+				labels: [t('content.document'), t('content.audio'), t('content.video')],
 				datasets: [{
-					data: [bt.document || 0, bt.audio || 0, bt.video || 0, bt.youtube || 0],
-					backgroundColor: ['#f59e0b', '#3b82f6', '#10b981', '#ef4444'],
+					data: [bt.document || 0, bt.audio || 0, bt.video || 0],
+					backgroundColor: ['#f59e0b', '#3b82f6', '#10b981'],
 					borderWidth: 0,
 					hoverOffset: 4
 				}]
@@ -153,7 +153,6 @@
 			<div class="stat-card"><div class="stat-content"><p class="stat-label">{t('content.document')}</p><h3 class="stat-value">{overview.byType?.document ?? 0}</h3></div></div>
 			<div class="stat-card"><div class="stat-content"><p class="stat-label">{t('content.audio')}</p><h3 class="stat-value">{overview.byType?.audio ?? 0}</h3></div></div>
 			<div class="stat-card"><div class="stat-content"><p class="stat-label">{t('content.video')}</p><h3 class="stat-value">{overview.byType?.video ?? 0}</h3></div></div>
-			<div class="stat-card"><div class="stat-content"><p class="stat-label">{t('content.youtube')}</p><h3 class="stat-value">{overview.byType?.youtube ?? 0}</h3></div></div>
 		</div>
 
 		<!-- Charts Layer 1 -->

@@ -5,7 +5,6 @@
 import { getNebrasFirestoreAdmin } from '$lib/server/firebaseAdmin.js';
 
 const FILES = 'content_unified_files';
-const YOUTUBE = 'content_unified_youtube';
 const AGG_DOC = 'aggregates_popular/top_weekly';
 
 /**
@@ -35,13 +34,9 @@ export async function runAggregatePopularity({ limit = 50 } = {}) {
 		scored.push({ id: String(id), score: trend, views, plays });
 	};
 
-	const [filesSnap, ytSnap] = await Promise.all([
-		db.collection(FILES).get(),
-		db.collection(YOUTUBE).get()
-	]);
+	const filesSnap = await db.collection(FILES).get();
 
 	for (const doc of filesSnap.docs) scoreRow(doc.id, doc.data());
-	for (const doc of ytSnap.docs) scoreRow(doc.id, doc.data());
 
 	scored.sort((a, b) => b.score - a.score);
 	const top = scored.slice(0, Math.max(1, limit));

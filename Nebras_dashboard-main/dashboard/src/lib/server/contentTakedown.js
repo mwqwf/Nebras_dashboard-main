@@ -3,8 +3,12 @@
  *   • واجهة بلاغات المحتوى   (/api/admin/reports)
  *   • أداة تدقيق المحتوى      (/api/admin/content-audit)
  *
- * يحذف من: content_unified_files + dashboard_uploads + content_unified_youtube
- * + ملفّ Storage المرتبط (PDF/صوت/فيديو) + الصور المصغّرة، إن وُجدت.
+ * يحذف من: content_unified_files + dashboard_uploads + ملفّ Storage المرتبط
+ * (PDF/صوت/فيديو) + الصور المصغّرة، إن وُجدت.
+ *
+ * ⚠️ ميزة يوتيوب أُزيلت بالكامل من اللوحة (لا إنشاء/تعديل). نُبقي هنا حذفاً
+ * أفضل-جهد لأيّ وثيقة قديمة في content_unified_youtube حتى يمكن تطهير السجلّات
+ * المتبقّية من قبل هذه الإزالة. هذا مسار تنظيف فقط، لا يُنشئ أيّ محتوى جديد.
  */
 import {
 	getNebrasFirestoreAdmin,

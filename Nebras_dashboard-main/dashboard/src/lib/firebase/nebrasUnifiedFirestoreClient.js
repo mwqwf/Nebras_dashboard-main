@@ -66,37 +66,15 @@ export async function clientFsDeleteSectionRecord(level, id) {
 	await updateDoc(ref, { [String(id)]: deleteField() });
 }
 
+// ⚠️ Legacy-cleanup only — ميزة يوتيوب أُزيلت بالكامل من اللوحة (لا إنشاء/تعديل).
+// نُبقي القراءة والحذف فقط لتنظيف سجلّات `content_unified_youtube` القديمة عند
+// حذف الأقسام، حتى لا تبقى وثائق يتيمة. لا تُستخدم لأيّ كتابة جديدة.
 export async function clientFsListYoutubeRecords() {
 	const snap = await getDocs(collection(fs(), NEBRAS_FS_CONTENT_YOUTUBE));
 	return snap.docs.map((d) => {
 		const data = d.data() || {};
 		return { ...data, id: data.id ?? d.id };
 	});
-}
-
-export async function clientFsSetYoutubeRecord(id, payload) {
-	await setDoc(
-		doc(fs(), NEBRAS_FS_CONTENT_YOUTUBE, String(id)),
-		stripUndefinedDeep(payload)
-	);
-}
-
-export async function clientFsSetYoutubeRecordsBatch(records) {
-	const db = fs();
-	const batch = writeBatch(db);
-	for (const { id, payload } of records) {
-		batch.set(
-			doc(db, NEBRAS_FS_CONTENT_YOUTUBE, String(id)),
-			stripUndefinedDeep(payload)
-		);
-	}
-	await batch.commit();
-}
-
-export async function clientFsGetYoutubeRecord(id) {
-	const d = await getDoc(doc(fs(), NEBRAS_FS_CONTENT_YOUTUBE, String(id)));
-	if (!d.exists()) return null;
-	return d.data() || {};
 }
 
 export async function clientFsDeleteYoutubeRecord(id) {

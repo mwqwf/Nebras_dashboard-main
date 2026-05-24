@@ -3,7 +3,7 @@
 	import { onMount } from 'svelte';
 	import { t } from '$lib/i18n/store.svelte.js';
 	
-	onMount(() => { goto('/moderator/content/youtube', { replaceState: true }); });
+	onMount(() => { goto('/moderator/content/files', { replaceState: true }); });
 </script>
 <svelte:head><title>{t('content.title')} — Nebras</title></svelte:head>
 <div style="display:flex;align-items:center;justify-content:center;height:200px;color:var(--color-surface-500);">

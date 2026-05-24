@@ -24,7 +24,7 @@ export function buildMobileCompatibleFields(metadata, downloadUrl) {
 		file_url: downloadUrl
 	};
 	if (contentType === 'audio') sourceFields.audio_url = downloadUrl;
-	if (contentType === 'video' || contentType === 'youtube') sourceFields.video_url = downloadUrl;
+	if (contentType === 'video') sourceFields.video_url = downloadUrl;
 	return {
 		id: normalized.id || undefined,
 		title: normalized.title || undefined,

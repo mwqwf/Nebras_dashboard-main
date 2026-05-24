@@ -16,8 +16,7 @@ import { json } from '@sveltejs/kit';
 import { getNebrasFirestoreAdmin, isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import {
 	NEBRAS_FS_SECTIONS,
-	NEBRAS_FS_CONTENT_FILES,
-	NEBRAS_FS_CONTENT_YOUTUBE
+	NEBRAS_FS_CONTENT_FILES
 } from '$lib/firebase/nebrasUnifiedPaths.js';
 import { requireAdminRole } from '$lib/server/adminApiAuth.js';
 
@@ -56,12 +55,11 @@ export async function GET(event) {
 	}
 
 	const fs = getNebrasFirestoreAdmin();
-	const [mainDoc, subDoc, secDoc, filesSnap, ytSnap] = await Promise.all([
+	const [mainDoc, subDoc, secDoc, filesSnap] = await Promise.all([
 		fs.collection(NEBRAS_FS_SECTIONS).doc('main').get(),
 		fs.collection(NEBRAS_FS_SECTIONS).doc('sub').get(),
 		fs.collection(NEBRAS_FS_SECTIONS).doc('secondary').get(),
-		fs.collection(NEBRAS_FS_CONTENT_FILES).get(),
-		fs.collection(NEBRAS_FS_CONTENT_YOUTUBE).get()
+		fs.collection(NEBRAS_FS_CONTENT_FILES).get()
 	]);
 
 	const mains = mainDoc.exists ? mainDoc.data() || {} : {};
@@ -87,12 +85,12 @@ export async function GET(event) {
 	// المحتوى اليدويّ بلا وسم (none) فيُحتسب «يدويّاً»، أو يحمل وسماً غير متوقّع.
 	const rawProviders = {};
 
-	function ingest(d, isYoutube) {
+	function ingest(d) {
 		const rawKey = String(d?.__provider || '').trim() || '(none/manual)';
 		rawProviders[rawKey] = (rawProviders[rawKey] || 0) + 1;
 		const b = buckets[providerBucket(d)];
 		b.total += 1;
-		const t = isYoutube ? 'youtube' : pickType(d);
+		const t = pickType(d);
 		if (b.byType[t] !== undefined) b.byType[t] += 1;
 		else b.byType.document += 1;
 
@@ -108,8 +106,7 @@ export async function GET(event) {
 		if (secId) b.secIds.add(secId);
 	}
 
-	for (const doc of filesSnap.docs) ingest(doc.data() || {}, false);
-	for (const doc of ytSnap.docs) ingest(doc.data() || {}, true);
+	for (const doc of filesSnap.docs) ingest(doc.data() || {});
 
 	const sources = Object.entries(buckets).map(([key, b]) => ({
 		source: key,
@@ -126,7 +123,7 @@ export async function GET(event) {
 			.slice(0, 6)
 	}));
 
-	const totalContent = filesSnap.size + ytSnap.size;
+	const totalContent = filesSnap.size;
 
 	return json({
 		ok: true,
@@ -134,7 +131,7 @@ export async function GET(event) {
 		totals: {
 			content: totalContent,
 			files: filesSnap.size,
-			youtube: ytSnap.size,
+			youtube: 0,
 			sections: {
 				main: Object.keys(mains).length,
 				sub: Object.keys(subs).length,

@@ -1,7 +1,7 @@
 <!--
   Global Search Page — /search
   ──────────────────────────────────────────────────────────
-  بحث موحَّد عبر الأقسام + الملفّات + الفيديوهات في Nebras.
+  بحث موحَّد عبر الأقسام + الملفّات في Nebras.
   يعتمد حصرًا على طبقة الـ API الحاليّة (لا
   يُنشئ قنوات بيانات جديدة) ويطبّق Arabic-aware AND search + ranking.
 -->
@@ -18,7 +18,7 @@
 	import { untrack } from 'svelte';
 
 	let query = $state('');
-	let activeTab = $state('all'); // all | sections | files | videos
+	let activeTab = $state('all'); // all | sections | files
 	let isLoading = $state(false);
 	let error = $state('');
 	let partialFailures = $state([]);
@@ -26,13 +26,11 @@
 
 	let sectionsResults = $state([]);
 	let filesResults = $state([]);
-	let videosResults = $state([]);
 
 	let counts = $derived({
 		sections: sectionsResults.length,
 		files: filesResults.length,
-		videos: videosResults.length,
-		all: sectionsResults.length + filesResults.length + videosResults.length
+		all: sectionsResults.length + filesResults.length
 	});
 
 	// يقرأ الاستعلام من URL عند فتح الصفحة ويُشغّل البحث فورًا.
@@ -50,7 +48,6 @@
 	function resetAll() {
 		sectionsResults = [];
 		filesResults = [];
-		videosResults = [];
 		searchTokens = [];
 		partialFailures = [];
 		error = '';
@@ -70,7 +67,6 @@
 				...(results.groups.secondarySections || []).map((x) => ({ ...x, _level: 'secondary' }))
 			];
 			filesResults = (results.groups.content || []).filter((x) => x.kind === 'file');
-			videosResults = (results.groups.content || []).filter((x) => x.kind === 'youtube');
 			partialFailures = results.partialFailures || [];
 		} catch (err) {
 			error = err?.message || String(err);
@@ -151,7 +147,6 @@
 			<button class="tab" class:active={activeTab === 'all'} onclick={() => activeTab = 'all'}>{t('common.all')} ({counts.all})</button>
 			<button class="tab" class:active={activeTab === 'sections'} onclick={() => activeTab = 'sections'}>{t('common.sections')} ({counts.sections})</button>
 			<button class="tab" class:active={activeTab === 'files'} onclick={() => activeTab = 'files'}>{t('content.file_uploads')} ({counts.files})</button>
-			<button class="tab" class:active={activeTab === 'videos'} onclick={() => activeTab = 'videos'}>{t('content.youtube_videos')} ({counts.videos})</button>
 		</div>
 
 		{#if isLoading}
@@ -210,25 +205,6 @@
 				</div>
 			{/if}
 
-			<!-- Videos group -->
-			{#if (activeTab === 'all' || activeTab === 'videos') && videosResults.length > 0}
-				<h2 class="group-title">{t('content.youtube_videos')} <span class="count-badge">{videosResults.length}</span></h2>
-				<div class="grid">
-					{#each videosResults as item (item.id)}
-						<div class="result-card">
-							{#if item.thumbnail}<img class="thumb" src={item.thumbnail} alt={item.title} />{/if}
-							<div class="body">
-								<span class="chip">YouTube</span>
-								<h3 class="title">{@html highlightMatches(item.title || 'Untitled', searchTokens)}</h3>
-								<div class="result-actions">
-									<a class="mini-btn" href={buildActionHref(item.actions?.edit)}>{t('common.edit')}</a>
-									<a class="mini-btn danger" href={buildActionHref(item.actions?.delete)}>{t('common.delete')}</a>
-								</div>
-							</div>
-						</div>
-					{/each}
-				</div>
-			{/if}
 		{/if}
 	</div>
 </DashboardLayout>

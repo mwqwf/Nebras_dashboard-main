@@ -14,7 +14,7 @@
 		manual: { label: 'رفع يدويّ', color: '#d97706', emoji: '✍️' }
 	};
 
-	const TYPE_LABEL = { document: 'كتب', audio: 'صوت', video: 'فيديو', youtube: 'يوتيوب' };
+	const TYPE_LABEL = { document: 'كتب', audio: 'صوت', video: 'فيديو' };
 
 	async function load() {
 		loading = true;
@@ -66,7 +66,6 @@
 		<section class="totals">
 			<div class="tcard"><span>إجمالي المحتوى</span><strong>{bySource.totals.content}</strong></div>
 			<div class="tcard"><span>ملفّات (كتب/صوت/فيديو)</span><strong>{bySource.totals.files}</strong></div>
-			<div class="tcard"><span>يوتيوب</span><strong>{bySource.totals.youtube}</strong></div>
 			<div class="tcard">
 				<span>الأقسام (رئيسي/فرعي/ثانوي)</span>
 				<strong>{bySource.totals.sections.main} / {bySource.totals.sections.sub} / {bySource.totals.sections.secondary}</strong>
@@ -136,7 +135,6 @@
 				<div class="tcard"><span>كتب</span><strong>{overview.byType.document}</strong></div>
 				<div class="tcard"><span>صوت</span><strong>{overview.byType.audio}</strong></div>
 				<div class="tcard"><span>فيديو</span><strong>{overview.byType.video}</strong></div>
-				<div class="tcard"><span>يوتيوب</span><strong>{overview.byType.youtube}</strong></div>
 			</section>
 		{/if}
 	{/if}

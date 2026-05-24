@@ -422,8 +422,8 @@
 	</div>
 
 	<div class="tabs">
-		<a href="/moderator/content/youtube" class="tab">{t('content.youtube_videos')}</a>
 		<a href="/moderator/content/files" class="tab active">{t('content.file_uploads')}</a>
+		<a href="/moderator/content/multi" class="tab">{t('content.multi_upload')}</a>
 	</div>
 
 	<div class="toolbar">

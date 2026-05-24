@@ -22,10 +22,7 @@ import { deleteContentEverywhere } from '$lib/server/contentTakedown.js';
 import { scanRisk, DESCRIPTION_SAFE_PATTERNS } from '$lib/server/contentRiskLexicon.js';
 
 const DESC_SAFE = new Set(DESCRIPTION_SAFE_PATTERNS.map((s) => s.trim()));
-import {
-	NEBRAS_FS_CONTENT_FILES,
-	NEBRAS_FS_CONTENT_YOUTUBE
-} from '$lib/firebase/nebrasUnifiedPaths.js';
+import { NEBRAS_FS_CONTENT_FILES } from '$lib/firebase/nebrasUnifiedPaths.js';
 
 const SCAN_LIMIT = 1500;
 const RETURN_LIMIT = 500;
@@ -37,22 +34,19 @@ export async function GET(event) {
 	if (!isAdminConfigured()) return json({ error: 'not_configured' }, { status: 501 });
 
 	const fs = getNebrasFirestoreAdmin();
-	const [filesSnap, ytSnap] = await Promise.all([
-		fs.collection(NEBRAS_FS_CONTENT_FILES).limit(SCAN_LIMIT).get(),
-		fs.collection(NEBRAS_FS_CONTENT_YOUTUBE).limit(SCAN_LIMIT).get()
-	]);
+	const filesSnap = await fs.collection(NEBRAS_FS_CONTENT_FILES).limit(SCAN_LIMIT).get();
 
 	const flagged = [];
 	let scanned = 0;
 
-	const consider = (id, data, isYouTube) => {
+	const consider = (id, data) => {
 		scanned += 1;
-		const { flags, matched } = computeFlags(data, isYouTube);
+		const { flags, matched } = computeFlags(data);
 		if (flags.length === 0) return;
 		flagged.push({
 			contentId: String(data?.id || data?.fileId || id || ''),
 			title: String(data?.title || data?.name || ''),
-			contentType: isYouTube ? 'youtube' : String(data?.content_type || 'file'),
+			contentType: String(data?.content_type || 'file'),
 			sourceUrl: pickUrl(data),
 			provider: String(data?.__provider || ''),
 			flags,
@@ -60,8 +54,7 @@ export async function GET(event) {
 		});
 	};
 
-	for (const d of filesSnap.docs) consider(d.id, d.data() || {}, false);
-	for (const d of ytSnap.docs) consider(d.id, d.data() || {}, true);
+	for (const d of filesSnap.docs) consider(d.id, d.data() || {});
 
 	flagged.sort((a, b) => b.flags.length - a.flags.length);
 
@@ -140,10 +133,8 @@ function hostOf(url) {
  *   • حقوق/علامات تجاريّة: نفحص **العنوان فقط** (لا الوصف — فالوصف يذكر
  *     روابط/منصّات بريئة كثيرة، وهذا سبب الإيجابيات الكاذبة)، بالإضافة
  *     إلى **مضيف رابط المصدر** إن كان منصّة محميّة.
- *   • محتوى يوتيوب المُضاف يدويّاً (مجموعة youtube) يُستثنى من علامة
- *     الحقوق لأنّ له تعامله الخاصّ.
  */
-function computeFlags(data, isYouTube) {
+function computeFlags(data) {
 	const title = String(data?.title || data?.name || '');
 	const section = [data?.section_name, data?.subsection_name].filter(Boolean).join(' ');
 	const desc = stripHtml(String(data?.description || ''));
@@ -174,10 +165,10 @@ function computeFlags(data, isYouTube) {
 		}
 	}
 
-	// حقوق/علامات تجاريّة — العنوان فقط + مضيف الرابط (نستثني يوتيوب اليدويّ).
-	if (!isYouTube) {
-		const titleScope = [title, section].filter(Boolean).join(' \n ');
-		for (const r of scanRisk(titleScope)) {
+	// حقوق/علامات تجاريّة — العنوان فقط + مضيف الرابط.
+	{
+		const copyrightScope = [title, section].filter(Boolean).join(' \n ');
+		for (const r of scanRisk(copyrightScope)) {
 			if (r.category === 'copyright') {
 				flagsSet.add('copyright');
 				matched.push(...r.terms);

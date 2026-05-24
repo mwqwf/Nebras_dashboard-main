@@ -17,7 +17,6 @@ import {
 import { computeFileSha256 } from '$lib/utils/fileHash.js';
 import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 import { createCommitQueue } from '$lib/stores/multiUploadCommitQueue.js';
-import { createYoutubeVideoBatch } from '$lib/api/moderator.js';
 
 /** @typedef {'queued'|'uploading'|'committing'|'completed'|'failed'} QueueStatus */
 
@@ -37,17 +36,6 @@ import { createYoutubeVideoBatch } from '$lib/api/moderator.js';
  * @property {string|null} [fileId]
  */
 
-/**
- * @typedef {Object} YoutubeQueueItem
- * @property {string} id
- * @property {number} selectionIndex
- * @property {string} video_url
- * @property {{ title:string, description:string, author:string, main_section:(string|number), subsection:(string|number), secondary_subsection:(string|number), is_listed:boolean }} form
- * @property {{ main:string, sub:string, secondary:string }} labels
- * @property {QueueStatus} status
- * @property {string} error
- */
-
 const STORAGE_KEY = 'nebras_multi_upload_v2';
 
 /** @type {Map<string, { start: ()=>Promise<any>, abort: ()=>void, pause?: ()=>void, resume?: ()=>void, uploadStorage?: ()=>Promise<any>, commitFirestore?: (r:any)=>Promise<any> }>} */
@@ -57,7 +45,6 @@ const uploaderRegistry = new Map();
 let commitQueue = null;
 
 let selectionCounter = 0;
-let youtubeSelectionCounter = 0;
 let networkCalibrated = false;
 
 /** تقدّم الرفع خارج كائنات الطابور لتقليل إعادة التصيير ($state.raw). */
@@ -92,7 +79,6 @@ function calibrateConcurrencyFromSample(bytes, durationMs) {
 
 let multiState = $state({
 	queue: [],
-	youtubeQueue: [],
 	isUploading: false,
 	isPaused: false,
 	currentId: null,
@@ -144,16 +130,6 @@ function reindexFileQueue() {
 	selectionCounter = multiState.queue.length;
 }
 
-function reindexYoutubeQueue() {
-	for (let i = 0; i < multiState.youtubeQueue.length; i++) {
-		const it = multiState.youtubeQueue[i];
-		if (it.status === 'queued' || it.status === 'failed') {
-			it.selectionIndex = i;
-		}
-	}
-	youtubeSelectionCounter = multiState.youtubeQueue.length;
-}
-
 function persistQueueSnapshot() {
 	if (typeof localStorage === 'undefined') return;
 	try {
@@ -171,15 +147,6 @@ function persistQueueSnapshot() {
 					? { name: it.file.name, size: it.file.size, type: it.file.type }
 					: null,
 				thumbnailPreview: it.thumbnailPreview || ''
-			})),
-			youtubeQueue: multiState.youtubeQueue.map((it) => ({
-				id: it.id,
-				selectionIndex: it.selectionIndex,
-				status: it.status,
-				error: it.error,
-				video_url: it.video_url,
-				form: it.form,
-				labels: it.labels
 			}))
 		};
 		localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -194,7 +161,7 @@ export function restoreQueueFromStorage() {
 		const raw = localStorage.getItem(STORAGE_KEY);
 		if (!raw) return false;
 		const data = JSON.parse(raw);
-		if (!data?.queue?.length && !data?.youtubeQueue?.length) return false;
+		if (!data?.queue?.length) return false;
 		multiState.lastError =
 			'تم استعادة بيانات الطابور من الجلسة السابقة — أعد إرفاق الملفات قبل المتابعة.';
 		multiState.batchId = data.batchId || null;
@@ -312,45 +279,13 @@ export function clearCompleted() {
 export function resetQueue() {
 	stopAll({ markUploadingAsFailed: false });
 	multiState.queue = [];
-	multiState.youtubeQueue = [];
 	multiState.lastError = '';
 	multiState.allDoneAt = 0;
 	multiState.batchId = null;
 	selectionCounter = 0;
-	youtubeSelectionCounter = 0;
 	commitQueue = null;
 	clearLastSections();
 	clearPersistedQueue();
-}
-
-// ─── YouTube queue ───────────────────────────────────────────
-
-export function addYoutubeItem({ video_url, form, labels, title }) {
-	const id = newId();
-	const selectionIndex = youtubeSelectionCounter++;
-	multiState.youtubeQueue.push({
-		id,
-		selectionIndex,
-		video_url: String(video_url || '').trim(),
-		form: { ...form, title: title || form.title || '' },
-		labels: { ...labels },
-		status: 'queued',
-		error: ''
-	});
-	persistQueueSnapshot();
-	return id;
-}
-
-export function removeYoutubeItem(id) {
-	multiState.youtubeQueue = multiState.youtubeQueue.filter((it) => it.id !== id);
-	reindexYoutubeQueue();
-	persistQueueSnapshot();
-}
-
-export function clearCompletedYoutube() {
-	multiState.youtubeQueue = multiState.youtubeQueue.filter((it) => it.status !== 'completed');
-	reindexYoutubeQueue();
-	persistQueueSnapshot();
 }
 
 // ─── Upload control ──────────────────────────────────────────
@@ -489,79 +424,6 @@ export function resumeAll() {
 		} catch {
 			/* ignore */
 		}
-	}
-}
-
-/**
- * رفع دفعة روابط YouTube — كتابة متسلسلة عبر createYoutubeVideo (Nebras unified).
- */
-export async function startAllYoutube() {
-	if (multiState.isUploading) return;
-	multiState.isUploading = true;
-	multiState.lastError = '';
-	multiState.allDoneAt = 0;
-	multiState.batchId = newBatchId();
-
-	const pending = multiState.youtubeQueue.filter(
-		(it) => it.status === 'queued' || it.status === 'failed'
-	);
-	pending.sort((a, b) => a.selectionIndex - b.selectionIndex);
-
-	try {
-		// معالجة بالدفعات (chunks) مثلاً 20 في كل مرة لتقليل الضغط
-		const chunkSize = 20;
-		for (let i = 0; i < pending.length; i += chunkSize) {
-			if (!multiState.isUploading) break;
-			const chunk = pending.slice(i, i + chunkSize);
-			const batchItems = chunk.map((snap) => ({
-				video_url: snap.video_url,
-				metadata: {
-					title: snap.form.title,
-					description: snap.form.description || undefined,
-					author: snap.form.author || undefined,
-					subsection: snap.form.subsection,
-					secondary_subsection: snap.form.secondary_subsection || undefined,
-					content_type: 'youtube',
-					is_listed: snap.form.is_listed,
-					selectionOrder: snap.selectionIndex,
-					selectionIndex: snap.selectionIndex,
-					batchId: multiState.batchId
-				}
-			}));
-
-			for (const snap of chunk) {
-				snap.status = 'uploading';
-				snap.error = '';
-			}
-			persistQueueSnapshot();
-
-			try {
-				await withUploadRetries(() => createYoutubeVideoBatch(batchItems), {
-					onRetry: (attempt) => {
-						for (const snap of chunk) snap.error = `Retry ${attempt}/3…`;
-						persistQueueSnapshot();
-					}
-				});
-				for (const snap of chunk) {
-					snap.status = 'completed';
-					snap.error = '';
-				}
-			} catch (err) {
-				for (const snap of chunk) {
-					snap.status = 'failed';
-					snap.error = err?.message || 'YouTube batch upload failed';
-				}
-			}
-			persistQueueSnapshot();
-		}
-		
-		const allDone =
-			multiState.youtubeQueue.length > 0 &&
-			multiState.youtubeQueue.every((it) => it.status === 'completed');
-		if (allDone) multiState.allDoneAt = Date.now();
-	} finally {
-		multiState.isUploading = false;
-		persistQueueSnapshot();
 	}
 }
 

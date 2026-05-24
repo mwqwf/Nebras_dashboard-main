@@ -1,7 +1,7 @@
 /**
  * Moderator API
  *
- * Sections CRUD + YouTube Video CRUD.
+ * Sections CRUD + unified file content CRUD.
  * Uses multipart/form-data for create/update (thumbnail/file uploads).
  * The backend enforces created_by = current user automatically.
  */
@@ -22,10 +22,10 @@ import {
   clientFsGetSectionRecord,
   clientFsSetSectionRecord,
   clientFsDeleteSectionRecord,
+  // ⚠️ Legacy-cleanup only: ميزة يوتيوب أُزيلت بالكامل من اللوحة. نُبقي
+  // هاتين الدالّتين فقط لتنظيف سجلّات يوتيوب القديمة (content_unified_youtube)
+  // عند حذف قسم رئيسي/فرعي/ثانوي حتى لا تبقى وثائق يتيمة.
   clientFsListYoutubeRecords,
-  clientFsSetYoutubeRecord,
-  clientFsSetYoutubeRecordsBatch,
-  clientFsGetYoutubeRecord,
   clientFsDeleteYoutubeRecord,
   clientFsListFileRowsMerged,
   clientFsGetFileRow,
@@ -256,7 +256,7 @@ async function deleteStorageUrlsByValue(urls = []) {
   }
 }
 
-// ─── YouTube Videos ─────────────────────────────────────
+// ─── Content mirror helpers ─────────────────────────────
 
 const CONTENT_ROOT = "content_unified";
 const UPLOADS_ROOT = "dashboard_uploads";
@@ -302,494 +302,8 @@ function buildUploadMirrorFields(current, metadata) {
     sourceUrl: sourceUrl || current?.sourceUrl,
     file_url: sourceUrl || current?.file_url,
     audio_url: contentType === "audio" ? sourceUrl : current?.audio_url,
-    video_url:
-      contentType === "video" || contentType === "youtube"
-        ? sourceUrl
-        : current?.video_url,
+    video_url: contentType === "video" ? sourceUrl : current?.video_url,
   };
-}
-
-function buildYoutubeMirrorFields({
-  id,
-  videoUrl,
-  metadata,
-  thumbnail,
-  current,
-}) {
-  const normalized = metadata && typeof metadata === "object" ? metadata : {};
-  const resolvedUrl = String(videoUrl || current?.video_url || "").trim();
-  return {
-    id: id ?? current?.id,
-    title: normalized.title ?? current?.title,
-    description: normalized.description ?? current?.description,
-    author: normalized.author ?? current?.author,
-    thumbnail: thumbnail ?? normalized.thumbnail ?? current?.thumbnail ?? null,
-    content_type: "youtube",
-    subsection: normalized.subsection ?? current?.subsection,
-    subsection_name:
-      normalized.subsection_name ??
-      normalized.subsection_title ??
-      current?.subsection_name,
-    secondary_subsection:
-      normalized.secondary_subsection ?? current?.secondary_subsection,
-    secondary_subsection_name:
-      normalized.secondary_subsection_name ??
-      normalized.secondary_subsection_title ??
-      current?.secondary_subsection_name,
-    main_section: normalized.main_section ?? current?.main_section,
-    main_section_id: normalized.main_section_id ?? current?.main_section_id,
-    main_section_name:
-      normalized.main_section_name ?? current?.main_section_name,
-    sourceUrl: resolvedUrl || current?.sourceUrl,
-    source_url: resolvedUrl || current?.source_url,
-    video_url: resolvedUrl || current?.video_url,
-    youtube_url: resolvedUrl || current?.youtube_url,
-    youtube: resolvedUrl || current?.youtube,
-  };
-}
-
-/**
- * List the moderator's own YouTube videos with optional filters.
- * Filter keys match Django view: metadata__subsection, metadata__subsection__main_section,
- * metadata__secondary_subsection, search.
- * @param {Object} params
- */
-export async function listMyYoutubeVideos({
-  search = "",
-  subsection,
-  main_section,
-  secondary_subsection,
-  is_listed,
-  metadata__is_listed,
-  page = 1,
-  requireSearch = false,
-} = {}) {
-  const hasActiveFilter =
-    (main_section !== undefined && main_section !== "") ||
-    (subsection !== undefined && subsection !== "") ||
-    (secondary_subsection !== undefined && secondary_subsection !== "") ||
-    metadata__is_listed !== undefined ||
-    is_listed !== undefined;
-  if (shouldSkipListing({ requireSearch, search, hasActiveFilter })) return emptyPage();
-  resetPartialFailures();
-  const ytSnap = await clientFsListYoutubeRecords();
-  const subMap = await clientFsReadSectionsSubMap();
-  const listedFilter = metadata__is_listed ?? is_listed;
-  let list = ytSnap;
-
-  if (isOldAppConfigured()) {
-    try {
-      const hostId = await getHostMainSectionId();
-      const shouldMergeOldApp =
-        main_section === undefined || main_section === "" || sameSectionId(main_section, hostId);
-      if (hostId != null && shouldMergeOldApp) {
-        // التحميل المتوازي: نقرأ جميع الأقسام الرئيسيّة ثمّ الفرعيّة ثمّ
-        // الدروس بالتوازي (Promise.all) بدل التسلسل الخطّي O(N*M*K).
-        const oldMains = await externalCache.get("oldapp:mains", () =>
-          listOldAppMainSections(),
-        );
-        const allLessons = await Promise.all(
-          oldMains.map(async (m) => {
-            try {
-              const oldSubs = await externalCache.get(
-                `oldapp:subs:${m.id}`,
-                () => listOldAppSubSections(m.id),
-              );
-              const lessonsBatches = await Promise.all(
-                oldSubs.map((s) =>
-                  externalCache
-                    .get(`oldapp:lessons:${m.id}:${s.id}`, () =>
-                      listOldAppLessonsBySub(m.id, s.id),
-                    )
-                    .then((lessons) =>
-                      lessons.map((lesson) => ({ lesson, mainDocId: m.id, subDocId: s.id })),
-                    )
-                    .catch((err) => {
-                      recordPartialFailure(`OldApp lessons ${m.id}/${s.id}`, err);
-                      return [];
-                    }),
-                ),
-              );
-              return lessonsBatches.flat();
-            } catch (err) {
-              recordPartialFailure(`OldApp subs ${m.id}`, err);
-              return [];
-            }
-          }),
-        );
-        for (const entry of allLessons.flat()) {
-          const asYoutube = adaptOldAppLessonAsYoutube(entry.lesson, {
-            mainDocId: entry.mainDocId,
-            subDocId: entry.subDocId,
-          });
-          if (String(asYoutube?.metadata?.content_type) === "youtube") {
-            list.push(asYoutube);
-          }
-        }
-      }
-    } catch (err) {
-      recordPartialFailure("OldApp youtube merge", err);
-    }
-  }
-
-  // دمج فيديوهات Mshcat: كتب من `books` نوعها youtube.
-  if (isMshcatConfigured()) {
-    try {
-      const books = await externalCache.get("mshcat:books:all", () =>
-        listAllMshcatBooks(),
-      );
-      for (const b of books) {
-        const yt = adaptMshcatBookAsYoutube(b);
-        const t = String(yt?.metadata?.content_type || "").toLowerCase();
-        const url = String(yt?.video_url || "").toLowerCase();
-        if (t === "youtube" || url.includes("youtube.com") || url.includes("youtu.be")) {
-          list.push(yt);
-        }
-      }
-    } catch (err) {
-      recordPartialFailure("Mshcat youtube merge", err);
-    }
-  }
-
-  // AND search + relevance ranking (Arabic-normalized).
-  const tokens = tokenize(search);
-  if (tokens.length > 0) {
-    list = filterAndRank(list, tokens, (item) => [
-      item?.metadata?.title || "",
-      item?.metadata?.description || "",
-      item?.metadata?.author || "",
-      item?.video_url || "",
-    ]);
-  }
-  if (subsection !== undefined && subsection !== "") {
-    list = list.filter(
-      (item) => sameSectionId(item?.metadata?.subsection, subsection),
-    );
-  }
-  if (secondary_subsection !== undefined && secondary_subsection !== "") {
-    list = list.filter(
-      (item) =>
-        sameSectionId(item?.metadata?.secondary_subsection, secondary_subsection),
-    );
-  }
-  if (main_section !== undefined && main_section !== "") {
-    list = list.filter((item) => {
-      const subId = item?.metadata?.subsection;
-      const sub = subMap[String(subId)];
-      return (
-        sameSectionId(sub?.main_section, main_section) ||
-        sameSectionId(item?.__oldappMainDocId, parseOldAppId(subId)?.mainDocId)
-      );
-    });
-  }
-  if (listedFilter !== undefined && listedFilter !== "") {
-    const boolVal = listedFilter === true || listedFilter === "true";
-    list = list.filter(
-      (item) => Boolean(item?.metadata?.is_listed ?? true) === boolVal,
-    );
-  }
-
-  list.sort((a, b) => {
-    const ta = new Date(
-      a?.metadata?.created_at || a?.created_at || 0,
-    ).getTime();
-    const tb = new Date(
-      b?.metadata?.created_at || b?.created_at || 0,
-    ).getTime();
-    return tb - ta;
-  });
-  return paginate(list, page);
-}
-
-/**
- * Create a YouTube video (multipart/form-data).
- * @param {Object} data - { video_url, thumbnail? (File), metadata: { title, description?, subsection, secondary_subsection?, content_type:'youtube' } }
- */
-export async function createYoutubeVideo(data) {
-  const subId = String(data?.metadata?.subsection ?? "");
-  const secId = String(data?.metadata?.secondary_subsection ?? "");
-
-  // Mshcat routing — نحفظ كتابًا في `books` وحقل `categoryId` يحمل docId
-  // لأعمق قسم تمّ اختياره (sec أفضل، ثمّ sub، ثمّ main).
-  const mshcatTarget = detectMshcatContentTarget({
-    subsectionId: subId,
-    secondarySubsectionId: secId,
-  });
-  if (mshcatTarget) {
-    let thumbnailUrl = null;
-    if (data?.thumbnail instanceof File) {
-      thumbnailUrl = await uploadSectionThumbnail(
-        "youtube-mshcat",
-        Date.now(),
-        data.thumbnail,
-      );
-    }
-    const created = await createMshcatBook({
-      categoryDocId: mshcatTarget.docId,
-      title: data?.metadata?.title,
-      description: data?.metadata?.description,
-      author: data?.metadata?.author,
-      contentType: "youtube",
-      sourceUrl: data?.video_url,
-      thumbnail: thumbnailUrl,
-    });
-    return {
-      id: `mshcat:book:${created.id}`,
-      video_url: String(data?.video_url || "").trim(),
-      metadata: {
-        title: String(data?.metadata?.title || "").trim(),
-        description: data?.metadata?.description ? String(data.metadata.description) : "",
-        author: data?.metadata?.author ? String(data.metadata.author) : "",
-        subsection: subId,
-        secondary_subsection: secId || null,
-        content_type: "youtube",
-        is_listed: data?.metadata?.is_listed ?? true,
-        thumbnail: thumbnailUrl || null,
-        created_at: new Date().toISOString(),
-      },
-      __mshcatBookDocId: created.id,
-      __mshcatCategoryDocId: mshcatTarget.docId,
-    };
-  }
-
-  const parsedSub = isOldAppId(subId) ? parseOldAppId(subId) : null;
-  const parsedSec = isOldAppId(secId) ? parseOldAppId(secId) : null;
-  const target = parsedSec?.level === "sub" ? parsedSec : parsedSub?.level === "sub" ? parsedSub : null;
-  if (target) {
-    let thumbnailUrl = null;
-    if (data?.thumbnail instanceof File) {
-      thumbnailUrl = await uploadSectionThumbnail("youtube-oldapp", Date.now(), data.thumbnail);
-    }
-    const created = await createOldAppLesson({
-      mainDocId: target.mainDocId,
-      subDocId: target.subDocId,
-      title: data?.metadata?.title,
-      description: data?.metadata?.description,
-      author: data?.metadata?.author,
-      contentType: "youtube",
-      sourceUrl: data?.video_url,
-      thumbnail: thumbnailUrl,
-    });
-    return {
-      id: `oldapp:lesson:${created.id}`,
-      video_url: String(data?.video_url || "").trim(),
-      metadata: {
-        title: String(data?.metadata?.title || "").trim(),
-        description: data?.metadata?.description ? String(data.metadata.description) : "",
-        author: data?.metadata?.author ? String(data.metadata.author) : "",
-        subsection: `oldapp:main:${target.mainDocId}`,
-        secondary_subsection: `oldapp:sub:${target.mainDocId}:${target.subDocId}`,
-        content_type: "youtube",
-        is_listed: data?.metadata?.is_listed ?? true,
-        thumbnail: thumbnailUrl || null,
-        created_at: new Date().toISOString(),
-      },
-      __oldappMainDocId: target.mainDocId,
-      __oldappSubDocId: target.subDocId,
-      __oldappContentDocId: created.id,
-    };
-  }
-
-  const id = makeSectionId();
-  const createdAt = new Date().toISOString();
-  let thumbnailUrl;
-  if (data?.thumbnail instanceof File) {
-    thumbnailUrl = await uploadSectionThumbnail("youtube", id, data.thumbnail);
-  }
-  const metadata = {
-    title: String(data?.metadata?.title || "").trim(),
-    description: data?.metadata?.description
-      ? String(data.metadata.description)
-      : "",
-    author: data?.metadata?.author ? String(data.metadata.author) : "",
-    subsection: String(data?.metadata?.subsection),
-    secondary_subsection: data?.metadata?.secondary_subsection
-      ? String(data.metadata.secondary_subsection)
-      : null,
-    content_type: "youtube",
-    is_listed: data?.metadata?.is_listed ?? true,
-    thumbnail: thumbnailUrl || null,
-    created_at: createdAt,
-  };
-  const videoUrl = String(data?.video_url || "").trim();
-  const payload = {
-    id,
-    video_url: videoUrl,
-    metadata,
-    created_at: createdAt,
-    ...(metadata.selectionOrder != null
-      ? { selectionOrder: metadata.selectionOrder }
-      : {}),
-    ...(metadata.selectionIndex != null
-      ? { selectionIndex: metadata.selectionIndex }
-      : {}),
-    ...(metadata.batchId ? { batchId: metadata.batchId } : {}),
-    ...buildYoutubeMirrorFields({
-      id,
-      videoUrl,
-      metadata,
-      thumbnail: thumbnailUrl || null,
-    }),
-  };
-  await clientFsSetYoutubeRecord(id, payload);
-  return payload;
-}
-
-/**
- * إنشاء دفعة من روابط يوتيوب باستخدام writeBatch واحد (حتى 500 كحد أقصى للباتش).
- * @param {Array<Object>} items
- */
-export async function createYoutubeVideoBatch(items) {
-  const records = [];
-  const createdAt = new Date().toISOString();
-  for (const data of items) {
-    const id = makeSectionId();
-    // لا ندعم المصغرات المرفوعة (File) في الرفع الجماعي حالياً لتسريع العملية، يعتمد على الـ URL.
-    const metadata = {
-      title: String(data?.metadata?.title || "").trim(),
-      description: data?.metadata?.description ? String(data.metadata.description) : "",
-      author: data?.metadata?.author ? String(data.metadata.author) : "",
-      subsection: String(data?.metadata?.subsection),
-      secondary_subsection: data?.metadata?.secondary_subsection
-        ? String(data.metadata.secondary_subsection)
-        : null,
-      content_type: "youtube",
-      is_listed: data?.metadata?.is_listed ?? true,
-      thumbnail: null,
-      created_at: createdAt,
-    };
-    const videoUrl = String(data?.video_url || "").trim();
-    const payload = {
-      id,
-      video_url: videoUrl,
-      metadata,
-      created_at: createdAt,
-      ...(data?.metadata?.selectionOrder != null ? { selectionOrder: data.metadata.selectionOrder } : {}),
-      ...(data?.metadata?.selectionIndex != null ? { selectionIndex: data.metadata.selectionIndex } : {}),
-      ...(data?.metadata?.batchId ? { batchId: data.metadata.batchId } : {}),
-      ...buildYoutubeMirrorFields({
-        id,
-        videoUrl,
-        metadata,
-        thumbnail: null,
-      }),
-    };
-    records.push({ id, payload });
-  }
-  
-  if (records.length > 0) {
-    await clientFsSetYoutubeRecordsBatch(records);
-  }
-  return records.map((r) => r.payload);
-}
-
-/**
- * Update a YouTube video (PATCH, multipart/form-data).
- * @param {number} id
- * @param {Object} data
- */
-export async function updateYoutubeVideo(id, data) {
-  const mshBook = parseMshcatBookId(id);
-  if (mshBook) {
-    const patch = { contentType: "youtube" };
-    if (hasOwn(data, "video_url")) patch.sourceUrl = asTrimmedString(data.video_url);
-    if (hasOwn(data?.metadata || {}, "title")) patch.title = asTrimmedString(data.metadata.title);
-    if (hasOwn(data?.metadata || {}, "description")) {
-      patch.description = asTrimmedString(data.metadata.description);
-    }
-    if (hasOwn(data?.metadata || {}, "author")) patch.author = asTrimmedString(data.metadata.author);
-    if (data?.thumbnail instanceof File) {
-      patch.thumbnail = await uploadSectionThumbnail(
-        "youtube-mshcat",
-        mshBook.bookDocId,
-        data.thumbnail,
-      );
-    }
-    const wantsMove =
-      hasOwn(data?.metadata || {}, "subsection") ||
-      hasOwn(data?.metadata || {}, "secondary_subsection");
-    if (wantsMove) {
-      const target = detectMshcatContentTarget({
-        subsectionId: data?.metadata?.subsection,
-        secondarySubsectionId: data?.metadata?.secondary_subsection,
-      });
-      if (target?.docId) patch.categoryDocId = target.docId;
-    }
-    await updateMshcatBook(mshBook.bookDocId, patch);
-    return { id };
-  }
-
-  const oldContent = parseOldAppContentId(id);
-  if (oldContent) {
-    const patch = { contentType: "youtube" };
-    if (hasOwn(data, "video_url")) patch.sourceUrl = asTrimmedString(data.video_url);
-    if (hasOwn(data?.metadata || {}, "title")) patch.title = asTrimmedString(data.metadata.title);
-    if (hasOwn(data?.metadata || {}, "description")) {
-      patch.description = asTrimmedString(data.metadata.description);
-    }
-    if (hasOwn(data?.metadata || {}, "author")) patch.author = asTrimmedString(data.metadata.author);
-    if (data?.thumbnail instanceof File) {
-      patch.thumbnail = await uploadSectionThumbnail(
-        "youtube-oldapp",
-        oldContent.lessonDocId,
-        data.thumbnail,
-      );
-    }
-    await updateOldAppLesson(oldContent.lessonDocId, patch);
-    return { id };
-  }
-
-  const current = await clientFsGetYoutubeRecord(id);
-  if (!current) throw new Error("Video not found");
-  const nextMetadata = mergeContentMetadataPreservingHierarchy(
-    current.metadata || {},
-    data?.metadata || {},
-  );
-  let nextThumbnail = nextMetadata.thumbnail ?? current?.thumbnail ?? null;
-  if (data?.thumbnail instanceof File) {
-    nextThumbnail = await uploadSectionThumbnail("youtube", id, data.thumbnail);
-    nextMetadata.thumbnail = nextThumbnail;
-  }
-  const nextVideoUrl =
-    data?.video_url !== undefined
-      ? String(data.video_url || "").trim()
-      : current.video_url;
-  const next = {
-    ...current,
-    video_url: nextVideoUrl,
-    metadata: nextMetadata,
-    ...buildYoutubeMirrorFields({
-      id,
-      videoUrl: nextVideoUrl,
-      metadata: nextMetadata,
-      thumbnail: nextThumbnail,
-      current,
-    }),
-  };
-  await clientFsSetYoutubeRecord(id, next);
-  return next;
-}
-
-/**
- * Delete a YouTube video.
- * @param {number} id
- */
-export async function removeYoutubeVideo(id) {
-  const mshBook = parseMshcatBookId(id);
-  if (mshBook) {
-    await deleteMshcatBook(mshBook.bookDocId);
-    return true;
-  }
-  const oldContent = parseOldAppContentId(id);
-  if (oldContent) {
-    await deleteOldAppLesson(oldContent.lessonDocId);
-    return true;
-  }
-  const current = await clientFsGetYoutubeRecord(id);
-  if (!current) return true;
-  await deleteStorageUrlsByValue(collectAssetUrls(current || {}));
-  await clientFsDeleteYoutubeRecord(id);
-  return true;
 }
 
 // ─── Main Sections ──────────────────────────────────────
@@ -941,17 +455,6 @@ function buildSearchAction(kind, id, query = "") {
           query: withQuery({ modal: "delete", id: String(id) }),
         },
       };
-    case "youtube":
-      return {
-        edit: {
-          route: "/moderator/content/youtube",
-          query: withQuery({ modal: "edit", id: String(id) }),
-        },
-        delete: {
-          route: "/moderator/content/youtube",
-          query: withQuery({ modal: "delete", id: String(id) }),
-        },
-      };
     default:
       return {};
   }
@@ -971,28 +474,15 @@ function toSearchHit(kind, item, query = "") {
     };
   }
 
-  if (kind === "file") {
-    return {
-      id: String(item.id),
-      kind,
-      title: item?.metadata?.title || item?.filename || "",
-      description: item?.metadata?.description || "",
-      thumbnail: item?.metadata?.thumbnail || null,
-      content_type: item?.metadata?.content_type || item?.file_type || "file",
-      raw: item,
-      actions: buildSearchAction("file", item.id, query),
-    };
-  }
-
   return {
     id: String(item.id),
-    kind: "youtube",
-    title: item?.metadata?.title || "",
+    kind: "file",
+    title: item?.metadata?.title || item?.filename || "",
     description: item?.metadata?.description || "",
     thumbnail: item?.metadata?.thumbnail || null,
-    content_type: "youtube",
+    content_type: item?.metadata?.content_type || item?.file_type || "file",
     raw: item,
-    actions: buildSearchAction("youtube", item.id, query),
+    actions: buildSearchAction("file", item.id, query),
   };
 }
 
@@ -1018,12 +508,11 @@ export async function searchDashboardUnified({
 
   resetPartialFailures();
 
-  const [mains, subs, secondaries, files, videos] = await Promise.all([
+  const [mains, subs, secondaries, files] = await Promise.all([
     listMyMainSections({ search: q, page: 1, requireSearch }),
     listMySubSections({ search: q, page: 1, requireSearch }),
     listMySecondarySections({ search: q, page: 1, requireSearch }),
     listMyFiles({ search: q, page: 1, requireSearch }),
-    listMyYoutubeVideos({ search: q, page: 1, requireSearch }),
   ]);
 
   const mainHits = (mains.results || []).map((item) => toSearchHit("main", item, q));
@@ -1032,9 +521,6 @@ export async function searchDashboardUnified({
     toSearchHit("secondary", item, q),
   );
   const fileHits = (files.results || []).map((item) => toSearchHit("file", item, q));
-  const videoHits = (videos.results || []).map((item) =>
-    toSearchHit("youtube", item, q),
-  );
 
   return {
     query: q,
@@ -1042,9 +528,9 @@ export async function searchDashboardUnified({
       mainSections: mainHits,
       subSections: subHits,
       secondarySections: secondaryHits,
-      content: [...fileHits, ...videoHits],
+      content: [...fileHits],
     },
-    all: [...mainHits, ...subHits, ...secondaryHits, ...fileHits, ...videoHits],
+    all: [...mainHits, ...subHits, ...secondaryHits, ...fileHits],
     partialFailures: getLastPartialFailures(),
   };
 }
