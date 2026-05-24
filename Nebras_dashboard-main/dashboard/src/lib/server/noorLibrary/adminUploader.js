@@ -300,6 +300,17 @@ export async function adminUploadAndRegister(args) {
 		__provider: source?.provider || 'noor-library',
 		__sourceUrl: source?.url || '',
 		__sourceBookId: source?.bookId || '',
+		// ────────── ⚖️ Google Play / DMCA compliance metadata ──────────
+		// مكتبة نور ليست كلّها ملكيّة عامّة: المشرف يرفع يدويّاً ما هو ملكيّة
+		// عامّة/مُرخّص فقط. الافتراض 'manual_confirmed' (أكّده مشرف)؛ مرّر
+		// source.licenseStatus='verified_open_license' عند توفّر دليل رخصة.
+		// أيّ عنصر يُوضَع لاحقاً 'rejected' يحجبه التطبيق.
+		__source_provider: source?.provider || 'noor-library',
+		__license_status: source?.licenseStatus || 'manual_confirmed',
+		__license: source?.license || '',
+		__license_url: source?.licenseUrl || '',
+		__compliance_version: '2026.05',
+		__verified_at: new Date().toISOString(),
 		...compatible
 	});
 

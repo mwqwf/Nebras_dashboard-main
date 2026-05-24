@@ -160,9 +160,33 @@ Both `search_datasource.dart` and `home_datasource.dart` apply
 filtered out if:
 
 - `sourceUrl` is null, empty, or not `http(s)://`
-- (future) `license_status` is marked `rejected`
+- `license_status` / `__license_status` equals `rejected` (**live** — soft
+  takedown without deleting the document)
+- the current user reported it (`HiddenContentService`, local Hive box
+  `hidden_content`; works for guests too)
 
-This guarantees the user never sees a card that says "No source available".
+This guarantees the user never sees a non-compliant or self-reported card.
+
+### 4.1.b Attribution display (live)
+
+The mobile app now surfaces a **curated** subset of compliance metadata in
+the content detail screens (`ContentAttribution` widget): source name and
+license name, plus a tappable license URL when present. It reads:
+
+- `source_name` / `__source_provider` / `__provider` → friendly source
+  (`archive.org` → "Internet Archive", `hindawi` → "مؤسسة هنداوي",
+  `noor-library` → "مكتبة نور").
+- `license_name` / `license` / `__license` → friendly license name.
+- `license_url` / `__license_url` → tappable (opened in external browser).
+
+⚠️ The app never links to `archive.org` (`__attribution_url` is **not**
+surfaced as a tappable link — only the CC/public-domain `license_url` is).
+
+### 4.1.c Report → review SLA (live)
+
+When a user reports content, the app shows a notice that the item will be
+permanently removed within **24 hours** if the claim is verified, and hides
+it from that user immediately regardless of outcome.
 
 ### 4.2 Source-of-truth boundary
 

@@ -195,6 +195,15 @@ export async function firebaseWriteFileRecord({
       : {}),
     ...(meta.batchId ? { batchId: meta.batchId } : {}),
     ...(meta.content_sha256 ? { content_sha256: meta.content_sha256 } : {}),
+    // ⚖️ بيانات الامتثال للحقوق (اختياريّة للرفع اليدوي). تُكتَب فقط حين
+    // يملؤها المشرف، فلا تتأثّر أيّ رفعات قائمة لا تمرّر هذه الحقول. يقرأها
+    // التطبيق لعرض الإسناد ولحجب 'rejected'.
+    ...(meta.source_name ? { __source_provider: String(meta.source_name) } : {}),
+    ...(meta.license_status
+      ? { __license_status: String(meta.license_status) }
+      : {}),
+    ...(meta.license_name ? { __license: String(meta.license_name) } : {}),
+    ...(meta.license_url ? { __license_url: String(meta.license_url) } : {}),
     ...compatibleFields,
   });
 

@@ -32,7 +32,7 @@
 	// Upload modal
 	let showUploadModal = $state(false);
 	let uploadFile = $state(null);
-	let uploadForm = $state({ title: '', description: '', author: '', main_section: '', subsection: '', secondary_subsection: '', is_listed: true });
+	let uploadForm = $state({ title: '', description: '', author: '', main_section: '', subsection: '', secondary_subsection: '', is_listed: true, source_name: '', license_name: '', license_url: '', license_status: '' });
 	let uploadThumbnail = $state(null);
 	let uploadThumbnailPreview = $state('');
 	let uploadFormError = $state('');
@@ -144,7 +144,7 @@
 
 	// ─── Upload Modal ───────────────────────────────────
 	function openUploadModal() {
-		uploadFile = null; uploadForm = { title: '', description: '', author: '', main_section: '', subsection: '', secondary_subsection: '', is_listed: true };
+		uploadFile = null; uploadForm = { title: '', description: '', author: '', main_section: '', subsection: '', secondary_subsection: '', is_listed: true, source_name: '', license_name: '', license_url: '', license_status: '' };
 		uploadThumbnail = null; uploadThumbnailPreview = ''; uploadFormError = '';
 		uploadSubOptions = []; uploadSecondaryOptions = [];
 		uploadStatus = ''; uploadProgress = 0; currentUploader = null;
@@ -191,6 +191,11 @@
 			is_listed: uploadForm.is_listed
 		};
 		if (uploadForm.secondary_subsection) metadata.secondary_subsection = String(uploadForm.secondary_subsection);
+		// ⚖️ المصدر والرخصة (اختياريّة) — للإسناد والامتثال. تُمرَّر فقط حين تُملأ.
+		if (uploadForm.source_name) metadata.source_name = uploadForm.source_name.trim();
+		if (uploadForm.license_name) metadata.license_name = uploadForm.license_name.trim();
+		if (uploadForm.license_url) metadata.license_url = uploadForm.license_url.trim();
+		if (uploadForm.license_status) metadata.license_status = uploadForm.license_status.trim();
 
 		const uploader = createFileUploader(uploadFile, metadata, uploadThumbnail, {
 			onProgress: (p) => { uploadProgress = p; },
@@ -586,6 +591,18 @@
 					<div class="form-group"><label for="up-title" class="form-label">{t('common.title')} *</label><input type="text" id="up-title" bind:value={uploadForm.title} class="form-input" placeholder={t('common.title')} /></div>
 					<div class="form-group"><label for="up-desc" class="form-label">{t('content.description')}</label><textarea id="up-desc" bind:value={uploadForm.description} class="form-input form-textarea" rows="2" placeholder={t('common.optional')}></textarea></div>
 					<div class="form-group"><label for="up-author" class="form-label">{t('content.author')}</label><input type="text" id="up-author" bind:value={uploadForm.author} class="form-input" placeholder="e.g. John Doe..." /></div>
+					<!-- ⚖️ المصدر والرخصة (اختياريّة) — للإسناد وامتثال الحقوق. تظهر في التطبيق وتُعين على ردّ بلاغات DMCA. -->
+					<div class="form-group"><label for="up-source" class="form-label">المصدر (اختياري)</label><input type="text" id="up-source" bind:value={uploadForm.source_name} class="form-input" placeholder="مثل: Internet Archive، مؤسسة هنداوي، مكتبة نور" /></div>
+					<div class="form-group"><label for="up-license-name" class="form-label">اسم الرخصة (اختياري)</label><input type="text" id="up-license-name" bind:value={uploadForm.license_name} class="form-input" placeholder="مثل: Public Domain، Creative Commons" /></div>
+					<div class="form-group"><label for="up-license-url" class="form-label">رابط الرخصة (اختياري)</label><input type="url" id="up-license-url" bind:value={uploadForm.license_url} class="form-input" placeholder="https://creativecommons.org/..." /></div>
+					<div class="form-group"><label for="up-license-status" class="form-label">حالة الترخيص (اختياري)</label>
+						<select id="up-license-status" bind:value={uploadForm.license_status} class="form-input">
+							<option value="">— غير محدَّد —</option>
+							<option value="verified_open_license">ملكيّة عامّة / رخصة مفتوحة موثّقة</option>
+							<option value="manual_confirmed">أكّده مشرف يدويّاً</option>
+							<option value="rejected">مرفوض (يُحجَب عن التطبيق)</option>
+						</select>
+					</div>
 					<!-- Section selectors -->
 					<div class="form-group">
 						<label for="up-main" class="form-label">{t('sections.main_section')} *</label>
