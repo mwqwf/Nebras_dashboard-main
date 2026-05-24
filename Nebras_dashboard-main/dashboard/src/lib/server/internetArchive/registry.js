@@ -16,7 +16,7 @@
  */
 
 import { getAdminDatabase } from '$lib/server/firebaseAdmin.js';
-import { PERMANENT_FAILURE_REASONS } from './licenseFilter.js';
+import { PERMANENT_FAILURE_REASONS, LICENSE_GATE_VERSION } from './licenseFilter.js';
 
 const REGISTRY_ROOT = 'ia_library_registry';
 const FAILURES_ROOT = 'ia_library_failures';
@@ -67,9 +67,25 @@ export async function partitionKnownItems(identifiers) {
 		const failures = failSnap.val() || {};
 		for (const [id, rec] of Object.entries(failures)) {
 			const count = Number(rec?.count || 0);
-			// permanent flag = من DMCA takedown → blacklist فوري
-			if (rec?.permanent === true) known.add(id);
-			else if (count >= FAILURE_BLACKLIST_THRESHOLD) known.add(id);
+			// permanent flag = من DMCA takedown → blacklist فوري دائم.
+			if (rec?.permanent === true) {
+				known.add(id);
+				continue;
+			}
+			// أخطاء الترخيص قابلة لإعادة التقييم (الفحص يجري قبل التنزيل فهو
+			// رخيص، ومنطق البوّابة قد يتغيّر). نحظرها فقط إذا سُجّلت تحت
+			// إصدار البوّابة الحاليّ؛ أمّا ما حُظر تحت إصدار قديم فيُعاد مرّة
+			// واحدة تحت البوّابة المُصلَحة (يستعيد عناصر الملكية العامّة).
+			const reason = String(rec?.lastReason || '');
+			if (reason.startsWith('license_')) {
+				const stampedVersion = Number(rec?.gateVersion || 0);
+				if (stampedVersion === LICENSE_GATE_VERSION && count >= FAILURE_BLACKLIST_THRESHOLD) {
+					known.add(id);
+				}
+				continue;
+			}
+			// أخطاء غير الترخيص (تنزيل/تحقّق بايتات/شبكة) — حظر عند العتبة.
+			if (count >= FAILURE_BLACKLIST_THRESHOLD) known.add(id);
 		}
 	}
 	if (dmcaSnap.exists()) {
@@ -140,16 +156,25 @@ export async function recordFailure(identifier, info = {}) {
 			? FAILURE_BLACKLIST_THRESHOLD
 			: 1;
 
+	const isLicenseReason = reason.startsWith('license_');
 	await ref.transaction((current) => {
 		const c = current || { count: 0, firstFailedAt: Date.now() };
-		const nextCount = Math.max(Number(c.count || 0) + bump, bump);
+		// عند إعادة محاولة عنصر مرفوض ترخيصياً تحت بوّابة جديدة: نبدأ العدّ
+		// من الصفر بدل التراكم، كي لا يبقى محظوراً بعدّ قديم متضخّم.
+		const baseCount =
+			isLicenseReason && Number(c.gateVersion || 0) !== LICENSE_GATE_VERSION
+				? 0
+				: Number(c.count || 0);
+		const nextCount = Math.max(baseCount + bump, bump);
 		return {
 			count: nextCount,
 			firstFailedAt: c.firstFailedAt || Date.now(),
 			lastFailedAt: Date.now(),
 			lastReason: reason,
 			lastMessage: String(info?.message || '').slice(0, 300),
-			iaSourceUrl: String(info?.iaSourceUrl || c.iaSourceUrl || '').slice(0, 1000)
+			iaSourceUrl: String(info?.iaSourceUrl || c.iaSourceUrl || '').slice(0, 1000),
+			// ختم إصدار البوّابة على أخطاء الترخيص لتمييز الحظر القديم.
+			gateVersion: isLicenseReason ? LICENSE_GATE_VERSION : (c.gateVersion || null)
 		};
 	});
 }

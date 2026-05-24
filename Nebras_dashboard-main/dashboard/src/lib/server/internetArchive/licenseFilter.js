@@ -37,17 +37,40 @@ const ALLOWED_LICENSE_PATTERNS = Object.freeze([
  * أي عنصر يحوي licenseurl أو rights يطابق هذه الأنماط = رفض قطعي،
  * يُسجَّل في failures registry كـ blacklist دائم.
  */
+// ⚠️ مضيَّقة عمداً: الإصدار القديم كان يحوي `/copyright(ed)?/i` المجرّد الذي
+// يطابق كلمة "copyright" أينما وردت — فيرفض عناصر **الملكية العامة** التي
+// يحمل حقل `rights` فيها عبارات مثل «No known copyright restrictions» أو
+// «copyright not renewed»، ويضعها في حظر دائم فينخفض الاسترجاع تدريجياً.
+// الآن نطابق فقط الإشارات المقيِّدة الحقيقيّة (حقوق محفوظة صريحة / © سنة /
+// قيود NC/ND). علامات الملكية العامة تُلتقط أولاً في PUBLIC_DOMAIN_PATTERNS.
 const COPYRIGHT_DENY_PATTERNS = Object.freeze([
 	/all\s*rights?\s*reserved/i,
-	/copyright(ed)?/i,
-	/\bcr\b/i, // rights:CR (IA shorthand)
+	/©\s*\d{4}/, // © 2019
+	/\(c\)\s*\d{4}/i, // (c) 2019
+	/copyright(ed)?\s*(?:©|\(c\)|\bby\b|\d{4})/i, // "Copyright 2019" / "Copyrighted by X"
 	/proprietary/i,
-	/non\s*commercial/i, // CC-BY-NC — Google Play لا يقبل القيود التجاريّة
+	/non\s*commercial/i, // CC-BY-NC — قيود تجاريّة
 	/no\s*derivatives/i, // CC-BY-ND
 	/-nc-/i, // أي CC variant فيه NC
 	/-nd-/i, // أي CC variant فيه ND
 	/-nc$/i,
-	/-nd$/i
+	/-nd$/i,
+	/^\s*cr\s*$/i // حقل rights يساوي بالكامل "CR" (اختصار IA لـ copyrighted)
+]);
+
+/**
+ * علامات الملكية العامّة / غياب القيد التي يجب أن **تُقبَل** حتى لو احتوت
+ * كلمة "copyright" (مثل «No known copyright restrictions»). تُفحَص قبل
+ * بوّابة الرفض كي لا يُحجب محتوى مشروع.
+ */
+const PUBLIC_DOMAIN_PATTERNS = Object.freeze([
+	/public\s*[-_]?\s*domain/i,
+	/no\s*known\s*copyright/i,
+	/not\s*in\s*copyright/i,
+	/out\s*of\s*copyright/i,
+	/no\s*copyright\s*(restriction|renewal)/i,
+	/copyright\s*(?:has\s*)?(?:not\s*been\s*renewed|not\s*renewed|expired)/i,
+	/\bcc0\b/i
 ]);
 
 /**
@@ -60,6 +83,32 @@ function looksLikeCopyrighted(text) {
 	const s = String(text).trim();
 	if (!s) return false;
 	for (const pat of COPYRIGHT_DENY_PATTERNS) {
+		if (pat.test(s)) return true;
+	}
+	return false;
+}
+
+/**
+ * يفحص إن كان النصّ يدلّ على ملكية عامّة / غياب قيد حقوق.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function looksPublicDomain(text) {
+	if (!text) return false;
+	const s = String(text).trim();
+	if (!s) return false;
+	for (const pat of PUBLIC_DOMAIN_PATTERNS) {
+		if (pat.test(s)) return true;
+	}
+	return false;
+}
+
+/** يفحص تطابق ترخيص CC/PD مسموح صريح (URL أو نصّ). */
+function matchesAllowedLicense(text) {
+	if (!text) return false;
+	const s = String(text).trim();
+	if (!s) return false;
+	for (const pat of ALLOWED_LICENSE_PATTERNS) {
 		if (pat.test(s)) return true;
 	}
 	return false;
@@ -95,6 +144,16 @@ export const DEFAULT_TRUSTED_COLLECTIONS = Object.freeze([
  * }} [opts]
  * @returns {{ ok: boolean, reason: string, licenseMatched?: string, collection?: string }}
  */
+/**
+ * إصدار منطق بوّابة الترخيص. يُرفَع عند كل تعديل جوهريّ على قواعد القبول/
+ * الرفض. سجلّ الفشل يختم العناصر المرفوضة بهذا الرقم؛ وعند تغيّر الإصدار
+ * تُمنح العناصر المرفوضة سابقاً (بسبب ترخيص) **إعادة محاولة واحدة** تحت
+ * البوّابة الجديدة — فتعود عناصر الملكية العامّة التي حظرتها البوّابة
+ * القديمة خطأً، دون إعادة محاولة لا نهائيّة للمحتوى المحظور فعلاً.
+ * (v1 = البوّابة القديمة العريضة، v2 = البوّابة المتوازنة الحاليّة.)
+ */
+export const LICENSE_GATE_VERSION = 2;
+
 /** أسباب فشل لا تُعاد محاولتها (blacklist فوري). */
 export const PERMANENT_FAILURE_REASONS = Object.freeze(
 	new Set([
@@ -136,9 +195,28 @@ export function evaluateLicense(item, opts = {}) {
 	const licenseField = String(item?.license || '').trim();
 	const rightsField = String(item?.rights || '').trim();
 
+	// ───────── ✅ EXPLICIT ALLOW — ملكية عامّة / CC مسموح ─────────
+	// يُفحَص **أوّلاً** عبر كل الحقول: PD صريح أو CC مسموح يُقبَل فوراً حتى لو
+	// احتوى حقل rights كلمة "copyright" (مثل «No known copyright restrictions»).
+	// هذا يُصلح علّة انخفاض الاسترجاع دون السماح بمحتوى محميّ فعلاً.
+	if (
+		looksPublicDomain(licenseUrl) ||
+		looksPublicDomain(licenseField) ||
+		looksPublicDomain(rightsField) ||
+		matchesAllowedLicense(licenseUrl) ||
+		matchesAllowedLicense(licenseField) ||
+		matchesAllowedLicense(rightsField)
+	) {
+		return {
+			ok: true,
+			reason: 'license_allowed',
+			licenseMatched: pickString(licenseUrl, licenseField, rightsField)
+		};
+	}
+
 	// ───────── 🚨 HARD GATE — رفض صريح للمحتوى المحميّ ─────────
-	// (Google Play / DMCA compliance — لا نخاطر بأيّ عنصر يحوي إشارة
-	//  واضحة لحقوق محفوظة، حتى لو كان أيضاً في مجموعة موثوقة).
+	// (Google Play / DMCA — رفض قطعيّ لأيّ إشارة حقوق محفوظة حقيقيّة:
+	//  «All Rights Reserved»، «© 2019»، «Copyrighted by…»، أو قيود NC/ND).
 	if (looksLikeCopyrighted(licenseUrl) || looksLikeCopyrighted(licenseField)) {
 		return {
 			ok: false,
@@ -154,17 +232,14 @@ export function evaluateLicense(item, opts = {}) {
 		};
 	}
 
-	// ───────── ✅ ALLOWED — ترخيص صريح PD/CC ─────────
-	const licenseRaw = pickString(licenseUrl, licenseField, rightsField);
-	const licenseStr = String(licenseRaw || '').trim();
-
-	if (licenseStr) {
-		for (const pat of ALLOWED_LICENSE_PATTERNS) {
-			if (pat.test(licenseStr)) {
-				return { ok: true, reason: 'license_allowed', licenseMatched: licenseStr };
-			}
-		}
-		return { ok: false, reason: 'license_not_allowed', licenseMatched: licenseStr };
+	// ───────── 🔸 ترخيص مُعلَن غير مسموح ─────────
+	// نعتمد **حقول الترخيص المُعلَنة فقط** (licenseurl/license)، لا حقل
+	// `rights` الوصفيّ — لأنّ rights كثيراً ما يحوي نصّاً وصفيّاً لا يدلّ على
+	// قيد، فالاعتماد عليه كان يرفض عناصر مشروعة (سبب رئيسيّ للانخفاض).
+	const declaredLicense = pickString(licenseUrl, licenseField);
+	if (declaredLicense) {
+		// وصل هنا = مُعلَن لكنه ليس PD/CC مسموحاً ولا محظوراً صراحةً ⇒ غير معروف.
+		return { ok: false, reason: 'license_not_allowed', licenseMatched: declaredLicense };
 	}
 
 	// ───────── ⚠️ TRUSTED COLLECTION FALLBACK ─────────
