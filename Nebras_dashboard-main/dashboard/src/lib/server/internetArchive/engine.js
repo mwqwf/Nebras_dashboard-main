@@ -64,9 +64,10 @@ const MAX_IMPORT_ATTEMPTS_PER_TICK = 24;
  *  التزامن يضاعف الإنتاجيّة دون المخاطرة بالتلف لأنّ كلّ عنصر يُتحقَّق
  *  من magic bytes ومستقلّ تماماً عن غيره. */
 const IMPORT_CONCURRENCY = 4;
-/** مهلة تنزيل قصيرة للسرعة: مع preferSmallest الملفّات صغيرة، فالملفّ
- *  البطيء يُلغى بسرعة ويُنتقل للتالي بدل تعليق الدورة. */
-const CRON_DOWNLOAD_TIMEOUT_MS = 25_000;
+/** مهلة تنزيل قصيرة للسرعة والاستقرار: مع preferSmallest الملفّات صغيرة،
+ *  فالملفّ البطيء/الكبير (من المجموعات العامّة الجديدة) يُلغى بسرعة ويُنتقل
+ *  للتالي بدل تطويل الدورة قرب مهلة الدالّة (سبب 504). */
+const CRON_DOWNLOAD_TIMEOUT_MS = 12_000;
 
 const ENGINE_ROOT = 'ia_library_engine';
 const CONFIG_PATH = `${ENGINE_ROOT}/config`;
