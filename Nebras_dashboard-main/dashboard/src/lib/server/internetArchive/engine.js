@@ -122,6 +122,42 @@ export const DEFAULT_SEEDS = Object.freeze([
 		languages: ['Arabic', 'ara'],
 		nebrasTypes: ['video'],
 		collections: ['opensource_movies']
+	},
+	// ── 📚 بذور معرفيّة عامّة (نبراس منصّة معرفيّة عامّة لا دينيّة فقط) ──
+	// كلّها مجموعات ملكية عامّة / مفتوحة معروفة؛ فلتر الترخيص يتحقّق من كلّ
+	// عنصر على حدة فلا يدخل محتوى محميّ. تُوسّع الكتالوج إلى العلوم والتاريخ
+	// والأدب والفلسفة والفنون بثلاث لغات يدعمها التطبيق (ar/en/fr).
+	{
+		id: 'arabic_general_knowledge',
+		label: 'معرفة عامّة عربيّة',
+		q: '(علوم OR تاريخ OR أدب OR فلسفة OR جغرافيا OR رياضيات OR فيزياء OR كيمياء OR طب OR فلك OR فنون OR لغة OR شعر OR رواية OR سيرة OR اقتصاد OR قانون OR نفس OR اجتماع)',
+		languages: ['Arabic', 'ara'],
+		nebrasTypes: ['document'],
+		collections: ['booksbylanguage_arabic', 'folkscanomy']
+	},
+	{
+		id: 'gutenberg_classics',
+		label: 'كلاسيكيّات المعرفة (Project Gutenberg — ملكية عامّة)',
+		q: '(science OR history OR literature OR philosophy OR mathematics OR geography OR biography OR art OR economics OR psychology)',
+		languages: ['English', 'eng', 'French', 'fre', 'fra', 'Arabic', 'ara'],
+		nebrasTypes: ['document'],
+		collections: ['gutenberg']
+	},
+	{
+		id: 'librivox_public_audiobooks',
+		label: 'كتب صوتيّة (LibriVox — ملكية عامّة)',
+		q: '(literature OR history OR science OR philosophy OR poetry)',
+		languages: ['English', 'eng', 'French', 'fre', 'fra', 'Arabic', 'ara'],
+		nebrasTypes: ['audio'],
+		collections: ['librivoxaudio', 'librivox']
+	},
+	{
+		id: 'prelinger_public_films',
+		label: 'أفلام تعليميّة (Prelinger — ملكية عامّة)',
+		q: '(educational OR documentary OR science OR history OR geography)',
+		languages: ['English', 'eng'],
+		nebrasTypes: ['video'],
+		collections: ['prelinger']
 	}
 ]);
 
@@ -188,9 +224,13 @@ const DEFAULT_CONFIG = Object.freeze({
 	enabled: true,
 	seeds: [...DEFAULT_SEEDS],
 	tickIntervalMs: 6000,
-	batchSize: 8,
-	scrapeCount: 300,
-	// مسمّيات المجموعات المُفهرسة فعلاً في IA — التحقّق تمّ بـ Scrape API مباشرة.
+	// ⚡ رُفِعا للسرعة القصوى: دفعة استيراد أكبر + نطاق مرشّحين أوسع لكل دورة
+	// (ضمن حدود الـ clamp والميزانية الزمنيّة للـ cron — آمن).
+	batchSize: 12,
+	scrapeCount: 500,
+	// مسمّيات مجموعات IA المُفهرسة فعلاً — كلّها ملكية عامّة / مفتوحة.
+	// وُسِّعت بمجموعات معرفيّة عامّة (Gutenberg/LibriVox/Prelinger) إضافةً
+	// إلى العربيّة/الإسلاميّة، لتغطية معرفة عامّة أوسع دون محتوى محميّ.
 	trustedCollections: [
 		'booksbylanguage_arabic',
 		'booksbylanguage',
@@ -201,7 +241,12 @@ const DEFAULT_CONFIG = Object.freeze({
 		'audio_religion',
 		'opensource_movies',
 		'opensource_audio',
-		'opensource'
+		'opensource',
+		// ── مجموعات ملكية عامّة عامّة (معرفة عامّة) ──
+		'gutenberg',
+		'librivoxaudio',
+		'librivox',
+		'prelinger'
 	],
 	allowMissingLicenseInTrustedCollections: true
 });
@@ -255,16 +300,34 @@ async function readConfig() {
 	if (!snap.exists()) return { ...DEFAULT_CONFIG, seeds: [...DEFAULT_SEEDS] };
 	const v = snap.val() || {};
 	const validSeeds = Array.isArray(v.seeds) ? v.seeds.filter(isValidSeed) : [];
-	const seeds = validSeeds.length > 0 ? validSeeds : [...DEFAULT_SEEDS];
+	// دمج غير هدّام: نُبقي بذور المسؤول المخصّصة ونُضيف فوقها البذور
+	// الافتراضيّة الجديدة (بحسب id)، كي تنتشر توسعة المعرفة العامّة تلقائياً
+	// حتى لو كان في RTDB إعداد قديم. لا نحذف أيّ بذرة قائمة.
+	const seedsById = new Map();
+	for (const s of validSeeds) seedsById.set(String(s.id), s);
+	for (const s of DEFAULT_SEEDS) {
+		if (!seedsById.has(String(s.id))) seedsById.set(String(s.id), s);
+	}
+	const seeds = seedsById.size > 0 ? [...seedsById.values()] : [...DEFAULT_SEEDS];
+
+	// اتحاد المجموعات الموثوقة (المخزَّنة + الافتراضيّة) بلا تكرار — إضافة فقط.
+	const storedTrusted = Array.isArray(v.trustedCollections) ? v.trustedCollections : [];
+	const trustedCollections = [
+		...new Set([...storedTrusted, ...DEFAULT_CONFIG.trustedCollections].map((c) => String(c)))
+	];
+
 	return {
 		enabled: v.enabled === undefined ? true : Boolean(v.enabled),
 		seeds,
 		tickIntervalMs: Math.max(3000, Number(v.tickIntervalMs) || DEFAULT_CONFIG.tickIntervalMs),
-		batchSize: Math.max(1, Math.min(20, Number(v.batchSize) || DEFAULT_CONFIG.batchSize)),
-		scrapeCount: Math.max(100, Math.min(1000, Number(v.scrapeCount) || DEFAULT_CONFIG.scrapeCount)),
-		trustedCollections: Array.isArray(v.trustedCollections)
-			? v.trustedCollections
-			: DEFAULT_CONFIG.trustedCollections,
+		// نأخذ الأكبر (المخزَّن أو الافتراضيّ الجديد) كي تُطبَّق سرعة الإدخال
+		// الأعلى تلقائياً، مع احترام حدود الـ clamp.
+		batchSize: Math.max(1, Math.min(20, Math.max(Number(v.batchSize) || 0, DEFAULT_CONFIG.batchSize))),
+		scrapeCount: Math.max(
+			100,
+			Math.min(1000, Math.max(Number(v.scrapeCount) || 0, DEFAULT_CONFIG.scrapeCount))
+		),
+		trustedCollections,
 		allowMissingLicenseInTrustedCollections:
 			v.allowMissingLicenseInTrustedCollections === undefined
 				? DEFAULT_CONFIG.allowMissingLicenseInTrustedCollections

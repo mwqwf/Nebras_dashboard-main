@@ -24,7 +24,9 @@ export const config = {
 // دورة واحدة. يضاعف الإنتاجيّة دون تجاوز مهلة Vercel ودون لمس المجلوب سابقاً
 // (الـ registry يمنع التكرار + تحقّق magic bytes يمنع التلف).
 const CRON_TIME_BUDGET_MS = 45_000;
-const CRON_MAX_TICKS = 8;
+// رُفِع للسرعة القصوى: السقف الزمنيّ (45s) هو الحدّ الفعليّ؛ رفع عدد الدورات
+// يسمح باستغلال الميزانية كاملةً حين تكون الدورات سريعة.
+const CRON_MAX_TICKS = 12;
 
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
