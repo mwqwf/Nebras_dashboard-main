@@ -291,7 +291,10 @@ async function processBook({ url, bookId, categoryName }) {
 		mainSectionName: String(createdMain.name || categoryName),
 		subSectionName: HINDAWI_SUB_NAME,
 		secondarySectionName: '',
-		sourceUrl: meta.source?.url || url
+		// نُرسل رابط التشغيل الفعليّ (Firebase Storage PDF) لا صفحة هنداوي
+		// (`meta.source.url`): صفحة الهبوط HTML غير قابلة للتشغيل، وكان
+		// التطبيق إن لجأ إلى رابط الحمولة يفتحها في مشغّل الفيديو فتفشل.
+		sourceUrl: result.downloadUrl || ''
 	});
 
 	return {

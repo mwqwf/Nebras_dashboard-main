@@ -579,7 +579,9 @@ async function processBook({ url, bookId, sections }) {
 		mainSectionName: main.name,
 		subSectionName: sub.name,
 		secondarySectionName: secondary?.name || '',
-		sourceUrl: meta.source?.url || url
+		// رابط التشغيل الفعليّ (Firebase Storage) لا صفحة المصدر الخارجيّة:
+		// صفحة الهبوط غير قابلة للتشغيل في مشغّلات التطبيق.
+		sourceUrl: result.downloadUrl || ''
 	});
 
 	return {
