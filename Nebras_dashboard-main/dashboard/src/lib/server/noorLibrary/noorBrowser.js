@@ -30,6 +30,7 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { existsSync } from 'node:fs';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -41,6 +42,7 @@ function getGlobalState() {
 			browserPromise: null,
 			puppeteerModule: null,
 			puppeteerEnabled: null, // unknown until first probe
+			stealthEnabled: false,
 			lastError: null
 		};
 	}
@@ -60,10 +62,8 @@ function readBoolEnv(name, fallback) {
 }
 
 /**
- * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
- * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
- *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * يحاول تحميل puppeteer-extra + stealth plugin. Stealth شرط تشغيلي لمكتبة نور:
+ * الرجوع إلى puppeteer العادي يعطي بصمة آلية واضحة ويخلّ بطلب التشغيل.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -79,23 +79,14 @@ async function loadPuppeteer() {
 		puppeteerExtra.use(StealthPlugin());
 		state.puppeteerModule = puppeteerExtra;
 		state.puppeteerEnabled = true;
+		state.stealthEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
-		try {
-			const mod = await import('puppeteer');
-			state.puppeteerModule = mod.default || mod;
-			state.puppeteerEnabled = true;
-			state.lastError =
-				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
-			return state.puppeteerModule;
-		} catch (errPlain) {
-			state.puppeteerEnabled = false;
-			state.lastError =
-				'لا puppeteer ولا puppeteer-extra مثبّتَيْن. شغّل: npm i -D puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
-			return null;
-		}
+		state.puppeteerEnabled = false;
+		state.stealthEnabled = false;
+		state.lastError =
+			'تعذّر تحميل puppeteer-extra أو stealth-plugin. شغّل: npm i puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
+		return null;
 	}
 }
 
@@ -108,15 +99,30 @@ async function loadPuppeteer() {
  * @returns {Promise<boolean>}
  */
 export async function isPuppeteerEnabled() {
-	// الافتراضي false: على Vercel/serverless لا يعمل Puppeteer (لا Chromium)،
-	// ومحاولة تحميل puppeteer-extra-plugin-stealth تكسر بـ
-	// "Cannot find module .../evasions/chrome.app" وتملأ السجلّ. المسار
-	// المعتمد لتجاوز Cloudflare هو crawl4ai. فعّله صراحةً (NOOR_USE_PUPPETEER=true)
-	// فقط على خادم طويل الأمد مثبَّت عليه Chromium.
-	const enabledFlag = readBoolEnv('NOOR_USE_PUPPETEER', false);
+	// الافتراضي true لأنّ محرك نور يعتمد على متصفح حقيقي + Stealth. من يريد
+	// تعطيله في serverless يضبط NOOR_USE_PUPPETEER=false صراحةً.
+	const enabledFlag = readBoolEnv('NOOR_USE_PUPPETEER', true);
 	if (!enabledFlag) return false;
 	const mod = await loadPuppeteer();
 	return mod !== null;
+}
+
+function resolveExecutablePath() {
+	const configured = String(
+		env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || ''
+	).trim();
+	if (configured) return configured;
+
+	for (const candidate of [
+		'/usr/local/bin/google-chrome',
+		'/usr/bin/google-chrome-stable',
+		'/usr/bin/google-chrome',
+		'/usr/bin/chromium',
+		'/usr/bin/chromium-browser'
+	]) {
+		if (existsSync(candidate)) return candidate;
+	}
+	return undefined;
 }
 
 async function getBrowser() {
@@ -144,9 +150,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = resolveExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({
