@@ -30,6 +30,7 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { existsSync } from 'node:fs';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -51,12 +52,31 @@ const DEFAULT_USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
 	'(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+const CHROME_PATH_CANDIDATES = Object.freeze([
+	'/usr/local/bin/google-chrome',
+	'/usr/bin/google-chrome-stable',
+	'/usr/bin/google-chrome',
+	'/usr/bin/chromium',
+	'/usr/bin/chromium-browser'
+]);
+
 function readBoolEnv(name, fallback) {
 	const raw = String(env[name] ?? process.env[name] ?? '').trim().toLowerCase();
 	if (raw === '') return fallback;
 	if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
 	if (['0', 'false', 'no', 'off'].includes(raw)) return false;
 	return fallback;
+}
+
+function resolveExecutablePath() {
+	const configured = String(
+		env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || ''
+	).trim();
+	if (configured && existsSync(configured)) return configured;
+	for (const candidate of CHROME_PATH_CANDIDATES) {
+		if (existsSync(candidate)) return candidate;
+	}
+	return configured || undefined;
 }
 
 /**
@@ -81,8 +101,13 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		if (readBoolEnv('NOOR_REQUIRE_STEALTH', true)) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'تعذّر تحميل puppeteer-extra/stealth. المحرّك مضبوط على Stealth Mode إلزاميّاً.';
+			return null;
+		}
+		// retry with plain puppeteer فقط لو عُطِّل شرط stealth صراحةً.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
@@ -144,9 +169,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = resolveExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({

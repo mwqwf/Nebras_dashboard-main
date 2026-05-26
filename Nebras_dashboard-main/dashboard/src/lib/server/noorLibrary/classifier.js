@@ -22,20 +22,33 @@ function normalizeArabic(s) {
 		.toLowerCase();
 }
 
+function tokensOf(value) {
+	return normalizeArabic(value)
+		.split(' ')
+		.map((t) => t.trim())
+		.filter((t) => t.length >= 3);
+}
+
+function haystackFromBook(bookMeta) {
+	return normalizeArabic(
+		[
+			bookMeta?.title,
+			bookMeta?.author,
+			bookMeta?.description,
+			...(bookMeta?.categoryHints || [])
+		]
+			.filter(Boolean)
+			.join(' ')
+	);
+}
+
 /**
  * Heuristic fallback — يعطي درجة لكلّ section بمقدار
  * تقاطع كلماتها مع (title + categoryHints + description). يختار أعلى main
  * ثمّ أعلى sub داخله ثمّ أعلى secondary داخله.
  */
-function classifyHeuristic({ tree, index }, bookMeta) {
-	const haystack = normalizeArabic(
-		[
-			bookMeta.title,
-			bookMeta.author,
-			bookMeta.description,
-			...(bookMeta.categoryHints || [])
-		].filter(Boolean).join(' ')
-	);
+function classifyHeuristic({ tree }, bookMeta) {
+	const haystack = haystackFromBook(bookMeta);
 	const tokens = new Set(haystack.split(' ').filter((t) => t.length >= 3));
 
 	function scoreOf(name) {
@@ -73,6 +86,9 @@ function classifyHeuristic({ tree, index }, bookMeta) {
 		mainId: bestMain.id,
 		subId: bestSub.id,
 		secondaryId: bestSec ? bestSec.id : null,
+		mainScore: bestMainScore,
+		subScore: bestSubScore,
+		secondaryScore: bestSecScore,
 		confidence: Math.min(0.5 + bestMainScore * 0.05 + bestSubScore * 0.05, 0.85),
 		reasoning: 'heuristic مطابقة محليّة',
 		method: 'heuristic'
@@ -169,6 +185,155 @@ function pickReuseSecondary(sections, subId, bookMeta, options = {}) {
 	return null;
 }
 
+function findMainByNames(tree, names) {
+	const targets = names.map(normalizeArabic).filter(Boolean);
+	for (const main of tree || []) {
+		const n = normalizeArabic(main?.name || '');
+		if (targets.includes(n)) return main;
+	}
+	for (const main of tree || []) {
+		const n = normalizeArabic(main?.name || '');
+		if (n && targets.some((t) => n.includes(t) || t.includes(n))) return main;
+	}
+	return null;
+}
+
+function findSubByNames(main, names) {
+	const targets = names.map(normalizeArabic).filter(Boolean);
+	for (const sub of main?.children || []) {
+		const n = normalizeArabic(sub?.name || '');
+		if (targets.includes(n)) return sub;
+	}
+	for (const sub of main?.children || []) {
+		const n = normalizeArabic(sub?.name || '');
+		if (n && targets.some((t) => n.includes(t) || t.includes(n))) return sub;
+	}
+	return null;
+}
+
+function findSecondaryByName(sub, name) {
+	const target = normalizeArabic(name);
+	if (!target) return null;
+	for (const sec of sub?.children || []) {
+		const n = normalizeArabic(sec?.name || '');
+		if (n && (n === target || n.includes(target) || target.includes(n))) return sec;
+	}
+	return null;
+}
+
+const DOMAIN_RULES = Object.freeze([
+	{
+		id: 'scientific_advice_instructions',
+		mainName: 'الدعوة والتربية',
+		mainNames: ['الدعوة والتربية', 'الدعوة و التربية'],
+		subName: 'التربية والتعليم',
+		subNames: ['التربية والتعليم', 'التعليم والتربية', 'التربية', 'التعليم'],
+		secondaryName: 'النصائح والتوجيهات العلمية',
+		confidence: 0.96,
+		matchPhrases: [
+			'النصائح حول التعليمات العلمية للسادة',
+			'النصائح حول التعليمات العلمية السادة',
+			'التعليمات العلمية للسادة',
+			'النصائح والتوجيهات العلمية',
+			'النصائح العلمية',
+			'التوجيهات العلمية',
+			'تعليمات علمية',
+			'نصائح علمية'
+		]
+	}
+]);
+
+function matchDomainRule(bookMeta) {
+	const hay = haystackFromBook(bookMeta);
+	for (const rule of DOMAIN_RULES) {
+		if (rule.matchPhrases.some((phrase) => hay.includes(normalizeArabic(phrase)))) {
+			return rule;
+		}
+	}
+	return null;
+}
+
+function decisionFromRule(sections, bookMeta, rule) {
+	const main = findMainByNames(sections.tree, rule.mainNames);
+	const reasoning =
+		`قاعدة تصنيف مخصّصة: "${bookMeta?.title || ''}" يناسب ${rule.mainName} > ${rule.subName} > ${rule.secondaryName}.`;
+
+	if (!main) {
+		return {
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
+			secondaryId: null,
+			newMainName: rule.mainName,
+			newSubName: rule.subName,
+			newSecondaryName: rule.secondaryName,
+			confidence: rule.confidence,
+			reasoning,
+			method: `rule:${rule.id}`
+		};
+	}
+
+	const sub = findSubByNames(main, rule.subNames);
+	if (!sub) {
+		return {
+			kind: 'create_sub',
+			mainId: String(main.id),
+			subId: null,
+			secondaryId: null,
+			newSubName: rule.subName,
+			newSecondaryName: rule.secondaryName,
+			confidence: rule.confidence,
+			reasoning,
+			method: `rule:${rule.id}`
+		};
+	}
+
+	const secondary = findSecondaryByName(sub, rule.secondaryName);
+	if (secondary) {
+		return {
+			kind: 'existing',
+			mainId: String(main.id),
+			subId: String(sub.id),
+			secondaryId: String(secondary.id),
+			confidence: rule.confidence,
+			reasoning,
+			method: `rule:${rule.id}`
+		};
+	}
+
+	return {
+		kind: 'create_secondary',
+		mainId: String(main.id),
+		subId: String(sub.id),
+		secondaryId: null,
+		newSecondaryName: rule.secondaryName,
+		confidence: rule.confidence,
+		reasoning,
+		method: `rule:${rule.id}`
+	};
+}
+
+function cleanSectionName(name, fallback) {
+	const cleaned = String(name || '')
+		.replace(/\s+/g, ' ')
+		.replace(/[|｜].*$/u, '')
+		.trim()
+		.slice(0, 80);
+	return cleaned || fallback;
+}
+
+function inferSubName(bookMeta) {
+	const hint = (bookMeta?.categoryHints || []).find(Boolean);
+	return cleanSectionName(hint, 'كتب عامة');
+}
+
+function inferSecondaryName(bookMeta) {
+	const stem = seriesStemFromTitle(bookMeta?.title || '');
+	if (stem && tokensOf(stem).length >= 2) return cleanSectionName(stem, 'كتب عامة');
+	const hint = (bookMeta?.categoryHints || []).find(Boolean);
+	return cleanSectionName(hint, 'كتب عامة');
+}
+
 
 /**
  * الواجهة الرئيسيّة — تُصنِّف كتاباً وتعيد المسار الذهبي + بدائل.
@@ -214,26 +379,65 @@ export async function classifyAutonomous(sections, bookMeta) {
 			{ reason: 'empty_sections_tree', status: 412 }
 		);
 	}
+
+	const domainRule = matchDomainRule(bookMeta);
+	if (domainRule) {
+		return decisionFromRule(sections, bookMeta, domainRule);
+	}
+
 	const sug = classifyHeuristic(sections, bookMeta);
 	if (!sug) {
 		return {
-			kind: 'existing',
-			mainId: sections.tree[0].id,
-			subId: sections.tree[0].children[0]?.id || '',
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
 			secondaryId: null,
+			newMainName: 'مكتبة نور',
+			newSubName: inferSubName(bookMeta),
+			newSecondaryName: inferSecondaryName(bookMeta),
 			confidence: 0.1,
-			reasoning: 'لم تعطِ خوارزميّة المطابقة نتيجة — أوّل قسم رئيسي/فرعي.',
+			reasoning: 'لم تعطِ خوارزميّة المطابقة نتيجة مناسبة — إنشاء مسار ثلاثي مستقلّ.',
 			method: 'heuristic'
 		};
 	}
+
+	if (sug.mainScore <= 0 && sug.subScore <= 0) {
+		return {
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
+			secondaryId: null,
+			newMainName: 'مكتبة نور',
+			newSubName: inferSubName(bookMeta),
+			newSecondaryName: inferSecondaryName(bookMeta),
+			confidence: 0.2,
+			reasoning: 'لا يوجد قسم رئيسي أو فرعي مناسب بدرجة كافية — إنشاء مسار ثلاثي جديد.',
+			method: 'heuristic'
+		};
+	}
+
 	let secId = sug.secondaryId ? String(sug.secondaryId) : null;
 	if (!secId) {
 		const autoSec = pickReuseSecondary(sections, String(sug.subId), bookMeta, {
-			proposedNewName: '',
+			proposedNewName: inferSecondaryName(bookMeta),
 			minScore: 9
 		});
 		if (autoSec) secId = autoSec.id;
 	}
+
+	if (!secId) {
+		return {
+			kind: 'create_secondary',
+			mainId: String(sug.mainId),
+			subId: String(sug.subId),
+			secondaryId: null,
+			newSecondaryName: inferSecondaryName(bookMeta),
+			confidence: Math.max(0.35, sug.confidence - 0.1),
+			reasoning: `${sug.reasoning} — لم يوجد قسم ثانوي دقيق، سيتم إنشاء مستوى ثالث مستقلّ.`,
+			method: sug.method
+		};
+	}
+
 	return {
 		kind: 'existing',
 		mainId: String(sug.mainId),
