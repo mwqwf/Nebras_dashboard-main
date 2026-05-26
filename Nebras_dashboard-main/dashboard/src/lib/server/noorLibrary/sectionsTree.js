@@ -61,6 +61,14 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+const BLACKLISTED_SECTION_PATTERNS = Object.freeze([
+	// لا نعتمد على المطابقة الحرفيّة فقط: أيّ قسم يبدأ بـ "دروس" ويحمل
+	// كلمة الترخيص أو typo التشغيل التاريخي "تدكصهك" يُستبعد مع أبنائه.
+	/^دروس .*ترخيص/,
+	/^دروس .*تدكصهك/,
+	/^دروس بترخيصه?ا?$/
+]);
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +77,8 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	return BLACKLISTED_SECTION_PATTERNS.some((re) => re.test(n));
 }
 
 async function readLevel(level) {
@@ -225,7 +234,7 @@ export function serializeTreeAsPlainText(tree) {
 /**
  * يتحقّق أنّ المسار الذي اقترحه المصنِّف أو المستخدم سليم وفق القاعدة الذهبيّة:
  *   main_section_id موجود — sub.main_section === main_section_id —
- *   secondary.sub_section === sub.id (إن وُجد).
+ *   secondary.sub_section === sub.id.
  *
  * @returns {{ valid: boolean, reason?: string, resolved?: { main: any, sub: any, secondary: any|null } }}
  */
@@ -244,13 +253,11 @@ export function validateHierarchyPath(
 		return { valid: false, reason: 'sub_does_not_belong_to_main' };
 	}
 
-	let secondary = null;
-	if (secondaryId) {
-		secondary = index.secondariesById[String(secondaryId)];
-		if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
-		if (String(secondary.sub_section ?? '') !== String(subId)) {
-			return { valid: false, reason: 'secondary_does_not_belong_to_sub' };
-		}
+	if (!secondaryId) return { valid: false, reason: 'secondary_section_required' };
+	const secondary = index.secondariesById[String(secondaryId)];
+	if (!secondary) return { valid: false, reason: 'secondary_section_not_found' };
+	if (String(secondary.sub_section ?? '') !== String(subId)) {
+		return { valid: false, reason: 'secondary_does_not_belong_to_sub' };
 	}
 
 	return { valid: true, resolved: { main, sub, secondary } };
