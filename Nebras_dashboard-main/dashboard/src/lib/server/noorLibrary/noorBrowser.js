@@ -15,7 +15,7 @@
  *   • Singleton على مستوى الـ Node process (محفوظ في globalThis لتجاوز HMR).
  *   • متصفّح واحد + N صفحات على حسب الحاجة. كلّ صفحة تُغلَق بعد الاستعمال
  *     لتفادي تسرّب الذاكرة (لا context pooling لتبسيط الإدارة).
- *   • Puppeteer + plugins يُحمَّلان عبر **dynamic import lazy** لكي لا
+ *   • Puppeteer + stealth plugin يُحمَّلان عبر **dynamic import lazy** لكي لا
  *     تنكسر بناءات serverless (Vercel) عند غيابهم.
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
@@ -61,9 +61,8 @@ function readBoolEnv(name, fallback) {
 
 /**
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
- * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
- *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * null دون رمي خطأ. لا نرجع إلى puppeteer العادي لأنّ محرّك Noor يجب أن
+ * يعمل Stealth Mode فقط كي لا يمرّ بمسار سحب غير مطابق لإعداد التشغيل.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,21 +80,10 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
-		try {
-			const mod = await import('puppeteer');
-			state.puppeteerModule = mod.default || mod;
-			state.puppeteerEnabled = true;
-			state.lastError =
-				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
-			return state.puppeteerModule;
-		} catch (errPlain) {
-			state.puppeteerEnabled = false;
-			state.lastError =
-				'لا puppeteer ولا puppeteer-extra مثبّتَيْن. شغّل: npm i -D puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
-			return null;
-		}
+		state.puppeteerEnabled = false;
+		state.lastError =
+			'Stealth Mode غير متاح: ثبّت puppeteer-extra و puppeteer-extra-plugin-stealth واضبط PUPPETEER_EXECUTABLE_PATH لمسار Chrome الصحيح.';
+		return null;
 	}
 }
 
