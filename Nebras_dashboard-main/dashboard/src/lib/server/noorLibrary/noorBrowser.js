@@ -18,8 +18,8 @@
  *   • Puppeteer + plugins يُحمَّلان عبر **dynamic import lazy** لكي لا
  *     تنكسر بناءات serverless (Vercel) عند غيابهم.
  *   • متغيّرات بيئة:
- *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
- *                                          true إن كانت الحزمة موجودة).
+ *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي true).
+ *       NOOR_REQUIRE_STEALTH=true|false — رفض التشغيل بلا stealth (افتراضي true).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
  *
@@ -63,7 +63,9 @@ function readBoolEnv(name, fallback) {
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * الافتراضي التشغيلي الآن Stealth إلزامي: مكتبة نور خلف Cloudflare، وتشغيل
+ * Puppeteer عاديّ يعطي نتائج مضلّلة ويزيد الفشل. يمكن تعطيل الشرط فقط
+ * بتعيين NOOR_REQUIRE_STEALTH=false للتشخيص المحلي.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,6 +83,13 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		const requireStealth = readBoolEnv('NOOR_REQUIRE_STEALTH', true);
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'Stealth Mode مطلوب لمحرّك مكتبة نور، لكن puppeteer-extra أو stealth plugin غير متاح.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {
@@ -108,12 +117,9 @@ async function loadPuppeteer() {
  * @returns {Promise<boolean>}
  */
 export async function isPuppeteerEnabled() {
-	// الافتراضي false: على Vercel/serverless لا يعمل Puppeteer (لا Chromium)،
-	// ومحاولة تحميل puppeteer-extra-plugin-stealth تكسر بـ
-	// "Cannot find module .../evasions/chrome.app" وتملأ السجلّ. المسار
-	// المعتمد لتجاوز Cloudflare هو crawl4ai. فعّله صراحةً (NOOR_USE_PUPPETEER=true)
-	// فقط على خادم طويل الأمد مثبَّت عليه Chromium.
-	const enabledFlag = readBoolEnv('NOOR_USE_PUPPETEER', false);
+	// Stealth هو المسار الافتراضي لمحرك Noor. إن كانت البيئة لا تدعم Chromium
+	// يمكن تعطيله صراحةً بـ NOOR_USE_PUPPETEER=false والاعتماد على crawl4ai/proxy.
+	const enabledFlag = readBoolEnv('NOOR_USE_PUPPETEER', true);
 	if (!enabledFlag) return false;
 	const mod = await loadPuppeteer();
 	return mod !== null;
