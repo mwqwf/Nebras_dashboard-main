@@ -266,10 +266,12 @@ function lexicalScore(sectionName, bookMeta) {
 
 function scoreNode(node, bookMeta, domain, level) {
 	let score = lexicalScore(node?.name || '', bookMeta);
+	const isGeneric = isGenericContainerName(node?.name || '');
 	const sectionDomain = detectSectionDomain(node?.name || '');
 	if (domain) {
 		if (sectionDomain === domain.id) score += level === 'main' ? 8 : 5;
-		else if (sectionDomain && sectionDomain !== domain.id) return { score: -100, sectionDomain };
+		else if (sectionDomain && sectionDomain !== domain.id && !isGeneric) return { score: -100, sectionDomain };
+		else if (isGeneric) score += level === 'main' ? 3 : 1;
 	}
 	return { score, sectionDomain };
 }
@@ -293,6 +295,7 @@ function isGenericContainerName(name) {
 		n.includes('كتب اسلاميه') ||
 		n.includes('المكتبه') ||
 		n.includes('مكتبه نور') ||
+		n.includes('الدعوه والتربيه') ||
 		n.includes('علوم اسلاميه') ||
 		n.includes('ثقافه اسلاميه') ||
 		n === 'كتب' ||
