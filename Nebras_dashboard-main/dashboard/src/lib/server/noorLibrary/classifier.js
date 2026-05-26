@@ -92,9 +92,9 @@ const DOMAIN_RULES = Object.freeze([
 	},
 	{
 		id: 'education',
-		mainName: 'التعليم والمعرفة',
-		subName: 'التعليم والتوجيه العلمي',
-		keywords: ['تعليم', 'تعليمي', 'تعلم', 'تدريس', 'منهج', 'مناهج', 'علمي', 'علميه', 'طالب', 'طلاب', 'دراسه', 'دروس', 'نصائح علميه', 'ارشادات']
+		mainName: 'الدعوة والتربية',
+		subName: 'التربية والتعليم',
+		keywords: ['تعليم', 'تعليمي', 'تعلم', 'تدريس', 'منهج', 'مناهج', 'علمي', 'علميه', 'تعليمات', 'طالب', 'طلاب', 'دراسه', 'دروس', 'نصائح علميه', 'ارشادات', 'توجيهات', 'الساده']
 	},
 	{
 		id: 'dawah',
@@ -222,10 +222,18 @@ function proposedNames(bookMeta, domain) {
 	const hint = bestCategoryHint(bookMeta);
 	const stem = seriesStemFromTitle(bookMeta?.title || '');
 	const domainRule = domain ? DOMAIN_BY_ID[domain.id] : null;
+	const bookN = normalizeArabic(textForBook(bookMeta));
 	const subName = sanitizeSectionName(hint || domainRule?.subName || 'كتب عامة', domainRule?.subName || 'كتب عامة');
 
 	let secondaryName = '';
-	if (hint && normalizeArabic(hint) !== normalizeArabic(subName)) secondaryName = hint;
+	if (
+		domainRule?.id === 'education' &&
+		/(?:نصيحه|نصائح|توجيه|توجيهات|ارشاد|ارشادات)/u.test(bookN) &&
+		/(?:علمي|علميه|تعليم|تعليمات)/u.test(bookN)
+	) {
+		secondaryName = 'النصائح والتوجيهات العلمية';
+	}
+	if (!secondaryName && hint && normalizeArabic(hint) !== normalizeArabic(subName)) secondaryName = hint;
 	if (!secondaryName && stem && tokensOf(stem).size >= 2) secondaryName = stem;
 	if (!secondaryName) secondaryName = subName;
 
