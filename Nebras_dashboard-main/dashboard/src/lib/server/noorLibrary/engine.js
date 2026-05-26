@@ -338,6 +338,23 @@ async function notifyFcmSectionCreated(info) {
 	}
 }
 
+function cleanSectionNameSuggestion(raw, fallback = 'كتب عامة') {
+	let value = String(raw || '').trim();
+	if (!value) return fallback;
+	value = value.split(/[*;|/\\\n\r\t]+/)[0].trim();
+	value = value.replace(/^[\s,،.\-–—_]+/, '').replace(/[\s,،.\-–—_]+$/, '').trim();
+	if (!value || /^(الرئيسية|home|كتب|book|books)$/i.test(value)) return fallback;
+	return value.slice(0, 60).trim() || fallback;
+}
+
+function fallbackSecondaryName(meta, decision) {
+	if (decision?.newSecondaryName) {
+		return cleanSectionNameSuggestion(decision.newSecondaryName, 'كتب عامة');
+	}
+	const hint = Array.isArray(meta?.categoryHints) ? (meta.categoryHints[0] || '') : '';
+	return cleanSectionNameSuggestion(hint, 'كتب عامة');
+}
+
 // ── Core: process a single book end-to-end ──────────────────────────
 
 /**
@@ -508,14 +525,42 @@ async function processBook({ url, bookId, sections }) {
 		}
 	}
 
+	// ضمان الالتزام الصارم بالهيكل الثلاثي:
+	// main > sub > secondary > content. لا نرفع أي كتاب مباشرةً تحت sub فقط.
+	if (!secondaryId && subId) {
+		const secondaryName = fallbackSecondaryName(meta, decision);
+		const created = await createSecondarySectionAdmin(subId, secondaryName);
+		secondaryId = String(created.id);
+		if (!created.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			const parentSub = sections.index.subsById[String(subId)];
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName: parentSub?.name || decision?.newSubName || '',
+				sectionId: created.id,
+				parentId: subId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً لضمان الهيكل الثلاثي: "${created.name}"`,
+				sectionId: created.id,
+				parentId: subId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
+	}
+
 	// إعادة قراءة الأقسام (لجلب أسماء الأقسام الجديدة).
 	const refreshed = await buildSectionsTree();
 	const main = refreshed.index.mainsById[mainId];
 	const sub = refreshed.index.subsById[subId];
 	const secondary = secondaryId ? refreshed.index.secondariesById[secondaryId] : null;
 
-	if (!main || !sub) {
-		throw Object.assign(new Error('main أو sub لم يُعثر عليه بعد التصنيف.'), {
+	if (!main || !sub || !secondary) {
+		throw Object.assign(new Error('main أو sub أو secondary لم يُعثر عليه بعد التصنيف.'), {
 			reason: 'hierarchy_resolution_failed',
 			status: 500
 		});
