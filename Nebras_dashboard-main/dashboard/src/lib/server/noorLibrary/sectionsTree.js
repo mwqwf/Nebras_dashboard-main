@@ -60,6 +60,10 @@ function normalizeArabic(s) {
 const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
+const NORMALIZED_BLACKLIST_PATTERNS = Object.freeze([
+	/^دروس\s+بترخيص(?:ها|ه)?$/u,
+	/^دروس\s+بتدكصهك$/u
+]);
 
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
@@ -69,7 +73,11 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	if (NORMALIZED_BLACKLIST_PATTERNS.some((re) => re.test(n))) return true;
+	// حماية من typos طفيفة حول نفس القسم المحظور: لا نريد للمصنّف رؤية أيّ
+	// قسم يبدأ بـ "دروس" ويحمل دلالة الترخيص/الاسم المعطوب التاريخي.
+	return n.includes('دروس') && (n.includes('ترخيص') || n.includes('تدكصهك'));
 }
 
 async function readLevel(level) {
