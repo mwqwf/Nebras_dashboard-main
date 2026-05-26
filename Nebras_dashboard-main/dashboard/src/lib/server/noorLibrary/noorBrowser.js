@@ -30,6 +30,7 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { existsSync } from 'node:fs';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -51,6 +52,14 @@ const DEFAULT_USER_AGENT =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
 	'(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+const CHROME_CANDIDATE_PATHS = Object.freeze([
+	'/usr/local/bin/google-chrome',
+	'/usr/bin/google-chrome-stable',
+	'/usr/bin/google-chrome',
+	'/usr/bin/chromium',
+	'/usr/bin/chromium-browser'
+]);
+
 function readBoolEnv(name, fallback) {
 	const raw = String(env[name] ?? process.env[name] ?? '').trim().toLowerCase();
 	if (raw === '') return fallback;
@@ -59,11 +68,46 @@ function readBoolEnv(name, fallback) {
 	return fallback;
 }
 
+function pathExists(path) {
+	try {
+		return Boolean(path && existsSync(path));
+	} catch {
+		return false;
+	}
+}
+
+function findSystemChromePath() {
+	return CHROME_CANDIDATE_PATHS.find(pathExists) || '';
+}
+
+function resolveChromeExecutablePath() {
+	const configured = String(
+		env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || ''
+	).trim();
+	if (configured && pathExists(configured)) {
+		return { executablePath: configured, warning: null };
+	}
+
+	const detected = findSystemChromePath();
+	if (configured && detected) {
+		return {
+			executablePath: detected,
+			warning: `PUPPETEER_EXECUTABLE_PATH غير صالح (${configured}) — استُخدم Chrome المكتشف: ${detected}`
+		};
+	}
+
+	return {
+		executablePath: configured || detected || undefined,
+		warning: configured && !detected ? `PUPPETEER_EXECUTABLE_PATH غير صالح: ${configured}` : null
+	};
+}
+
 /**
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * عند تفعيل Puppeteer نُلزم `puppeteer-extra` + stealth-plugin؛ الرجوع إلى
+ * puppeteer عاديّ يخرق شرط Stealth ويعيد مشاكل Cloudflare.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,21 +125,10 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
-		try {
-			const mod = await import('puppeteer');
-			state.puppeteerModule = mod.default || mod;
-			state.puppeteerEnabled = true;
-			state.lastError =
-				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
-			return state.puppeteerModule;
-		} catch (errPlain) {
-			state.puppeteerEnabled = false;
-			state.lastError =
-				'لا puppeteer ولا puppeteer-extra مثبّتَيْن. شغّل: npm i -D puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
-			return null;
-		}
+		state.puppeteerEnabled = false;
+		state.lastError =
+			'تعذّر تحميل puppeteer-extra أو stealth-plugin — لن يعمل محرك نور بدون Stealth Mode. شغّل: npm i puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
+		return null;
 	}
 }
 
@@ -144,9 +177,8 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const { executablePath, warning } = resolveChromeExecutablePath();
+	if (warning) state.lastError = warning;
 
 	state.browserPromise = puppeteer
 		.launch({
@@ -155,6 +187,9 @@ async function getBrowser() {
 			args: [
 				'--no-sandbox',
 				'--disable-setuid-sandbox',
+				'--disable-dev-shm-usage',
+				'--no-first-run',
+				'--disable-extensions',
 				'--disable-blink-features=AutomationControlled',
 				'--disable-features=IsolateOrigins,site-per-process',
 				'--lang=ar-EG,ar',
@@ -181,6 +216,9 @@ async function getBrowser() {
 
 async function preparePage(page) {
 	await page.setUserAgent(DEFAULT_USER_AGENT);
+	await page.evaluateOnNewDocument(() => {
+		Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+	});
 	await page.setExtraHTTPHeaders({
 		'Accept-Language': 'ar-EG,ar;q=0.9,en;q=0.7',
 		Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'

@@ -487,6 +487,31 @@ async function processBook({ url, bookId, sections }) {
 		}
 	}
 
+	if (!secondaryId && decision.newSecondaryName && subId) {
+		const created = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
+		secondaryId = String(created.id);
+		if (!created.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			const parentSub = sections.index.subsById[subId] || { name: decision.newSubName || '' };
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName: parentSub?.name || '',
+				sectionId: created.id,
+				parentId: subId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSub?.name || ''}"`,
+				sectionId: created.id,
+				parentId: subId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
+	}
+
 	// إن غاب القسم الفرعيّ بعد التصنيف (قسم رئيسيّ بلا فروع)، ننشئ بنية
 	// منظّمة تلقائياً بدل رفض الكتاب: رئيسيّ «مكتبة نور» → فرعيّ حسب تصنيفه.
 	if (!subId) {
@@ -503,6 +528,18 @@ async function processBook({ url, bookId, sections }) {
 		subId = String(createdSub.id);
 		if (!createdSub.alreadyExisted) {
 			createdSectionsIds.push(subId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+		}
+	}
+
+	if (!secondaryId && subId) {
+		const hint = Array.isArray(meta.categoryHints) ? (meta.categoryHints[1] || meta.categoryHints[0] || '') : '';
+		const secondaryName = String(hint || 'كتب عامة').trim().slice(0, 60) || 'كتب عامة';
+		const createdSec = await createSecondarySectionAdmin(subId, secondaryName);
+		secondaryId = String(createdSec.id);
+		if (!createdSec.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
 			sectionsCreatedDelta += 1;
 			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
 		}
