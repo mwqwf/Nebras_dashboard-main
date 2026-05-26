@@ -338,6 +338,17 @@ async function notifyFcmSectionCreated(info) {
 	}
 }
 
+function deriveSecondarySectionName(meta, decision) {
+	const explicit = String(decision?.newSecondaryName || '').trim();
+	if (explicit) return explicit.slice(0, 120);
+	const hints = Array.isArray(meta?.categoryHints)
+		? meta.categoryHints.map((h) => String(h || '').trim()).filter(Boolean)
+		: [];
+	const leaf = hints[hints.length - 1] || hints[0] || '';
+	if (leaf && leaf.length <= 80) return leaf;
+	return 'كتب عامة';
+}
+
 // ── Core: process a single book end-to-end ──────────────────────────
 
 /**
@@ -391,6 +402,7 @@ async function processBook({ url, bookId, sections }) {
 	let secondaryId = decision.secondaryId || null;
 	const createdSectionsIds = [];
 	let sectionsCreatedDelta = 0;
+	let knownSubName = '';
 
 	if (decision.kind === 'create_main') {
 		// أعلى مستوى من الإنشاء — main + sub أوّل تحته في عمليّة واحدة.
@@ -417,6 +429,7 @@ async function processBook({ url, bookId, sections }) {
 
 		const createdSub = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(createdSub.id);
+		knownSubName = createdSub.name;
 		if (!createdSub.alreadyExisted) {
 			createdSectionsIds.push(subId);
 			sectionsCreatedDelta += 1;
@@ -439,6 +452,7 @@ async function processBook({ url, bookId, sections }) {
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
+		knownSubName = created.name;
 		if (!created.alreadyExisted) {
 			createdSectionsIds.push(subId);
 			sectionsCreatedDelta += 1;
@@ -465,6 +479,7 @@ async function processBook({ url, bookId, sections }) {
 		subId = decision.subId;
 		const created = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
 		secondaryId = String(created.id);
+		knownSubName = sections.index.subsById[subId]?.name || '';
 		if (!created.alreadyExisted) {
 			createdSectionsIds.push(secondaryId);
 			sectionsCreatedDelta += 1;
@@ -501,10 +516,38 @@ async function processBook({ url, bookId, sections }) {
 		const subName = String(hint || '').trim().slice(0, 60) || 'كتب عامة';
 		const createdSub = await createSubSectionAdmin(mainId, subName);
 		subId = String(createdSub.id);
+		knownSubName = createdSub.name;
 		if (!createdSub.alreadyExisted) {
 			createdSectionsIds.push(subId);
 			sectionsCreatedDelta += 1;
 			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+		}
+	}
+
+	// ضمان العقد الثلاثي دائماً: main > sub > secondary > content.
+	if (!secondaryId && subId) {
+		const secondaryName = deriveSecondarySectionName(meta, decision);
+		const created = await createSecondarySectionAdmin(subId, secondaryName);
+		secondaryId = String(created.id);
+		if (!created.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			const parentSubName = knownSubName || sections.index.subsById[subId]?.name || '';
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName: parentSubName,
+				sectionId: created.id,
+				parentId: subId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً لضمان الهيكل الثلاثي: "${created.name}" تحت "${parentSubName}"`,
+				sectionId: created.id,
+				parentId: subId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
 		}
 	}
 
