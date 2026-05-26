@@ -12,8 +12,8 @@
  *
  * المسارات المكتوبة:
  *   sections_unified/main/{id}       — { id, name, order_index, is_listed, thumbnail, created_at }
- *   sections_unified/sub/{id}        — { id, name, main_section, is_listed, thumbnail, created_at }
- *   sections_unified/secondary/{id}  — { id, name, sub_section,  is_listed, thumbnail, created_at }
+ *   sections_unified/sub/{id}        — { id, name, main_section, order_index, is_listed, thumbnail, created_at }
+ *   sections_unified/secondary/{id}  — { id, name, sub_section, order_index, is_listed, thumbnail, created_at }
  *
  * كلّ سجلّ يحمل علامة `__createdBy: 'noor_library_engine'` لكي يستطيع
  * زرّ "إعادة ضبط المصنع" مسحَه دون المساس بأقسام أنشأها مدير بشري.
@@ -50,6 +50,19 @@ function makeSectionId() {
 
 function cleanName(name) {
 	return String(name || '').trim().slice(0, 120);
+}
+
+async function nextOrderIndex(level, parentField = null, parentId = null) {
+	const rows = await adminFsReadSectionsLevel(level);
+	const scoped = parentField
+		? rows.filter((row) => String(row?.[parentField] ?? '') === String(parentId))
+		: rows;
+	let max = -1;
+	for (const row of scoped) {
+		const n = Number(row?.order_index);
+		if (Number.isFinite(n) && n > max) max = n;
+	}
+	return max + 1;
 }
 
 function blacklistError(message, reason = 'blacklisted_section') {
@@ -158,10 +171,11 @@ export async function createMainSectionAdmin(name) {
 	}
 
 	const id = makeSectionId();
+	const orderIndex = await nextOrderIndex('main');
 	const payload = {
 		id,
 		name: cleanedName,
-		order_index: 0,
+		order_index: orderIndex,
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
@@ -223,10 +237,12 @@ export async function createSubSectionAdmin(mainSectionId, name) {
 	}
 
 	const id = makeSectionId();
+	const orderIndex = await nextOrderIndex('sub', 'main_section', mainNum);
 	const payload = {
 		id,
 		name: cleanedName,
 		main_section: mainNum,
+		order_index: orderIndex,
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
@@ -286,10 +302,12 @@ export async function createSecondarySectionAdmin(subSectionId, name) {
 	}
 
 	const id = makeSectionId();
+	const orderIndex = await nextOrderIndex('secondary', 'sub_section', subNum);
 	const payload = {
 		id,
 		name: cleanedName,
 		sub_section: subNum,
+		order_index: orderIndex,
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
