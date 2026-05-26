@@ -99,11 +99,23 @@ export async function POST(event) {
 		// 1) قراءة شجرة الأقسام والتحقّق من المسار الذهبي
 		await writeJobPatch(jobId, { status: 'reading_sections' }).catch(() => {});
 		const sections = await buildSectionsTree();
+		if (!hierarchy.secondaryId) {
+			await writeJobPatch(jobId, { status: 'failed', failedReason: 'secondary_section_required' }).catch(() => {});
+			return json(
+				{
+					error: 'invalid_hierarchy',
+					reason: 'secondary_section_required',
+					message: 'مكتبة نور تعتمد مساراً ثلاثياً كاملاً: main → sub → secondary → content.',
+					jobId
+				},
+				{ status: 422 }
+			);
+		}
 		const validation = validateHierarchyPath(
 			{
 				mainId: hierarchy.mainId,
 				subId: hierarchy.subId,
-				secondaryId: hierarchy.secondaryId || null
+				secondaryId: hierarchy.secondaryId
 			},
 			sections.index
 		);
@@ -173,12 +185,8 @@ export async function POST(event) {
 			main_section_name: String(main.name || ''),
 			subsection: String(sub.id),
 			subsection_name: String(sub.name || ''),
-			...(secondary
-				? {
-						secondary_subsection: String(secondary.id),
-						secondary_subsection_name: String(secondary.name || '')
-					}
-				: { secondary_subsection: null })
+			secondary_subsection: String(secondary.id),
+			secondary_subsection_name: String(secondary.name || '')
 		};
 
 		const result = await adminUploadAndRegister({
