@@ -44,6 +44,17 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بترخيصه'
 ]);
 
+/**
+ * مقاطع قصيرة تكشف الأخطاء الإملائية/الكتابية المعروفة في أسماء الأقسام
+ * المحظورة. لا نستعملها لتصحيح الاسم؛ فقط لإخفاء القسم وأبنائه عن المحرّك.
+ */
+const BLACKLISTED_SECTION_TYPO_MARKERS = Object.freeze([
+	'بتدكصهك',
+	'تدكصهك',
+	'بترخيصها',
+	'بترخيصه'
+]);
+
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
 function normalizeArabic(s) {
 	return String(s || '')
@@ -61,6 +72,32 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+const NORMALIZED_BLACKLIST_TYPO_MARKERS = BLACKLISTED_SECTION_TYPO_MARKERS
+	.map(normalizeArabic)
+	.filter(Boolean);
+
+function levenshteinDistanceCapped(a, b, cap = 2) {
+	if (Math.abs(a.length - b.length) > cap) return cap + 1;
+	const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+	const curr = Array.from({ length: b.length + 1 }, () => 0);
+	for (let i = 1; i <= a.length; i += 1) {
+		curr[0] = i;
+		let rowMin = curr[0];
+		for (let j = 1; j <= b.length; j += 1) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			curr[j] = Math.min(
+				prev[j] + 1,
+				curr[j - 1] + 1,
+				prev[j - 1] + cost
+			);
+			rowMin = Math.min(rowMin, curr[j]);
+		}
+		if (rowMin > cap) return cap + 1;
+		for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+	}
+	return prev[b.length];
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +106,16 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (n.includes(blocked)) return true;
+		if (blocked.includes(n) && n.length >= 6) return true;
+		if (levenshteinDistanceCapped(n, blocked, 2) <= 2) return true;
+	}
+	for (const marker of NORMALIZED_BLACKLIST_TYPO_MARKERS) {
+		if (n.includes(marker)) return true;
+	}
+	return false;
 }
 
 async function readLevel(level) {
