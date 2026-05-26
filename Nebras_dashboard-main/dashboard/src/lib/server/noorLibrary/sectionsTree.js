@@ -44,6 +44,16 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بترخيصه'
 ]);
 
+/**
+ * أنماط فضفاضة للأسماء المحظورة نفسها عندما تصل بتهجئة مكسورة أو بلاحقة
+ * زائدة. لا نستخدمها كمدقّق لغوي عام؛ فقط للأقسام المعروفة داخل القائمة.
+ */
+const BLACKLISTED_SECTION_NORMALIZED_PATTERNS = Object.freeze([
+	/^دروس بترخيص(?:ها|ه)?(?:\s|$)/,
+	/^دروس بتدكصهك(?:\s|$)/,
+	/^دروس بتدك/
+]);
+
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
 function normalizeArabic(s) {
 	return String(s || '')
@@ -69,7 +79,10 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return (
+		NORMALIZED_BLACKLIST.has(n) ||
+		BLACKLISTED_SECTION_NORMALIZED_PATTERNS.some((pattern) => pattern.test(n))
+	);
 }
 
 async function readLevel(level) {
