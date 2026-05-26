@@ -120,6 +120,18 @@ export async function POST(event) {
 			);
 		}
 		const { main, sub, secondary } = validation.resolved;
+		if (!secondary) {
+			await writeJobPatch(jobId, { status: 'failed', failedReason: 'secondary_section_required' }).catch(() => {});
+			return json(
+				{
+					error: 'invalid_hierarchy',
+					reason: 'secondary_section_required',
+					message: 'جلب مكتبة نور يتطلب مساراً كاملاً: قسم رئيسي ← فرعي ← ثانوي ← محتوى.',
+					jobId
+				},
+				{ status: 422 }
+			);
+		}
 
 		// 2) جلب metadata من مكتبة نور (نُعيد التأكّد منها لكي نضمن fileUrl).
 		await writeJobPatch(jobId, { status: 'fetching_metadata' }).catch(() => {});
@@ -173,12 +185,8 @@ export async function POST(event) {
 			main_section_name: String(main.name || ''),
 			subsection: String(sub.id),
 			subsection_name: String(sub.name || ''),
-			...(secondary
-				? {
-						secondary_subsection: String(secondary.id),
-						secondary_subsection_name: String(secondary.name || '')
-					}
-				: { secondary_subsection: null })
+			secondary_subsection: String(secondary.id),
+			secondary_subsection_name: String(secondary.name || '')
 		};
 
 		const result = await adminUploadAndRegister({
@@ -220,7 +228,7 @@ export async function POST(event) {
 			hierarchy: {
 				main: { id: main.id, name: main.name },
 				sub: { id: sub.id, name: sub.name },
-				secondary: secondary ? { id: secondary.id, name: secondary.name } : null
+				secondary: { id: secondary.id, name: secondary.name }
 			},
 			elapsedMs: Date.now() - startedAt
 		});

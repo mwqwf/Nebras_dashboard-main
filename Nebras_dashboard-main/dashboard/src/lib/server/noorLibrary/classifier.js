@@ -169,6 +169,243 @@ function pickReuseSecondary(sections, subId, bookMeta, options = {}) {
 	return null;
 }
 
+const SEMANTIC_PROFILES = Object.freeze([
+	{
+		id: 'scientific_guidance',
+		mainName: 'الدعوة والتربية',
+		subName: 'التربية والتعليم',
+		secondaryName: 'النصائح والتوجيهات العلمية',
+		keywords: [
+			'نصائح',
+			'النصائح',
+			'توجيهات',
+			'التوجيهات',
+			'تعليمات',
+			'التعليمات',
+			'علمية',
+			'العلمية',
+			'تعليم',
+			'التعليم',
+			'تربية',
+			'التربية',
+			'طلب العلم',
+			'اداب طالب العلم'
+		],
+		negativeKeywords: ['فقه', 'العقيده', 'التاريخ', 'السيره', 'الحديث', 'التفسير']
+	},
+	{
+		id: 'fiqh',
+		mainName: 'الفقه الإسلامي',
+		subName: 'الفقه وأصوله',
+		secondaryName: 'مسائل فقهية',
+		keywords: ['فقه', 'الفقه', 'اصول الفقه', 'فتاوي', 'فتاوى', 'احكام', 'الحلال', 'الحرام']
+	},
+	{
+		id: 'aqeedah',
+		mainName: 'العقيدة',
+		subName: 'العقيدة الإسلامية',
+		secondaryName: 'كتب العقيدة',
+		keywords: ['عقيده', 'العقيده', 'توحيد', 'الايمان', 'الايمان', 'اسماء الله', 'الفرق']
+	},
+	{
+		id: 'history',
+		mainName: 'التاريخ والسير',
+		subName: 'التاريخ الإسلامي',
+		secondaryName: 'كتب التاريخ',
+		keywords: ['تاريخ', 'التاريخ', 'سيره', 'السيره', 'تراجم', 'الطبقات', 'الخلفاء']
+	},
+	{
+		id: 'adab',
+		mainName: 'الأدب واللغة',
+		subName: 'الأدب العربي',
+		secondaryName: 'كتب الأدب',
+		keywords: ['ادب', 'الادب', 'شعر', 'الشعر', 'بلاغه', 'نقد', 'ديوان']
+	},
+	{
+		id: 'hadith',
+		mainName: 'الحديث الشريف',
+		subName: 'علوم الحديث',
+		secondaryName: 'كتب الحديث',
+		keywords: ['حديث', 'الحديث', 'السنه', 'السنن', 'رواه', 'صحيح', 'الجرح والتعديل']
+	},
+	{
+		id: 'tafsir',
+		mainName: 'القرآن الكريم',
+		subName: 'التفسير وعلوم القرآن',
+		secondaryName: 'كتب التفسير',
+		keywords: ['تفسير', 'التفسير', 'القران', 'القرآن', 'علوم القران', 'تجويد']
+	}
+]);
+
+function normalizedTextForBook(bookMeta) {
+	return normalizeArabic(
+		[
+			bookMeta?.title,
+			bookMeta?.author,
+			bookMeta?.description,
+			...(bookMeta?.categoryHints || [])
+		]
+			.filter(Boolean)
+			.join(' ')
+	);
+}
+
+function normalizedTokens(text) {
+	return new Set(normalizeArabic(text).split(' ').filter((t) => t.length >= 3));
+}
+
+function scoreNameAgainstTarget(name, target) {
+	const n = normalizeArabic(name);
+	const t = normalizeArabic(target);
+	if (!n || !t) return 0;
+	if (n === t) return 100;
+	if (n.includes(t) || t.includes(n)) return 80;
+	return tokenSetsOverlapRatio(normalizedTokens(n), normalizedTokens(t)) * 60;
+}
+
+function pickBestByName(list, targetName) {
+	let best = null;
+	let bestScore = 0;
+	for (const item of list || []) {
+		const score = scoreNameAgainstTarget(item?.name, targetName);
+		if (score > bestScore) {
+			best = item;
+			bestScore = score;
+		}
+	}
+	return bestScore >= 30 ? best : null;
+}
+
+function scoreSemanticProfile(profile, bookMeta) {
+	const hay = normalizedTextForBook(bookMeta);
+	if (!hay) return 0;
+	let score = 0;
+	for (const kw of profile.keywords || []) {
+		const n = normalizeArabic(kw);
+		if (n && hay.includes(n)) score += n.includes(' ') ? 4 : 2;
+	}
+	for (const kw of profile.negativeKeywords || []) {
+		const n = normalizeArabic(kw);
+		if (n && hay.includes(n)) score -= 3;
+	}
+	return score;
+}
+
+function pickSemanticProfile(bookMeta) {
+	let best = null;
+	let bestScore = 0;
+	for (const profile of SEMANTIC_PROFILES) {
+		const score = scoreSemanticProfile(profile, bookMeta);
+		if (score > bestScore) {
+			best = profile;
+			bestScore = score;
+		}
+	}
+	if (!best || bestScore < 3) return null;
+	return { profile: best, score: bestScore };
+}
+
+function buildProfileDecision(sections, bookMeta, picked) {
+	const { profile, score } = picked;
+	const main = pickBestByName(sections.tree, profile.mainName);
+	const confidence = Math.min(0.72 + score * 0.03, 0.96);
+	const reasoning = `تصنيف دلالي محافظ: ${profile.mainName} > ${profile.subName} > ${profile.secondaryName}`;
+	if (!main) {
+		return {
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
+			secondaryId: null,
+			newMainName: profile.mainName,
+			newSubName: profile.subName,
+			newSecondaryName: profile.secondaryName,
+			confidence,
+			reasoning,
+			method: 'semantic'
+		};
+	}
+
+	const sub = pickBestByName(main.children || [], profile.subName);
+	if (!sub) {
+		return {
+			kind: 'create_sub',
+			mainId: String(main.id),
+			subId: null,
+			secondaryId: null,
+			newSubName: profile.subName,
+			newSecondaryName: profile.secondaryName,
+			confidence,
+			reasoning,
+			method: 'semantic'
+		};
+	}
+
+	const secondary =
+		pickBestByName(sub.children || [], profile.secondaryName) ||
+		pickReuseSecondary(sections, String(sub.id), bookMeta, {
+			proposedNewName: profile.secondaryName,
+			minScore: 6
+		});
+	if (secondary) {
+		return {
+			kind: 'existing',
+			mainId: String(main.id),
+			subId: String(sub.id),
+			secondaryId: String(secondary.id),
+			confidence,
+			reasoning,
+			method: 'semantic'
+		};
+	}
+
+	return {
+		kind: 'create_secondary',
+		mainId: String(main.id),
+		subId: String(sub.id),
+		secondaryId: null,
+		newSecondaryName: profile.secondaryName,
+		confidence,
+		reasoning,
+		method: 'semantic'
+	};
+}
+
+function proposeSecondaryName(bookMeta) {
+	const hint = Array.isArray(bookMeta?.categoryHints)
+		? String(bookMeta.categoryHints[0] || '').trim()
+		: '';
+	const stem = seriesStemFromTitle(bookMeta?.title || '');
+	return String(hint || stem || 'كتب عامة').trim().slice(0, 80) || 'كتب عامة';
+}
+
+function requireSecondaryDecision(sections, decision, bookMeta) {
+	if (decision.secondaryId || decision.kind === 'create_secondary') return decision;
+	if (decision.kind === 'create_main' || decision.kind === 'create_sub') {
+		return {
+			...decision,
+			newSecondaryName: decision.newSecondaryName || proposeSecondaryName(bookMeta)
+		};
+	}
+	if (decision.subId) {
+		const autoSec = pickReuseSecondary(sections, String(decision.subId), bookMeta, {
+			proposedNewName: proposeSecondaryName(bookMeta),
+			minScore: 6
+		});
+		if (autoSec) return { ...decision, secondaryId: autoSec.id };
+		return {
+			kind: 'create_secondary',
+			mainId: String(decision.mainId),
+			subId: String(decision.subId),
+			secondaryId: null,
+			newSecondaryName: proposeSecondaryName(bookMeta),
+			confidence: Math.min(Number(decision.confidence || 0.3), 0.7),
+			reasoning: `${decision.reasoning || 'تصنيف محلي'} — إنشاء قسم ثانوي لإكمال الهيكل الثلاثي.`,
+			method: decision.method || 'heuristic'
+		};
+	}
+	return decision;
+}
+
 
 /**
  * الواجهة الرئيسيّة — تُصنِّف كتاباً وتعيد المسار الذهبي + بدائل.
@@ -181,7 +418,19 @@ export async function classifyBookIntoHierarchy(sections, bookMeta) {
 		);
 	}
 
-	const sug = classifyHeuristic(sections, bookMeta);
+	const semantic = pickSemanticProfile(bookMeta);
+	const decision = semantic ? buildProfileDecision(sections, bookMeta, semantic) : null;
+	const sug =
+		decision?.kind === 'existing'
+			? {
+					mainId: decision.mainId,
+					subId: decision.subId,
+					secondaryId: decision.secondaryId,
+					confidence: decision.confidence,
+					reasoning: decision.reasoning,
+					method: decision.method
+				}
+			: classifyHeuristic(sections, bookMeta);
 	const validation = sug
 		? validateHierarchyPath(
 				{ mainId: sug.mainId, subId: sug.subId, secondaryId: sug.secondaryId || null },
@@ -214,9 +463,18 @@ export async function classifyAutonomous(sections, bookMeta) {
 			{ reason: 'empty_sections_tree', status: 412 }
 		);
 	}
+	const semantic = pickSemanticProfile(bookMeta);
+	if (semantic) {
+		return requireSecondaryDecision(
+			sections,
+			buildProfileDecision(sections, bookMeta, semantic),
+			bookMeta
+		);
+	}
+
 	const sug = classifyHeuristic(sections, bookMeta);
 	if (!sug) {
-		return {
+		return requireSecondaryDecision(sections, {
 			kind: 'existing',
 			mainId: sections.tree[0].id,
 			subId: sections.tree[0].children[0]?.id || '',
@@ -224,7 +482,7 @@ export async function classifyAutonomous(sections, bookMeta) {
 			confidence: 0.1,
 			reasoning: 'لم تعطِ خوارزميّة المطابقة نتيجة — أوّل قسم رئيسي/فرعي.',
 			method: 'heuristic'
-		};
+		}, bookMeta);
 	}
 	let secId = sug.secondaryId ? String(sug.secondaryId) : null;
 	if (!secId) {
@@ -234,7 +492,7 @@ export async function classifyAutonomous(sections, bookMeta) {
 		});
 		if (autoSec) secId = autoSec.id;
 	}
-	return {
+	return requireSecondaryDecision(sections, {
 		kind: 'existing',
 		mainId: String(sug.mainId),
 		subId: String(sug.subId),
@@ -242,5 +500,5 @@ export async function classifyAutonomous(sections, bookMeta) {
 		confidence: sug.confidence,
 		reasoning: sug.reasoning,
 		method: 'heuristic'
-	};
+	}, bookMeta);
 }
