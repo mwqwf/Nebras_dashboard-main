@@ -22,59 +22,381 @@ function normalizeArabic(s) {
 		.toLowerCase();
 }
 
-/**
- * Heuristic fallback — يعطي درجة لكلّ section بمقدار
- * تقاطع كلماتها مع (title + categoryHints + description). يختار أعلى main
- * ثمّ أعلى sub داخله ثمّ أعلى secondary داخله.
- */
-function classifyHeuristic({ tree, index }, bookMeta) {
-	const haystack = normalizeArabic(
-		[
-			bookMeta.title,
-			bookMeta.author,
-			bookMeta.description,
-			...(bookMeta.categoryHints || [])
-		].filter(Boolean).join(' ')
-	);
-	const tokens = new Set(haystack.split(' ').filter((t) => t.length >= 3));
+const STOP_WORDS = new Set(
+	[
+		'كتاب',
+		'كتب',
+		'حول',
+		'الى',
+		'علي',
+		'عن',
+		'من',
+		'في',
+		'مع',
+		'هذا',
+		'هذه',
+		'ذلك',
+		'التي',
+		'الذي',
+		'للساده',
+		'الساده'
+	].map(normalizeArabic)
+);
 
-	function scoreOf(name) {
-		const n = normalizeArabic(name);
-		if (!n) return 0;
-		let score = 0;
-		for (const w of n.split(' ')) {
-			if (w.length >= 3 && tokens.has(w)) score += 1;
-			if (haystack.includes(n) && n.length >= 4) score += 2;
+const CURATED_PATH_RULES = Object.freeze([
+	{
+		id: 'scientific-advice-for-sada',
+		groups: [
+			['النصائح', 'نصائح', 'النصيحه'],
+			['التعليمات العلمية', 'تعليمات علمية', 'العلمية'],
+			['السادة', 'للسادة', 'الساده']
+		],
+		path: {
+			main: 'الدعوة والتربية',
+			sub: 'التربية والتعليم',
+			secondary: 'النصائح والتوجيهات العلمية'
+		},
+		confidence: 0.96,
+		reasoning:
+			'قاعدة مخصّصة: كتاب النصائح حول التعليمات العلمية للسادة يندرج تحت التربية والتعليم، لا الفقه أو الأدب.'
+	}
+]);
+
+const SUBJECT_PATH_RULES = Object.freeze([
+	{
+		keywords: ['فقه', 'الفقه', 'احكام', 'حلال', 'حرام', 'عبادات', 'معاملات'],
+		path: { main: 'الفقه الإسلامي', sub: 'الفقه العام', secondary: 'مسائل فقهية' }
+	},
+	{
+		keywords: ['عقيده', 'العقيده', 'توحيد', 'الايمان', 'اسماء الله', 'صفات'],
+		path: { main: 'العقيدة الإسلامية', sub: 'العقيدة والتوحيد', secondary: 'موضوعات العقيدة' }
+	},
+	{
+		keywords: ['حديث', 'الحديث', 'سنه', 'السنه', 'رواه', 'اسناد'],
+		path: { main: 'الحديث الشريف', sub: 'علوم الحديث', secondary: 'كتب الحديث' }
+	},
+	{
+		keywords: ['قران', 'القران', 'تفسير', 'التفسير', 'ايات', 'سوره'],
+		path: { main: 'القرآن الكريم', sub: 'التفسير وعلوم القرآن', secondary: 'كتب التفسير' }
+	},
+	{
+		keywords: ['تاريخ', 'التاريخ', 'سيره', 'السيره', 'تراجم', 'حضاره', 'غزوات'],
+		path: { main: 'التاريخ والسير', sub: 'التاريخ الإسلامي', secondary: 'كتب التاريخ والسير' }
+	},
+	{
+		keywords: ['ادب', 'الادب', 'شعر', 'قصه', 'روايه', 'لغه', 'نحو', 'بلاغه'],
+		path: { main: 'الأدب واللغة العربية', sub: 'الأدب العربي', secondary: 'كتب الأدب واللغة' }
+	},
+	{
+		keywords: ['تربيه', 'تعليم', 'التعليم', 'ارشاد', 'توجيه', 'نصائح', 'طالب العلم'],
+		path: {
+			main: 'الدعوة والتربية',
+			sub: 'التربية والتعليم',
+			secondary: 'النصائح والتوجيهات العلمية'
 		}
-		return score;
+	}
+]);
+
+function tokensOf(s, minLen = 3) {
+	return new Set(
+		normalizeArabic(s)
+			.split(' ')
+			.filter((t) => t.length >= minLen && !STOP_WORDS.has(t))
+	);
+}
+
+function metadataHaystack(bookMeta) {
+	return normalizeArabic(
+		[
+			bookMeta?.title,
+			bookMeta?.author,
+			bookMeta?.description,
+			...(bookMeta?.categoryHints || [])
+		]
+			.filter(Boolean)
+			.join(' ')
+	);
+}
+
+function cleanSectionName(raw, fallback = 'كتب عامة') {
+	let s = String(raw || '').trim();
+	s = s.split(/[*;|/\\\n\r\t]+/)[0].trim();
+	s = s.replace(/^[\s,،.\-–—_]+/, '').replace(/[\s,،.\-–—_]+$/, '').trim();
+	if (s.length > 60) s = s.slice(0, 60).trim();
+	return s || fallback;
+}
+
+function pathRuleMatches(rule, haystack) {
+	for (const group of rule.groups || []) {
+		const ok = group.some((term) => {
+			const n = normalizeArabic(term);
+			return n && haystack.includes(n);
+		});
+		if (!ok) return false;
+	}
+	return true;
+}
+
+function pickBestCategoryHint(bookMeta) {
+	for (const hint of bookMeta?.categoryHints || []) {
+		const clean = cleanSectionName(hint, '');
+		if (clean && clean.length >= 2) return clean;
+	}
+	return '';
+}
+
+function defaultSecondaryName(bookMeta, fallback = 'كتب عامة') {
+	const stem = cleanSectionName(seriesStemFromTitle(bookMeta?.title || ''), '');
+	if (stem && tokensOf(stem, 3).size >= 1) return stem;
+	const hint = pickBestCategoryHint(bookMeta);
+	return cleanSectionName(hint || fallback, fallback);
+}
+
+function inferTaxonomyPath(bookMeta) {
+	const haystack = metadataHaystack(bookMeta);
+	for (const rule of CURATED_PATH_RULES) {
+		if (pathRuleMatches(rule, haystack)) {
+			return { ...rule.path, confidence: rule.confidence, reasoning: rule.reasoning };
+		}
 	}
 
-	let bestMain = null, bestMainScore = -1;
-	for (const m of tree) {
-		const s = scoreOf(m.name);
-		if (s > bestMainScore) { bestMainScore = s; bestMain = m; }
+	for (const rule of SUBJECT_PATH_RULES) {
+		if (rule.keywords.some((keyword) => haystack.includes(normalizeArabic(keyword)))) {
+			return {
+				...rule.path,
+				confidence: 0.78,
+				reasoning: `قاعدة موضوعية محافظة: ${rule.path.main} ← ${rule.path.sub}.`
+			};
+		}
 	}
-	if (!bestMain) return null;
 
-	let bestSub = null, bestSubScore = -1;
-	for (const sub of bestMain.children) {
-		const s = scoreOf(sub.name);
-		if (s > bestSubScore) { bestSubScore = s; bestSub = sub; }
+	const hint = pickBestCategoryHint(bookMeta);
+	const sub = cleanSectionName(hint, 'كتب عامة');
+	return {
+		main: 'مكتبة نور',
+		sub,
+		secondary: defaultSecondaryName(bookMeta, sub),
+		confidence: 0.42,
+		reasoning: 'لم تظهر إشارات موضوعية كافية — إنشاء مسار مستقل تحت مكتبة نور لتجنّب خلط التخصصات.'
+	};
+}
+
+function scoreNameAgainstTarget(name, target) {
+	const n = normalizeArabic(name);
+	const t = normalizeArabic(target);
+	if (!n || !t) return 0;
+	if (n === t) return 100;
+	if (n.includes(t) || t.includes(n)) return 70;
+	const nt = tokensOf(n);
+	const tt = tokensOf(t);
+	if (!nt.size || !tt.size) return 0;
+	let inter = 0;
+	for (const token of nt) if (tt.has(token)) inter += 1;
+	return (inter / Math.max(nt.size, tt.size)) * 60;
+}
+
+function scoreNameAgainstBook(name, bookMeta) {
+	const haystack = metadataHaystack(bookMeta);
+	const hayTokens = tokensOf(haystack);
+	const n = normalizeArabic(name);
+	if (!n) return 0;
+	let score = 0;
+	for (const w of n.split(' ')) {
+		if (w.length >= 3 && hayTokens.has(w)) score += 3;
 	}
-	if (!bestSub) return null;
+	if (n.length >= 4 && haystack.includes(n)) score += 8;
+	return score;
+}
 
-	let bestSec = null, bestSecScore = -1;
-	for (const sec of bestSub.children) {
-		const s = scoreOf(sec.name);
-		if (s > bestSecScore) { bestSecScore = s; bestSec = sec; }
+function findBestMain(tree, targetName, bookMeta) {
+	let best = null;
+	let bestScore = 0;
+	for (const m of tree || []) {
+		const score = Math.max(
+			scoreNameAgainstTarget(m.name, targetName),
+			scoreNameAgainstBook(m.name, bookMeta)
+		);
+		if (score > bestScore) {
+			best = m;
+			bestScore = score;
+		}
+	}
+	return best && bestScore >= 18 ? { node: best, score: bestScore } : null;
+}
+
+function findBestSubInMain(mainNode, targetName, bookMeta) {
+	let best = null;
+	let bestScore = 0;
+	for (const sub of mainNode?.children || []) {
+		const score = Math.max(
+			scoreNameAgainstTarget(sub.name, targetName),
+			scoreNameAgainstBook(sub.name, bookMeta)
+		);
+		if (score > bestScore) {
+			best = sub;
+			bestScore = score;
+		}
+	}
+	return best && bestScore >= 18 ? { node: best, score: bestScore } : null;
+}
+
+function findBestSubAnywhere(tree, targetName, bookMeta) {
+	let best = null;
+	let bestMain = null;
+	let bestScore = 0;
+	for (const main of tree || []) {
+		for (const sub of main.children || []) {
+			const score = Math.max(
+				scoreNameAgainstTarget(sub.name, targetName),
+				scoreNameAgainstBook(sub.name, bookMeta)
+			);
+			if (score > bestScore) {
+				best = sub;
+				bestMain = main;
+				bestScore = score;
+			}
+		}
+	}
+	return best && bestScore >= 35 ? { main: bestMain, sub: best, score: bestScore } : null;
+}
+
+function findBestSecondaryInSub(subNode, targetName, bookMeta) {
+	let best = null;
+	let bestScore = 0;
+	for (const sec of subNode?.children || []) {
+		const score = Math.max(
+			scoreNameAgainstTarget(sec.name, targetName),
+			scoreNameAgainstBook(sec.name, bookMeta)
+		);
+		if (score > bestScore) {
+			best = sec;
+			bestScore = score;
+		}
+	}
+	return best && bestScore >= 18 ? { node: best, score: bestScore } : null;
+}
+
+function findBestSecondaryAnywhere(tree, targetName, bookMeta) {
+	let best = null;
+	let bestSub = null;
+	let bestMain = null;
+	let bestScore = 0;
+	for (const main of tree || []) {
+		for (const sub of main.children || []) {
+			for (const sec of sub.children || []) {
+				const score = Math.max(
+					scoreNameAgainstTarget(sec.name, targetName),
+					scoreNameAgainstBook(sec.name, bookMeta)
+				);
+				if (score > bestScore) {
+					best = sec;
+					bestSub = sub;
+					bestMain = main;
+					bestScore = score;
+				}
+			}
+		}
+	}
+	return best && bestScore >= 35
+		? { main: bestMain, sub: bestSub, secondary: best, score: bestScore }
+		: null;
+}
+
+function resolvePathToDecision(sections, bookMeta, path) {
+	const tree = sections?.tree || [];
+	const secondaryName = cleanSectionName(path.secondary || defaultSecondaryName(bookMeta, path.sub));
+	const subName = cleanSectionName(path.sub, 'كتب عامة');
+	const mainName = cleanSectionName(path.main, 'مكتبة نور');
+
+	const exactSecondary = findBestSecondaryAnywhere(tree, secondaryName, bookMeta);
+	if (exactSecondary) {
+		return {
+			kind: 'existing',
+			mainId: String(exactSecondary.main.id),
+			subId: String(exactSecondary.sub.id),
+			secondaryId: String(exactSecondary.secondary.id),
+			confidence: Math.max(path.confidence || 0.5, 0.86),
+			reasoning: `${path.reasoning} استُخدم قسم ثانوي مناسب موجود: ${exactSecondary.secondary.name}.`,
+			method: 'heuristic'
+		};
+	}
+
+	const existingSub = findBestSubAnywhere(tree, subName, bookMeta);
+	if (existingSub) {
+		const secondary = findBestSecondaryInSub(existingSub.sub, secondaryName, bookMeta);
+		if (secondary) {
+			return {
+				kind: 'existing',
+				mainId: String(existingSub.main.id),
+				subId: String(existingSub.sub.id),
+				secondaryId: String(secondary.node.id),
+				confidence: Math.max(path.confidence || 0.5, 0.84),
+				reasoning: `${path.reasoning} استُخدم مسار موجود تحت ${existingSub.sub.name}.`,
+				method: 'heuristic'
+			};
+		}
+		return {
+			kind: 'create_secondary',
+			mainId: String(existingSub.main.id),
+			subId: String(existingSub.sub.id),
+			secondaryId: null,
+			newSecondaryName: secondaryName,
+			confidence: path.confidence || 0.72,
+			reasoning: `${path.reasoning} وُجد القسم الفرعي المناسب، وسيُنشأ مستوى ثانوي دقيق.`,
+			method: 'heuristic'
+		};
+	}
+
+	const main = findBestMain(tree, mainName, bookMeta);
+	if (main) {
+		const sub = findBestSubInMain(main.node, subName, bookMeta);
+		if (sub) {
+			const secondary = findBestSecondaryInSub(sub.node, secondaryName, bookMeta);
+			if (secondary) {
+				return {
+					kind: 'existing',
+					mainId: String(main.node.id),
+					subId: String(sub.node.id),
+					secondaryId: String(secondary.node.id),
+					confidence: Math.max(path.confidence || 0.5, 0.82),
+					reasoning: `${path.reasoning} استُخدم مسار ثلاثي موجود.`,
+					method: 'heuristic'
+				};
+			}
+			return {
+				kind: 'create_secondary',
+				mainId: String(main.node.id),
+				subId: String(sub.node.id),
+				secondaryId: null,
+				newSecondaryName: secondaryName,
+				confidence: path.confidence || 0.7,
+				reasoning: `${path.reasoning} وُجد main/sub مناسبان، وسيُنشأ القسم الثانوي الصحيح.`,
+				method: 'heuristic'
+			};
+		}
+		return {
+			kind: 'create_sub',
+			mainId: String(main.node.id),
+			subId: null,
+			secondaryId: null,
+			newSubName: subName,
+			newSecondaryName: secondaryName,
+			confidence: path.confidence || 0.62,
+			reasoning: `${path.reasoning} وُجد القسم الرئيسي المناسب، وسيُنشأ فرع دقيق تحته.`,
+			method: 'heuristic'
+		};
 	}
 
 	return {
-		mainId: bestMain.id,
-		subId: bestSub.id,
-		secondaryId: bestSec ? bestSec.id : null,
-		confidence: Math.min(0.5 + bestMainScore * 0.05 + bestSubScore * 0.05, 0.85),
-		reasoning: 'heuristic مطابقة محليّة',
+		kind: 'create_main',
+		mainId: null,
+		subId: null,
+		secondaryId: null,
+		newMainName: mainName,
+		newSubName: subName,
+		newSecondaryName: secondaryName,
+		confidence: path.confidence || 0.5,
+		reasoning: `${path.reasoning} لا يوجد مسار مناسب حالياً؛ سيُنشأ المسار الثلاثي كاملاً.`,
 		method: 'heuristic'
 	};
 }
@@ -174,29 +496,27 @@ function pickReuseSecondary(sections, subId, bookMeta, options = {}) {
  * الواجهة الرئيسيّة — تُصنِّف كتاباً وتعيد المسار الذهبي + بدائل.
  */
 export async function classifyBookIntoHierarchy(sections, bookMeta) {
-	if (!sections.tree || sections.tree.length === 0) {
-		throw Object.assign(
-			new Error('لا توجد أقسام رئيسيّة في قاعدة البيانات — أنشئ قسماً واحداً على الأقل قبل استخدام الجلب الآلي.'),
-			{ reason: 'empty_sections_tree', status: 412 }
-		);
-	}
-
-	const sug = classifyHeuristic(sections, bookMeta);
-	const validation = sug
+	const decision = await classifyAutonomous(sections, bookMeta);
+	const sug = {
+		mainId: decision.mainId,
+		subId: decision.subId,
+		secondaryId: decision.secondaryId || null,
+		newMainName: decision.newMainName,
+		newSubName: decision.newSubName,
+		newSecondaryName: decision.newSecondaryName,
+		kind: decision.kind,
+		confidence: decision.confidence,
+		reasoning: decision.reasoning,
+		method: decision.method
+	};
+	const validation = decision.kind === 'existing'
 		? validateHierarchyPath(
 				{ mainId: sug.mainId, subId: sug.subId, secondaryId: sug.secondaryId || null },
 				sections.index
 			)
-		: { valid: false, reason: 'heuristic_failed' };
+		: { valid: false, reason: 'section_creation_required' };
 	return {
-		suggested: sug || {
-			mainId: sections.tree[0].id,
-			subId: sections.tree[0].children[0]?.id || '',
-			secondaryId: null,
-			confidence: 0.1,
-			reasoning: 'لم تُعثَر مطابقة. تمّ اختيار أوّل قسم.',
-			method: 'heuristic'
-		},
+		suggested: sug,
 		alternatives: [],
 		validation
 	};
@@ -206,41 +526,6 @@ export async function classifyBookIntoHierarchy(sections, bookMeta) {
  * تصنيف ذاتي. يُرجع قراراً جاهزاً للتنفيذ.
  */
 export async function classifyAutonomous(sections, bookMeta) {
-	const treeIsEmpty = !sections.tree || sections.tree.length === 0;
-
-	if (treeIsEmpty) {
-		throw Object.assign(
-			new Error('لا توجد أقسام في قاعدة البيانات — لا يمكن إنشاء أقسام جديدة محلياً.'),
-			{ reason: 'empty_sections_tree', status: 412 }
-		);
-	}
-	const sug = classifyHeuristic(sections, bookMeta);
-	if (!sug) {
-		return {
-			kind: 'existing',
-			mainId: sections.tree[0].id,
-			subId: sections.tree[0].children[0]?.id || '',
-			secondaryId: null,
-			confidence: 0.1,
-			reasoning: 'لم تعطِ خوارزميّة المطابقة نتيجة — أوّل قسم رئيسي/فرعي.',
-			method: 'heuristic'
-		};
-	}
-	let secId = sug.secondaryId ? String(sug.secondaryId) : null;
-	if (!secId) {
-		const autoSec = pickReuseSecondary(sections, String(sug.subId), bookMeta, {
-			proposedNewName: '',
-			minScore: 9
-		});
-		if (autoSec) secId = autoSec.id;
-	}
-	return {
-		kind: 'existing',
-		mainId: String(sug.mainId),
-		subId: String(sug.subId),
-		secondaryId: secId,
-		confidence: sug.confidence,
-		reasoning: sug.reasoning,
-		method: 'heuristic'
-	};
+	const path = inferTaxonomyPath(bookMeta);
+	return resolvePathToDecision(sections || { tree: [], index: {} }, bookMeta, path);
 }
