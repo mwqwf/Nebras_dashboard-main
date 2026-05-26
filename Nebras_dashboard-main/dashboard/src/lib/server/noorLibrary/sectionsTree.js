@@ -38,10 +38,18 @@ import {
  * من الشجرة قبل تمريرها للمصنِّف ولا يقبل أيّ كتابة من المحرّك الآلي.
  */
 export const BLACKLISTED_SECTION_NAMES = Object.freeze([
-	'دروس بتدكصهك',
-	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
 	'دروس بترخيصه'
+]);
+
+// أخطاء إملائية/طباعية معروفة لنفس الأقسام المحظورة. تُفصل عن القائمة
+// الأساسية حتى لا يظن المصنّف أنها أسماء مقصودة صالحة.
+export const TYPO_SECTION_NAMES = Object.freeze([
+	'دروس بتدكصهك',
+	'دروس بترخصها',
+	'دروس بترخيصھا',
+	'دروس بترخيصهاا',
+	'دروس بترخيص'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -61,6 +69,48 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+const NORMALIZED_TYPO_NAMES = new Set(TYPO_SECTION_NAMES.map(normalizeArabic).filter(Boolean));
+
+const TYPO_REFERENCE_NAMES = [
+	...BLACKLISTED_SECTION_NAMES,
+	...TYPO_SECTION_NAMES
+].map(normalizeArabic).filter(Boolean);
+
+function editDistance(a, b) {
+	if (a === b) return 0;
+	if (!a) return b.length;
+	if (!b) return a.length;
+	const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+	const curr = Array.from({ length: b.length + 1 }, () => 0);
+	for (let i = 1; i <= a.length; i += 1) {
+		curr[0] = i;
+		for (let j = 1; j <= b.length; j += 1) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			curr[j] = Math.min(
+				curr[j - 1] + 1,
+				prev[j] + 1,
+				prev[j - 1] + cost
+			);
+		}
+		for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+	}
+	return prev[b.length];
+}
+
+function isKnownTypoSectionName(name) {
+	const n = normalizeArabic(name);
+	if (!n) return false;
+	if (NORMALIZED_TYPO_NAMES.has(n)) return true;
+	for (const ref of TYPO_REFERENCE_NAMES) {
+		if (!ref) continue;
+		if (n.length >= 8 && (n.includes(ref) || ref.includes(n))) return true;
+		const distance = editDistance(n, ref);
+		const maxAllowed = ref.length >= 12 ? 2 : 1;
+		if (distance > 0 && distance <= maxAllowed) return true;
+	}
+	return false;
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +119,7 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return NORMALIZED_BLACKLIST.has(n) || isKnownTypoSectionName(n);
 }
 
 async function readLevel(level) {

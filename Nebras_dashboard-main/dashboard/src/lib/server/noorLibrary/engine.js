@@ -338,6 +338,23 @@ async function notifyFcmSectionCreated(info) {
 	}
 }
 
+function cleanAutoSectionName(raw, fallback = 'كتب عامة') {
+	let name = String(raw || '').trim();
+	if (!name) return fallback;
+	name = name.split(/[*;|/\\\n\r\t]+/)[0].trim();
+	name = name.replace(/^[\s,،.\-–—_]+/, '').replace(/[\s,،.\-–—_]+$/, '').trim();
+	if (name.length > 60) name = name.slice(0, 60).trim();
+	return name || fallback;
+}
+
+function fallbackSecondarySectionName(meta, decision) {
+	if (decision?.newSecondaryName) {
+		return cleanAutoSectionName(decision.newSecondaryName);
+	}
+	const hint = Array.isArray(meta?.categoryHints) ? meta.categoryHints[0] : '';
+	return cleanAutoSectionName(hint || meta?.title || 'كتب عامة');
+}
+
 // ── Core: process a single book end-to-end ──────────────────────────
 
 /**
@@ -392,6 +409,32 @@ async function processBook({ url, bookId, sections }) {
 	const createdSectionsIds = [];
 	let sectionsCreatedDelta = 0;
 
+	const createSecondaryIfNeeded = async (targetSubId, name, parentName = '') => {
+		if (secondaryId || !targetSubId) return;
+		const secondaryName = cleanAutoSectionName(name || fallbackSecondarySectionName(meta, decision));
+		const created = await createSecondarySectionAdmin(targetSubId, secondaryName);
+		secondaryId = String(created.id);
+		if (!created.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName,
+				sectionId: created.id,
+				parentId: targetSubId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentName || targetSubId}"`,
+				sectionId: created.id,
+				parentId: targetSubId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
+	};
+
 	if (decision.kind === 'create_main') {
 		// أعلى مستوى من الإنشاء — main + sub أوّل تحته في عمليّة واحدة.
 		const createdMain = await createMainSectionAdmin(decision.newMainName);
@@ -436,6 +479,11 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+		await createSecondaryIfNeeded(
+			subId,
+			decision.newSecondaryName || fallbackSecondarySectionName(meta, decision),
+			createdSub.name
+		);
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
@@ -461,6 +509,11 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+		await createSecondaryIfNeeded(
+			subId,
+			decision.newSecondaryName || fallbackSecondarySectionName(meta, decision),
+			created.name
+		);
 	} else if (decision.kind === 'create_secondary') {
 		subId = decision.subId;
 		const created = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
@@ -506,6 +559,20 @@ async function processBook({ url, bookId, sections }) {
 			sectionsCreatedDelta += 1;
 			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
 		}
+		await createSecondaryIfNeeded(
+			subId,
+			decision.newSecondaryName || fallbackSecondarySectionName(meta, decision),
+			createdSub.name
+		);
+	}
+
+	if (!secondaryId && subId) {
+		const parentSub = sections.index.subsById[subId];
+		await createSecondaryIfNeeded(
+			subId,
+			fallbackSecondarySectionName(meta, decision),
+			parentSub?.name || ''
+		);
 	}
 
 	// إعادة قراءة الأقسام (لجلب أسماء الأقسام الجديدة).
@@ -514,8 +581,8 @@ async function processBook({ url, bookId, sections }) {
 	const sub = refreshed.index.subsById[subId];
 	const secondary = secondaryId ? refreshed.index.secondariesById[secondaryId] : null;
 
-	if (!main || !sub) {
-		throw Object.assign(new Error('main أو sub لم يُعثر عليه بعد التصنيف.'), {
+	if (!main || !sub || !secondary) {
+		throw Object.assign(new Error('main أو sub أو secondary لم يُعثر عليه بعد التصنيف.'), {
 			reason: 'hierarchy_resolution_failed',
 			status: 500
 		});

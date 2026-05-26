@@ -22,6 +22,267 @@ function normalizeArabic(s) {
 		.toLowerCase();
 }
 
+const ADVICE_EDUCATION_RULE = Object.freeze({
+	mainName: 'الدعوة والتربية',
+	mainAliases: ['الدعوة والتربية', 'الدعوة', 'التربية', 'التربية والدعوة'],
+	subName: 'التربية والتعليم',
+	subAliases: ['التربية والتعليم', 'التعليم والتربية', 'التعليم', 'التربية العلمية'],
+	secondaryName: 'النصائح والتوجيهات العلمية',
+	secondaryAliases: [
+		'النصائح والتوجيهات العلمية',
+		'نصائح علمية',
+		'التوجيهات العلمية',
+		'التعليمات العلمية',
+		'النصائح العلمية'
+	],
+	triggers: ['نصائح', 'النصائح', 'تعليمات علميه', 'تعليم علمي', 'توجيهات علميه', 'الساده']
+});
+
+const TOPIC_RULES = Object.freeze([
+	{
+		key: 'fiqh',
+		mainName: 'الفقه الإسلامي',
+		mainAliases: ['الفقه الإسلامي', 'الفقه', 'كتب في الفقه وأصوله', 'الفقه وأصوله'],
+		subName: 'الفقه وأصوله',
+		subAliases: ['الفقه وأصوله', 'أصول الفقه', 'العبادات', 'المعاملات', 'الفقه الإسلامي'],
+		secondaryName: 'مسائل فقهية',
+		secondaryAliases: ['مسائل فقهية', 'أحكام فقهية', 'فتاوى ومسائل'],
+		triggers: ['فقه', 'فقهي', 'اصول الفقه', 'احكام', 'عبادات', 'معاملات', 'فتاوي']
+	},
+	{
+		key: 'aqeedah',
+		mainName: 'العقيدة',
+		mainAliases: ['العقيدة', 'العقيدة الإسلامية', 'كتب في العقيدة', 'التوحيد'],
+		subName: 'العقيدة والتوحيد',
+		subAliases: ['العقيدة والتوحيد', 'التوحيد', 'الإيمان', 'اصول الاعتقاد'],
+		secondaryName: 'مسائل العقيدة',
+		secondaryAliases: ['مسائل العقيدة', 'التوحيد', 'الإيمان'],
+		triggers: ['عقيده', 'توحيد', 'ايمان', 'اسماء وصفات', 'اعتقاد']
+	},
+	{
+		key: 'history',
+		mainName: 'التاريخ والسير',
+		mainAliases: ['التاريخ والسير', 'التاريخ الإسلامي', 'التاريخ', 'السير والتراجم'],
+		subName: 'التاريخ الإسلامي',
+		subAliases: ['التاريخ الإسلامي', 'التاريخ', 'السير والتراجم', 'التراجم'],
+		secondaryName: 'كتب التاريخ',
+		secondaryAliases: ['كتب التاريخ', 'التاريخ العام', 'التراجم'],
+		triggers: ['تاريخ', 'تراجم', 'حضاره', 'دول', 'فتوح', 'خلافه']
+	},
+	{
+		key: 'adab',
+		mainName: 'التزكية والأخلاق',
+		mainAliases: ['التزكية والأخلاق', 'الأخلاق والآداب', 'الأدب والآداب', 'الآداب'],
+		subName: 'الآداب والأخلاق',
+		subAliases: ['الآداب والأخلاق', 'الأخلاق', 'الآداب', 'التزكية'],
+		secondaryName: 'الآداب العامة',
+		secondaryAliases: ['الآداب العامة', 'الأخلاق العامة', 'تهذيب السلوك'],
+		triggers: ['ادب', 'اداب', 'اخلاق', 'تزكيه', 'سلوك', 'رقائق']
+	},
+	{
+		key: 'education',
+		mainName: ADVICE_EDUCATION_RULE.mainName,
+		mainAliases: ADVICE_EDUCATION_RULE.mainAliases,
+		subName: ADVICE_EDUCATION_RULE.subName,
+		subAliases: ADVICE_EDUCATION_RULE.subAliases,
+		secondaryName: ADVICE_EDUCATION_RULE.secondaryName,
+		secondaryAliases: ADVICE_EDUCATION_RULE.secondaryAliases,
+		triggers: ['تربيه', 'تعليم', 'تعليمات', 'ارشاد', 'نصائح', 'توجيهات']
+	}
+]);
+
+function sanitizeSectionName(raw, fallback = 'كتب عامة') {
+	let s = String(raw || '').trim();
+	if (!s) return fallback;
+	s = s.split(/[*;|/\\\n\r\t]+/)[0].trim();
+	s = s.replace(/^[\s,،.\-–—_]+/, '').replace(/[\s,،.\-–—_]+$/, '').trim();
+	if (s.length > 60) s = s.slice(0, 60).trim();
+	return s || fallback;
+}
+
+function tokensOfNormalized(text) {
+	return new Set(normalizeArabic(text).split(' ').filter((t) => t.length >= 3));
+}
+
+function haystackText(bookMeta) {
+	return normalizeArabic(
+		[
+			bookMeta?.title,
+			seriesStemFromTitle(bookMeta?.title || ''),
+			bookMeta?.author,
+			bookMeta?.description,
+			...(bookMeta?.categoryHints || [])
+		]
+			.filter(Boolean)
+			.join(' ')
+	);
+}
+
+function matchesAllAdviceSignals(haystack) {
+	const hasAdvice = haystack.includes('نصائح') || haystack.includes('النصائح');
+	const hasEducation =
+		haystack.includes('تعليم') ||
+		haystack.includes('تعليمات') ||
+		haystack.includes('توجيهات');
+	const hasScientificOrSayyids =
+		haystack.includes('علمي') ||
+		haystack.includes('علميه') ||
+		haystack.includes('الساده') ||
+		haystack.includes('ساده');
+	return hasAdvice && hasEducation && hasScientificOrSayyids;
+}
+
+function matchAliasScore(name, aliases) {
+	const n = normalizeArabic(name);
+	if (!n) return 0;
+	let best = 0;
+	for (const alias of aliases || []) {
+		const a = normalizeArabic(alias);
+		if (!a) continue;
+		if (n === a) best = Math.max(best, 30);
+		else if (n.includes(a) || a.includes(n)) best = Math.max(best, 20);
+		else {
+			const ratio = tokenSetsOverlapRatio(tokensOfNormalized(n), tokensOfNormalized(a));
+			if (ratio >= 0.5) best = Math.max(best, 12);
+			else if (ratio >= 0.3) best = Math.max(best, 6);
+		}
+	}
+	return best;
+}
+
+function findBestByAliases(nodes, aliases) {
+	let best = null;
+	let bestScore = 0;
+	for (const node of nodes || []) {
+		const score = matchAliasScore(node?.name, aliases);
+		if (score > bestScore) {
+			best = node;
+			bestScore = score;
+		}
+	}
+	return bestScore >= 12 ? best : null;
+}
+
+function pathDecisionFromRule(sections, rule, reasoning) {
+	const main = findBestByAliases(sections.tree || [], rule.mainAliases);
+	if (!main) {
+		return {
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
+			secondaryId: null,
+			newMainName: rule.mainName,
+			newSubName: rule.subName,
+			newSecondaryName: rule.secondaryName,
+			confidence: 0.78,
+			reasoning,
+			method: 'heuristic'
+		};
+	}
+
+	const sub = findBestByAliases(main.children || [], rule.subAliases);
+	if (!sub) {
+		return {
+			kind: 'create_sub',
+			mainId: String(main.id),
+			subId: null,
+			secondaryId: null,
+			newSubName: rule.subName,
+			newSecondaryName: rule.secondaryName,
+			confidence: 0.82,
+			reasoning,
+			method: 'heuristic'
+		};
+	}
+
+	const secondary = findBestByAliases(sub.children || [], rule.secondaryAliases);
+	if (!secondary) {
+		return {
+			kind: 'create_secondary',
+			mainId: String(main.id),
+			subId: String(sub.id),
+			secondaryId: null,
+			newSecondaryName: rule.secondaryName,
+			confidence: 0.86,
+			reasoning,
+			method: 'heuristic'
+		};
+	}
+
+	return {
+		kind: 'existing',
+		mainId: String(main.id),
+		subId: String(sub.id),
+		secondaryId: String(secondary.id),
+		confidence: 0.92,
+		reasoning,
+		method: 'heuristic'
+	};
+}
+
+function detectTopicRule(bookMeta) {
+	const haystack = haystackText(bookMeta);
+	if (matchesAllAdviceSignals(haystack)) return ADVICE_EDUCATION_RULE;
+
+	let best = null;
+	let bestScore = 0;
+	for (const rule of TOPIC_RULES) {
+		let score = 0;
+		for (const trigger of rule.triggers || []) {
+			const t = normalizeArabic(trigger);
+			if (t && haystack.includes(t)) score += t.length > 4 ? 2 : 1;
+		}
+		if (score > bestScore) {
+			best = rule;
+			bestScore = score;
+		}
+	}
+	return bestScore > 0 ? best : null;
+}
+
+function pickBestCategoryHint(bookMeta) {
+	for (const hint of bookMeta?.categoryHints || []) {
+		const clean = sanitizeSectionName(hint, '');
+		if (clean && clean.length >= 2) return clean;
+	}
+	const stem = sanitizeSectionName(seriesStemFromTitle(bookMeta?.title || ''), '');
+	if (stem && stem.length >= 2) return stem;
+	return 'كتب عامة';
+}
+
+function pickSecondaryName(bookMeta, fallback = 'كتب عامة') {
+	const stem = sanitizeSectionName(seriesStemFromTitle(bookMeta?.title || ''), '');
+	if (stem && stem.length >= 4) return stem;
+	const hint = pickBestCategoryHint(bookMeta);
+	return sanitizeSectionName(hint, fallback);
+}
+
+function scoreExistingNode(node, haystack, tokens, aliases = []) {
+	const name = node?.name || '';
+	const n = normalizeArabic(name);
+	if (!n) return 0;
+	let score = matchAliasScore(name, aliases);
+	for (const w of n.split(' ')) {
+		if (w.length >= 3 && tokens.has(w)) score += 2;
+	}
+	if (n.length >= 4 && haystack.includes(n)) score += 6;
+	return score;
+}
+
+function bestScoredNode(nodes, haystack, aliases = []) {
+	const tokens = tokensOfNormalized(haystack);
+	let best = null;
+	let bestScore = 0;
+	for (const node of nodes || []) {
+		const score = scoreExistingNode(node, haystack, tokens, aliases);
+		if (score > bestScore) {
+			best = node;
+			bestScore = score;
+		}
+	}
+	return { node: best, score: bestScore };
+}
+
 /**
  * Heuristic fallback — يعطي درجة لكلّ section بمقدار
  * تقاطع كلماتها مع (title + categoryHints + description). يختار أعلى main
@@ -206,41 +467,93 @@ export async function classifyBookIntoHierarchy(sections, bookMeta) {
  * تصنيف ذاتي. يُرجع قراراً جاهزاً للتنفيذ.
  */
 export async function classifyAutonomous(sections, bookMeta) {
-	const treeIsEmpty = !sections.tree || sections.tree.length === 0;
-
-	if (treeIsEmpty) {
-		throw Object.assign(
-			new Error('لا توجد أقسام في قاعدة البيانات — لا يمكن إنشاء أقسام جديدة محلياً.'),
-			{ reason: 'empty_sections_tree', status: 412 }
+	const tree = sections.tree || [];
+	const topicRule = detectTopicRule(bookMeta);
+	if (topicRule) {
+		const isAdvice = topicRule === ADVICE_EDUCATION_RULE;
+		return pathDecisionFromRule(
+			{ ...sections, tree },
+			topicRule,
+			isAdvice
+				? 'قاعدة صريحة: كتاب النصائح/التعليمات العلمية يُصنَّف تحت الدعوة والتربية ← التربية والتعليم ← النصائح والتوجيهات العلمية.'
+				: `قاعدة موضوعية "${topicRule.key}" لمنع خلط الكتب بين الفقه/العقيدة/التاريخ/الآداب.`
 		);
 	}
-	const sug = classifyHeuristic(sections, bookMeta);
-	if (!sug) {
+
+	const hint = pickBestCategoryHint(bookMeta);
+	const secondaryName = pickSecondaryName(bookMeta, hint);
+
+	if (!tree.length) {
 		return {
-			kind: 'existing',
-			mainId: sections.tree[0].id,
-			subId: sections.tree[0].children[0]?.id || '',
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
 			secondaryId: null,
-			confidence: 0.1,
-			reasoning: 'لم تعطِ خوارزميّة المطابقة نتيجة — أوّل قسم رئيسي/فرعي.',
+			newMainName: 'مكتبة نور',
+			newSubName: hint,
+			newSecondaryName: secondaryName,
+			confidence: 0.35,
+			reasoning: 'الشجرة فارغة — إنشاء مسار ثلاثي كامل لمحتوى مكتبة نور.',
 			method: 'heuristic'
 		};
 	}
-	let secId = sug.secondaryId ? String(sug.secondaryId) : null;
-	if (!secId) {
-		const autoSec = pickReuseSecondary(sections, String(sug.subId), bookMeta, {
-			proposedNewName: '',
-			minScore: 9
-		});
-		if (autoSec) secId = autoSec.id;
+
+	const haystack = haystackText(bookMeta);
+	const bestMain = bestScoredNode(tree, haystack);
+	if (!bestMain.node || bestMain.score < 2) {
+		return {
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
+			secondaryId: null,
+			newMainName: 'مكتبة نور',
+			newSubName: hint,
+			newSecondaryName: secondaryName,
+			confidence: 0.38,
+			reasoning: 'لم يظهر قسم رئيسي مناسب بدرجة كافية — إنشاء مسار ثلاثي جديد.',
+			method: 'heuristic'
+		};
 	}
+
+	const bestSub = bestScoredNode(bestMain.node.children || [], haystack);
+	if (!bestSub.node || bestSub.score < 2) {
+		return {
+			kind: 'create_sub',
+			mainId: String(bestMain.node.id),
+			subId: null,
+			secondaryId: null,
+			newSubName: hint,
+			newSecondaryName: secondaryName,
+			confidence: Math.min(0.45 + bestMain.score * 0.03, 0.75),
+			reasoning: `وُجد قسم رئيسي مناسب "${bestMain.node.name}"، ولا يوجد فرعي مناسب — إنشاء فرعي وثانوي.`,
+			method: 'heuristic'
+		};
+	}
+
+	const reuse = pickReuseSecondary(sections, String(bestSub.node.id), bookMeta, {
+		proposedNewName: secondaryName,
+		minScore: 6
+	});
+	if (reuse) {
+		return {
+			kind: 'existing',
+			mainId: String(bestMain.node.id),
+			subId: String(bestSub.node.id),
+			secondaryId: reuse.id,
+			confidence: Math.min(0.55 + bestMain.score * 0.03 + bestSub.score * 0.03, 0.9),
+			reasoning: `مطابقة محلّيّة: ${bestMain.node.name} ← ${bestSub.node.name} ← ${reuse.name}.`,
+			method: 'heuristic'
+		};
+	}
+
 	return {
-		kind: 'existing',
-		mainId: String(sug.mainId),
-		subId: String(sug.subId),
-		secondaryId: secId,
-		confidence: sug.confidence,
-		reasoning: sug.reasoning,
+		kind: 'create_secondary',
+		mainId: String(bestMain.node.id),
+		subId: String(bestSub.node.id),
+		secondaryId: null,
+		newSecondaryName: secondaryName,
+		confidence: Math.min(0.5 + bestMain.score * 0.03 + bestSub.score * 0.03, 0.82),
+		reasoning: `وُجد رئيسي وفرعي مناسبان (${bestMain.node.name} ← ${bestSub.node.name})، ولا يوجد ثانوي مناسب — إنشاء ثانوي.`,
 		method: 'heuristic'
 	};
 }
