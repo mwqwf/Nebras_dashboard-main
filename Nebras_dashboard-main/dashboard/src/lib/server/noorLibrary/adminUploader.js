@@ -225,6 +225,12 @@ export async function adminUploadAndRegister(args) {
 			status: 400
 		});
 	}
+	if (!metadata?.secondary_subsection) {
+		throw Object.assign(new Error('metadata.secondary_subsection مطلوب (main > sub > secondary > content).'), {
+			reason: 'metadata_secondary_subsection_required',
+			status: 400
+		});
+	}
 
 	const adminApp = getNebrasAdminApp();
 	assertNebrasApp(adminApp);
