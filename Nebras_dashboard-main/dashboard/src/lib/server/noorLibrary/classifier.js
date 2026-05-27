@@ -169,6 +169,119 @@ function pickReuseSecondary(sections, subId, bookMeta, options = {}) {
 	return null;
 }
 
+const ADVICE_SCIENTIFIC_TEACHING_PATH = Object.freeze({
+	mainName: 'الدعوة والتربية',
+	mainAliases: ['الدعوة والتربية', 'الدعوة و التربية', 'التربية والدعوة'],
+	subName: 'التربية والتعليم',
+	subAliases: ['التربية والتعليم', 'التعليم والتربية'],
+	secondaryName: 'النصائح والتوجيهات العلمية',
+	secondaryAliases: [
+		'النصائح والتوجيهات العلمية',
+		'النصائح العلمية',
+		'التوجيهات العلمية',
+		'النصائح حول التعليمات العلمية للسادة'
+	]
+});
+
+function findNodeByNames(nodes, names) {
+	const wanted = new Set((names || []).map(normalizeArabic).filter(Boolean));
+	for (const node of nodes || []) {
+		const n = normalizeArabic(node?.name || '');
+		if (wanted.has(n)) return node;
+	}
+	return null;
+}
+
+function matchesAdviceScientificTeaching(bookMeta) {
+	const haystack = normalizeArabic(
+		[
+			bookMeta?.title,
+			bookMeta?.author,
+			bookMeta?.description,
+			...(bookMeta?.categoryHints || [])
+		]
+			.filter(Boolean)
+			.join(' ')
+	);
+	if (!haystack) return false;
+	const hasAdvice = haystack.includes('النصائح') || haystack.includes('نصائح') || haystack.includes('توجيهات');
+	const hasScientificInstruction =
+		haystack.includes('التعليمات العلميه') ||
+		haystack.includes('تعليمات علميه') ||
+		(haystack.includes('علميه') &&
+			(haystack.includes('تعليمات') || haystack.includes('توجيهات')));
+	const hasSadah =
+		haystack.includes('الساده') ||
+		haystack.includes('للساده') ||
+		haystack.includes('السادات');
+	return hasAdvice && hasScientificInstruction && hasSadah;
+}
+
+function classifyAdviceScientificTeaching(sections, bookMeta) {
+	if (!matchesAdviceScientificTeaching(bookMeta)) return null;
+
+	const rule = ADVICE_SCIENTIFIC_TEACHING_PATH;
+	const main = findNodeByNames(sections.tree, rule.mainAliases);
+	const base = {
+		confidence: 0.98,
+		reasoning:
+			'قاعدة تصنيف مخصّصة: كتب النصائح حول التعليمات العلمية للسادة تُوضع في التربية والتعليم لا في الفقه/الأدب/التاريخ.',
+		method: 'rule'
+	};
+
+	if (!main) {
+		return {
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
+			secondaryId: null,
+			newMainName: rule.mainName,
+			newSubName: rule.subName,
+			newSecondaryName: rule.secondaryName,
+			...base
+		};
+	}
+
+	const sub = findNodeByNames(main.children || [], rule.subAliases);
+	if (!sub) {
+		return {
+			kind: 'create_sub',
+			mainId: String(main.id),
+			subId: null,
+			secondaryId: null,
+			newSubName: rule.subName,
+			newSecondaryName: rule.secondaryName,
+			...base
+		};
+	}
+
+	const secondary =
+		findNodeByNames(sub.children || [], rule.secondaryAliases) ||
+		pickReuseSecondary(sections, String(sub.id), bookMeta, {
+			proposedNewName: rule.secondaryName,
+			minScore: 7
+		});
+
+	if (secondary) {
+		return {
+			kind: 'existing',
+			mainId: String(main.id),
+			subId: String(sub.id),
+			secondaryId: String(secondary.id),
+			...base
+		};
+	}
+
+	return {
+		kind: 'create_secondary',
+		mainId: String(main.id),
+		subId: String(sub.id),
+		secondaryId: null,
+		newSecondaryName: rule.secondaryName,
+		...base
+	};
+}
+
 
 /**
  * الواجهة الرئيسيّة — تُصنِّف كتاباً وتعيد المسار الذهبي + بدائل.
@@ -179,6 +292,30 @@ export async function classifyBookIntoHierarchy(sections, bookMeta) {
 			new Error('لا توجد أقسام رئيسيّة في قاعدة البيانات — أنشئ قسماً واحداً على الأقل قبل استخدام الجلب الآلي.'),
 			{ reason: 'empty_sections_tree', status: 412 }
 		);
+	}
+
+	const ruleDecision = classifyAdviceScientificTeaching(sections, bookMeta);
+	if (ruleDecision && ruleDecision.kind === 'existing') {
+		const validation = validateHierarchyPath(
+			{
+				mainId: ruleDecision.mainId,
+				subId: ruleDecision.subId,
+				secondaryId: ruleDecision.secondaryId || null
+			},
+			sections.index
+		);
+		return {
+			suggested: {
+				mainId: ruleDecision.mainId,
+				subId: ruleDecision.subId,
+				secondaryId: ruleDecision.secondaryId || null,
+				confidence: ruleDecision.confidence,
+				reasoning: ruleDecision.reasoning,
+				method: ruleDecision.method
+			},
+			alternatives: [],
+			validation
+		};
 	}
 
 	const sug = classifyHeuristic(sections, bookMeta);
@@ -214,6 +351,9 @@ export async function classifyAutonomous(sections, bookMeta) {
 			{ reason: 'empty_sections_tree', status: 412 }
 		);
 	}
+	const ruleDecision = classifyAdviceScientificTeaching(sections, bookMeta);
+	if (ruleDecision) return ruleDecision;
+
 	const sug = classifyHeuristic(sections, bookMeta);
 	if (!sug) {
 		return {
