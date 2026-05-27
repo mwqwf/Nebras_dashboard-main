@@ -20,6 +20,9 @@
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
  *                                          true إن كانت الحزمة موجودة).
+ *       NOOR_ALLOW_PLAIN_PUPPETEER_FALLBACK=true|false
+ *                                      — السماح بتشغيل Puppeteer بلا stealth
+ *                                          عند فشل plugin (افتراضي false).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
  *
@@ -62,8 +65,7 @@ function readBoolEnv(name, fallback) {
 /**
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
- *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * لا نرجع إلى puppeteer العادي إلا إذا فُعّل fallback صراحةً.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,8 +83,14 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		const allowPlainFallback = readBoolEnv('NOOR_ALLOW_PLAIN_PUPPETEER_FALLBACK', false);
+		if (!allowPlainFallback) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'تعذّر تحميل puppeteer-extra/stealth. ثبّت puppeteer-extra-plugin-stealth أو فعّل NOOR_ALLOW_PLAIN_PUPPETEER_FALLBACK=true للتطوير فقط.';
+			return null;
+		}
+		// retry with plain puppeteer للتطوير المحلي فقط عند تفعيل fallback صراحةً.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;

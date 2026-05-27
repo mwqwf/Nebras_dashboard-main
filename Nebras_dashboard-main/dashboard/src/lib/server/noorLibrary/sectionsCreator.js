@@ -52,6 +52,19 @@ function cleanName(name) {
 	return String(name || '').trim().slice(0, 120);
 }
 
+async function nextOrderIndex(level, parentField = '', parentId = null) {
+	const rows = await adminFsReadSectionsLevel(level);
+	const scoped = parentField
+		? rows.filter((row) => String(row?.[parentField] ?? '') === String(parentId ?? ''))
+		: rows;
+	let max = -1;
+	for (const row of scoped) {
+		const n = Number(row?.order_index ?? -1);
+		if (Number.isFinite(n) && n > max) max = n;
+	}
+	return max + 1;
+}
+
 function blacklistError(message, reason = 'blacklisted_section') {
 	return Object.assign(new Error(message), { reason, status: 403 });
 }
@@ -161,7 +174,7 @@ export async function createMainSectionAdmin(name) {
 	const payload = {
 		id,
 		name: cleanedName,
-		order_index: 0,
+		order_index: await nextOrderIndex('main'),
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
@@ -227,6 +240,7 @@ export async function createSubSectionAdmin(mainSectionId, name) {
 		id,
 		name: cleanedName,
 		main_section: mainNum,
+		order_index: await nextOrderIndex('sub', 'main_section', mainNum),
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),
@@ -290,6 +304,7 @@ export async function createSecondarySectionAdmin(subSectionId, name) {
 		id,
 		name: cleanedName,
 		sub_section: subNum,
+		order_index: await nextOrderIndex('secondary', 'sub_section', subNum),
 		is_listed: true,
 		thumbnail: null,
 		created_at: new Date().toISOString(),

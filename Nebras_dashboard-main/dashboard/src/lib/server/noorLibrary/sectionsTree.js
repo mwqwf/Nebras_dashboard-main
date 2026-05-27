@@ -44,6 +44,13 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بترخيصه'
 ]);
 
+const TYPO_SECTION_NAME_PATTERNS = Object.freeze([
+	/بتدكصهك/u,
+	/دروس\s+بتد/u,
+	/[\uFFFD]/u, // replacement character: غالباً نصّ مكسور الترميز
+	/(?:Ø|Ù|Ã|Â|Ð|Ñ|Þ|ß){2,}/i // mojibake شائع عند فساد ترميز العربية
+]);
+
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
 function normalizeArabic(s) {
 	return String(s || '')
@@ -67,9 +74,23 @@ const NORMALIZED_BLACKLIST = new Set(
  * @returns {boolean}
  */
 export function isBlacklistedSectionName(name) {
+	if (hasLikelyTypoSectionName(name)) return true;
 	const n = normalizeArabic(name);
 	if (!n) return false;
 	return NORMALIZED_BLACKLIST.has(n);
+}
+
+/**
+ * يلتقط الأقسام ذات الأخطاء الطباعية/فساد الترميز الواضح كي لا يراها
+ * المصنّف ولا ينشئ تحتها محتوى آلياً.
+ *
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function hasLikelyTypoSectionName(name) {
+	const raw = String(name || '').trim();
+	if (!raw) return false;
+	return TYPO_SECTION_NAME_PATTERNS.some((pattern) => pattern.test(raw));
 }
 
 async function readLevel(level) {
