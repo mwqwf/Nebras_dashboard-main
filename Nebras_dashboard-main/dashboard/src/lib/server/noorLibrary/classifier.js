@@ -2,9 +2,8 @@
  * classifier.js — تصنيف كتاب من مكتبة نور إلى مساره الصحيح في الهيكلية
  * الذهبيّة [main → sub → secondary]
  * 
- * بعد إزالة الاعتماد على خدمات خارجية، يعتمد التصنيف حصراً على
- * heuristic بسيط (string-matching عربي مع normalization) يعمل
- * دون أيّ تكلفة شبكيّة.
+ * بعد إزالة الاعتماد على خدمات خارجية، يعتمد التصنيف على قواعد علميّة
+ * محليّة + مطابقة نصيّة عربية مع normalization، دون أيّ تكلفة شبكيّة.
  */
 
 import { validateHierarchyPath } from './sectionsTree.js';
