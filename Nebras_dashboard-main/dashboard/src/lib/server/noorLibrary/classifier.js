@@ -54,14 +54,14 @@ function classifyHeuristic({ tree, index }, bookMeta) {
 		const s = scoreOf(m.name);
 		if (s > bestMainScore) { bestMainScore = s; bestMain = m; }
 	}
-	if (!bestMain) return null;
+	if (!bestMain || bestMainScore <= 0) return null;
 
 	let bestSub = null, bestSubScore = -1;
 	for (const sub of bestMain.children) {
 		const s = scoreOf(sub.name);
 		if (s > bestSubScore) { bestSubScore = s; bestSub = sub; }
 	}
-	if (!bestSub) return null;
+	if (!bestSub || bestSubScore <= 0) return null;
 
 	let bestSec = null, bestSecScore = -1;
 	for (const sec of bestSub.children) {
@@ -72,7 +72,7 @@ function classifyHeuristic({ tree, index }, bookMeta) {
 	return {
 		mainId: bestMain.id,
 		subId: bestSub.id,
-		secondaryId: bestSec ? bestSec.id : null,
+		secondaryId: bestSec && bestSecScore > 0 ? bestSec.id : null,
 		confidence: Math.min(0.5 + bestMainScore * 0.05 + bestSubScore * 0.05, 0.85),
 		reasoning: 'heuristic مطابقة محليّة',
 		method: 'heuristic'
@@ -120,6 +120,214 @@ function tokenSetsOverlapRatio(setA, setB) {
 	let inter = 0;
 	for (const t of setA) if (setB.has(t)) inter += 1;
 	return inter / new Set([...setA, ...setB]).size;
+}
+
+const AUTONOMOUS_PATH_RULES = Object.freeze([
+	{
+		mainName: 'الدعوة والتربية',
+		subName: 'التربية والتعليم',
+		secondaryName: 'النصائح والتوجيهات العلمية',
+		minScore: 3,
+		keywords: [
+			'النصائح حول التعليمات العلمية للسادة',
+			'النصائح حول التعليمات العلمية السادة',
+			'التعليمات العلمية',
+			'التوجيهات العلمية',
+			'النصائح العلمية',
+			'النصائح',
+			'توجيهات',
+			'تعليمية',
+			'التربية والتعليم'
+		]
+	},
+	{
+		mainName: 'الفقه الإسلامي',
+		subName: 'العبادات',
+		secondaryName: 'مسائل العبادات',
+		minScore: 4,
+		keywords: ['فقه', 'الفقه', 'العبادات', 'الصلاة', 'الزكاة', 'الصيام', 'الحج', 'الطهارة']
+	},
+	{
+		mainName: 'العقيدة',
+		subName: 'العقيدة الإسلامية',
+		secondaryName: 'مسائل العقيدة',
+		minScore: 3,
+		keywords: ['عقيدة', 'العقيدة', 'التوحيد', 'الإيمان', 'الايمان', 'الأسماء والصفات']
+	},
+	{
+		mainName: 'التاريخ والسيرة',
+		subName: 'التاريخ الإسلامي',
+		secondaryName: 'دراسات تاريخية',
+		minScore: 3,
+		keywords: ['تاريخ', 'التاريخ', 'سيرة', 'السيرة', 'تراجم', 'الطبقات']
+	},
+	{
+		mainName: 'اللغة العربية وآدابها',
+		subName: 'الأدب العربي',
+		secondaryName: 'دراسات أدبية',
+		minScore: 3,
+		keywords: ['أدب', 'الادب', 'الأدب', 'الشعر', 'النثر', 'البلاغة']
+	}
+]);
+
+function cleanSectionName(name, fallback) {
+	const cleaned = String(name || '')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.slice(0, 80);
+	return cleaned || fallback;
+}
+
+function bestRuleForMeta(bookMeta) {
+	const haystack = normalizeArabic(
+		[
+			bookMeta?.title,
+			bookMeta?.author,
+			bookMeta?.description,
+			...(bookMeta?.categoryHints || [])
+		]
+			.filter(Boolean)
+			.join(' ')
+	);
+	if (!haystack) return null;
+
+	let best = null;
+	let bestScore = 0;
+	for (const rule of AUTONOMOUS_PATH_RULES) {
+		let score = 0;
+		for (const kw of rule.keywords) {
+			const n = normalizeArabic(kw);
+			if (!n) continue;
+			if (haystack.includes(n)) score += n.split(' ').length > 1 ? 2 : 1;
+		}
+		if (score > bestScore) {
+			bestScore = score;
+			best = rule;
+		}
+	}
+	if (best && bestScore >= best.minScore) return { ...best, score: bestScore };
+	return null;
+}
+
+function findMainByName(tree, name) {
+	const target = normalizeArabic(name);
+	if (!target) return null;
+	return (tree || []).find((m) => normalizeArabic(m.name) === target) || null;
+}
+
+function findSubByName(main, name) {
+	const target = normalizeArabic(name);
+	if (!target) return null;
+	return (main?.children || []).find((s) => normalizeArabic(s.name) === target) || null;
+}
+
+function findSecondaryByName(sub, name) {
+	const target = normalizeArabic(name);
+	if (!target) return null;
+	return (sub?.children || []).find((s) => normalizeArabic(s.name) === target) || null;
+}
+
+function inferSecondaryName(bookMeta, fallback = 'كتب عامة') {
+	const hints = Array.isArray(bookMeta?.categoryHints) ? bookMeta.categoryHints : [];
+	for (let i = hints.length - 1; i >= 0; i -= 1) {
+		const hint = cleanSectionName(hints[i], '');
+		if (hint && normalizeArabic(hint) !== normalizeArabic('مكتبة نور')) return hint;
+	}
+	const stem = cleanSectionName(seriesStemFromTitle(bookMeta?.title || ''), '');
+	if (stem && stem.length >= 4) return stem;
+	return fallback;
+}
+
+function pathFromHints(bookMeta) {
+	const hints = (Array.isArray(bookMeta?.categoryHints) ? bookMeta.categoryHints : [])
+		.map((h) => cleanSectionName(h, ''))
+		.filter(Boolean);
+	return {
+		mainName: hints[0] || 'مكتبة نور',
+		subName: hints[1] || hints[0] || 'كتب عامة',
+		secondaryName: hints[2] || inferSecondaryName(bookMeta, 'كتب عامة')
+	};
+}
+
+function resolveDesiredPath(sections, desired, bookMeta, meta = {}) {
+	const tree = sections.tree || [];
+	const desiredMain = cleanSectionName(desired.mainName, 'مكتبة نور');
+	const desiredSub = cleanSectionName(desired.subName, 'كتب عامة');
+	const desiredSecondary = cleanSectionName(
+		desired.secondaryName || inferSecondaryName(bookMeta, 'كتب عامة'),
+		'كتب عامة'
+	);
+
+	const main = desired.mainId
+		? tree.find((m) => String(m.id) === String(desired.mainId))
+		: findMainByName(tree, desiredMain);
+	if (!main) {
+		return {
+			kind: 'create_main',
+			newMainName: desiredMain,
+			newSubName: desiredSub,
+			newSecondaryName: desiredSecondary,
+			confidence: meta.confidence ?? 0.78,
+			reasoning: meta.reasoning || 'لم يوجد المسار المناسب؛ إنشاء سلسلة main/sub/secondary.',
+			method: meta.method || 'autonomous_path'
+		};
+	}
+
+	const sub = desired.subId
+		? (main.children || []).find((s) => String(s.id) === String(desired.subId))
+		: findSubByName(main, desiredSub);
+	if (!sub) {
+		return {
+			kind: 'create_sub',
+			mainId: String(main.id),
+			newSubName: desiredSub,
+			newSecondaryName: desiredSecondary,
+			confidence: meta.confidence ?? 0.76,
+			reasoning: meta.reasoning || 'القسم الرئيسي موجود، والفرعي المناسب غير موجود.',
+			method: meta.method || 'autonomous_path'
+		};
+	}
+
+	const exactSec = desired.secondaryId
+		? (sub.children || []).find((s) => String(s.id) === String(desired.secondaryId))
+		: findSecondaryByName(sub, desiredSecondary);
+	if (exactSec) {
+		return {
+			kind: 'existing',
+			mainId: String(main.id),
+			subId: String(sub.id),
+			secondaryId: String(exactSec.id),
+			confidence: meta.confidence ?? 0.9,
+			reasoning: meta.reasoning || 'وُجد المسار الثلاثي المناسب.',
+			method: meta.method || 'autonomous_path'
+		};
+	}
+
+	const reused = pickReuseSecondary(sections, String(sub.id), bookMeta, {
+		proposedNewName: desiredSecondary,
+		minScore: meta.reuseMinScore ?? 7
+	});
+	if (reused) {
+		return {
+			kind: 'existing',
+			mainId: String(main.id),
+			subId: String(sub.id),
+			secondaryId: reused.id,
+			confidence: meta.confidence ?? 0.86,
+			reasoning: `استُخدم قسم ثانوي قائم قريب: "${reused.name}".`,
+			method: meta.method || 'autonomous_path'
+		};
+	}
+
+	return {
+		kind: 'create_secondary',
+		mainId: String(main.id),
+		subId: String(sub.id),
+		newSecondaryName: desiredSecondary,
+		confidence: meta.confidence ?? 0.74,
+		reasoning: meta.reasoning || 'القسمان الرئيسي والفرعي موجودان، والثانوي المناسب غير موجود.',
+		method: meta.method || 'autonomous_path'
+	};
 }
 
 function scoreSecondaryForReuse(secNode, bookMeta, proposedNewName) {
@@ -174,28 +382,36 @@ function pickReuseSecondary(sections, subId, bookMeta, options = {}) {
  * الواجهة الرئيسيّة — تُصنِّف كتاباً وتعيد المسار الذهبي + بدائل.
  */
 export async function classifyBookIntoHierarchy(sections, bookMeta) {
-	if (!sections.tree || sections.tree.length === 0) {
-		throw Object.assign(
-			new Error('لا توجد أقسام رئيسيّة في قاعدة البيانات — أنشئ قسماً واحداً على الأقل قبل استخدام الجلب الآلي.'),
-			{ reason: 'empty_sections_tree', status: 412 }
-		);
-	}
+	const decision = await classifyAutonomous(sections, bookMeta);
+	const validation =
+		decision.kind === 'existing'
+			? validateHierarchyPath(
+					{
+						mainId: decision.mainId,
+						subId: decision.subId,
+						secondaryId: decision.secondaryId
+					},
+					sections.index
+				)
+			: decision.kind === 'create_secondary'
+				? validateHierarchyPath(
+						{ mainId: decision.mainId, subId: decision.subId, secondaryId: null },
+						sections.index
+					)
+				: { valid: false, reason: `${decision.kind}_planned` };
 
-	const sug = classifyHeuristic(sections, bookMeta);
-	const validation = sug
-		? validateHierarchyPath(
-				{ mainId: sug.mainId, subId: sug.subId, secondaryId: sug.secondaryId || null },
-				sections.index
-			)
-		: { valid: false, reason: 'heuristic_failed' };
 	return {
-		suggested: sug || {
-			mainId: sections.tree[0].id,
-			subId: sections.tree[0].children[0]?.id || '',
-			secondaryId: null,
-			confidence: 0.1,
-			reasoning: 'لم تُعثَر مطابقة. تمّ اختيار أوّل قسم.',
-			method: 'heuristic'
+		suggested: {
+			mainId: decision.mainId || null,
+			subId: decision.subId || null,
+			secondaryId: decision.secondaryId || null,
+			newMainName: decision.newMainName || null,
+			newSubName: decision.newSubName || null,
+			newSecondaryName: decision.newSecondaryName || null,
+			action: decision.kind,
+			confidence: decision.confidence,
+			reasoning: decision.reasoning,
+			method: decision.method
 		},
 		alternatives: [],
 		validation
@@ -209,38 +425,58 @@ export async function classifyAutonomous(sections, bookMeta) {
 	const treeIsEmpty = !sections.tree || sections.tree.length === 0;
 
 	if (treeIsEmpty) {
-		throw Object.assign(
-			new Error('لا توجد أقسام في قاعدة البيانات — لا يمكن إنشاء أقسام جديدة محلياً.'),
-			{ reason: 'empty_sections_tree', status: 412 }
-		);
-	}
-	const sug = classifyHeuristic(sections, bookMeta);
-	if (!sug) {
+		const rule = bestRuleForMeta(bookMeta);
+		const desired = rule || pathFromHints(bookMeta);
 		return {
-			kind: 'existing',
-			mainId: sections.tree[0].id,
-			subId: sections.tree[0].children[0]?.id || '',
-			secondaryId: null,
-			confidence: 0.1,
-			reasoning: 'لم تعطِ خوارزميّة المطابقة نتيجة — أوّل قسم رئيسي/فرعي.',
-			method: 'heuristic'
+			kind: 'create_main',
+			newMainName: cleanSectionName(desired.mainName, 'مكتبة نور'),
+			newSubName: cleanSectionName(desired.subName, 'كتب عامة'),
+			newSecondaryName: cleanSectionName(
+				desired.secondaryName || inferSecondaryName(bookMeta, 'كتب عامة'),
+				'كتب عامة'
+			),
+			confidence: rule ? 0.78 : 0.45,
+			reasoning: 'الشجرة فارغة؛ إنشاء أول مسار ثلاثي كامل.',
+			method: rule ? 'rule_based_path' : 'hint_path'
 		};
 	}
-	let secId = sug.secondaryId ? String(sug.secondaryId) : null;
-	if (!secId) {
-		const autoSec = pickReuseSecondary(sections, String(sug.subId), bookMeta, {
-			proposedNewName: '',
-			minScore: 9
+
+	const rule = bestRuleForMeta(bookMeta);
+	if (rule) {
+		return resolveDesiredPath(sections, rule, bookMeta, {
+			confidence: Math.min(0.72 + rule.score * 0.04, 0.94),
+			reasoning: `قاعدة مجال-واعية اختارت: ${rule.mainName} > ${rule.subName} > ${rule.secondaryName}.`,
+			method: 'rule_based_path',
+			reuseMinScore: 5
 		});
-		if (autoSec) secId = autoSec.id;
 	}
-	return {
-		kind: 'existing',
-		mainId: String(sug.mainId),
-		subId: String(sug.subId),
-		secondaryId: secId,
-		confidence: sug.confidence,
-		reasoning: sug.reasoning,
-		method: 'heuristic'
-	};
+
+	const sug = classifyHeuristic(sections, bookMeta);
+	if (!sug) {
+		return resolveDesiredPath(sections, pathFromHints(bookMeta), bookMeta, {
+			confidence: 0.45,
+			reasoning: 'لم توجد مطابقة موثوقة؛ إنشاء/استخدام مسار من تصنيفات المصدر.',
+			method: 'hint_path'
+		});
+	}
+
+	const main = sections.index.mainsById[String(sug.mainId)];
+	const sub = sections.index.subsById[String(sug.subId)];
+	return resolveDesiredPath(
+		sections,
+		{
+			mainId: String(sug.mainId),
+			subId: String(sug.subId),
+			secondaryId: sug.secondaryId ? String(sug.secondaryId) : null,
+			mainName: main?.name || 'مكتبة نور',
+			subName: sub?.name || 'كتب عامة',
+			secondaryName: inferSecondaryName(bookMeta, 'كتب عامة')
+		},
+		bookMeta,
+		{
+			confidence: sug.confidence,
+			reasoning: `${sug.reasoning} مع فرض المستوى الثانوي قبل الرفع.`,
+			method: 'heuristic_strict_triple'
+		}
+	);
 }

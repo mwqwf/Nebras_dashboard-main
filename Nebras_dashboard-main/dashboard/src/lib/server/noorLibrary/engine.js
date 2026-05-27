@@ -508,6 +508,41 @@ async function processBook({ url, bookId, sections }) {
 		}
 	}
 
+	// لا نرفع أيّ كتاب إلا داخل المسار الكامل: main > sub > secondary.
+	// إن اختار المصنّف main/sub فقط، ننشئ/نعيد استخدام ثانوياً مناسباً فوراً.
+	if (!secondaryId) {
+		const hint = Array.isArray(meta.categoryHints)
+			? (meta.categoryHints[2] || meta.categoryHints[1] || meta.categoryHints[0] || '')
+			: '';
+		const secondaryName = String(
+			decision.newSecondaryName || hint || meta.title || 'كتب عامة'
+		)
+			.trim()
+			.slice(0, 80) || 'كتب عامة';
+		const created = await createSecondarySectionAdmin(subId, secondaryName);
+		secondaryId = String(created.id);
+		if (!created.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			const parentSub = sections.index.subsById[subId];
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName: parentSub?.name || decision.newSubName || '',
+				sectionId: created.id,
+				parentId: subId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSub?.name || decision.newSubName || ''}"`,
+				sectionId: created.id,
+				parentId: subId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
+	}
+
 	// إعادة قراءة الأقسام (لجلب أسماء الأقسام الجديدة).
 	const refreshed = await buildSectionsTree();
 	const main = refreshed.index.mainsById[mainId];

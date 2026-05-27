@@ -41,7 +41,10 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بتدكصهك',
 	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
-	'دروس بترخيصه'
+	'دروس بترخيصه',
+	'دروس بترخيص',
+	'دروس ترخيصها',
+	'دروس ترخيصه'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -69,7 +72,11 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (!blocked) continue;
+		if (n === blocked || n.includes(blocked) || blocked.includes(n)) return true;
+	}
+	return false;
 }
 
 async function readLevel(level) {
