@@ -20,6 +20,7 @@
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
  *                                          true إن كانت الحزمة موجودة).
+ *       NOOR_REQUIRE_STEALTH=true|false — لا تعمل بدون stealth-plugin (افتراضي true).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
  *
@@ -81,6 +82,12 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		if (readBoolEnv('NOOR_REQUIRE_STEALTH', true)) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'NOOR_REQUIRE_STEALTH=true لكن puppeteer-extra أو stealth-plugin غير متاح. ثبّت puppeteer-extra-plugin-stealth قبل تشغيل محرك نور.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {

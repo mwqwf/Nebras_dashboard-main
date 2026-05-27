@@ -61,6 +61,45 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+function levenshteinDistance(a, b) {
+	const left = String(a || '');
+	const right = String(b || '');
+	if (left === right) return 0;
+	if (!left) return right.length;
+	if (!right) return left.length;
+
+	const prev = Array.from({ length: right.length + 1 }, (_, i) => i);
+	const curr = Array(right.length + 1).fill(0);
+	for (let i = 1; i <= left.length; i += 1) {
+		curr[0] = i;
+		for (let j = 1; j <= right.length; j += 1) {
+			const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+			curr[j] = Math.min(
+				curr[j - 1] + 1,
+				prev[j] + 1,
+				prev[j - 1] + cost
+			);
+		}
+		for (let j = 0; j <= right.length; j += 1) prev[j] = curr[j];
+	}
+	return prev[right.length];
+}
+
+function looksLikeTypoOfBlacklistedName(normalizedName) {
+	if (!normalizedName || normalizedName.length < 6) return false;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (!blocked) continue;
+		if (normalizedName.includes(blocked) || blocked.includes(normalizedName)) return true;
+		const sameOperationalPrefix =
+			normalizedName.startsWith('دروس ب') && blocked.startsWith('دروس ب');
+		if (!sameOperationalPrefix) continue;
+		const distance = levenshteinDistance(normalizedName, blocked);
+		const ratio = distance / Math.max(normalizedName.length, blocked.length);
+		if (distance <= 4 || ratio <= 0.38) return true;
+	}
+	return false;
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +108,7 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return NORMALIZED_BLACKLIST.has(n) || looksLikeTypoOfBlacklistedName(n);
 }
 
 async function readLevel(level) {
