@@ -22,21 +22,163 @@ function normalizeArabic(s) {
 		.toLowerCase();
 }
 
+const ADVICE_EDUCATION_PATH = Object.freeze({
+	mainName: 'الدعوة والتربية',
+	subName: 'التربية والتعليم',
+	secondaryName: 'النصائح والتوجيهات العلمية'
+});
+
+function textHaystack(bookMeta) {
+	return normalizeArabic(
+		[
+			bookMeta?.title,
+			bookMeta?.author,
+			bookMeta?.description,
+			...(bookMeta?.categoryHints || [])
+		]
+			.filter(Boolean)
+			.join(' ')
+	);
+}
+
+function tokensOf(s, minLen = 3) {
+	return new Set(
+		normalizeArabic(s)
+			.split(' ')
+			.filter((t) => t.length >= minLen)
+	);
+}
+
+function hasAdviceEducationSignature(bookMeta) {
+	const hay = textHaystack(bookMeta);
+	if (!hay) return false;
+	return (
+		(hay.includes('النصائح') || hay.includes('نصائح')) &&
+		(hay.includes('التعليمات') || hay.includes('تعليمات') || hay.includes('تعليميه')) &&
+		(hay.includes('العلميه') || hay.includes('علميه') || hay.includes('الساده'))
+	);
+}
+
+function findNodeByNames(nodes, names) {
+	const targets = new Set(names.map(normalizeArabic).filter(Boolean));
+	for (const node of nodes || []) {
+		if (targets.has(normalizeArabic(node?.name || ''))) return node;
+	}
+	return null;
+}
+
+function sanitizeSectionName(raw) {
+	let s = String(raw || '').trim();
+	if (!s) return '';
+	s = s.split(/[*;|/\\\n\r\t]+/)[0].trim();
+	s = s.replace(/^[\s,،.\-–—_]+/, '').replace(/[\s,،.\-–—_]+$/, '').trim();
+	s = s.replace(/^كتاب\s+/u, '').trim();
+	if (s.length > 48) s = s.slice(0, 48).trim();
+	return s;
+}
+
+function pickBestHint(bookMeta, fallback = 'كتب عامة') {
+	for (const hint of bookMeta?.categoryHints || []) {
+		const clean = sanitizeSectionName(hint);
+		if (clean && clean.length >= 2) return clean;
+	}
+	const stem = sanitizeSectionName(seriesStemFromTitle(bookMeta?.title || ''));
+	return stem || fallback;
+}
+
+function proposedSecondaryName(bookMeta) {
+	if (hasAdviceEducationSignature(bookMeta)) return ADVICE_EDUCATION_PATH.secondaryName;
+	const stem = sanitizeSectionName(seriesStemFromTitle(bookMeta?.title || ''));
+	return stem || pickBestHint(bookMeta, 'مواد عامة');
+}
+
+function makeAdviceEducationDecision(sections, bookMeta) {
+	if (!hasAdviceEducationSignature(bookMeta)) return null;
+
+	const main = findNodeByNames(sections.tree, [
+		ADVICE_EDUCATION_PATH.mainName,
+		'التربية والدعوة'
+	]);
+
+	if (!main) {
+		return {
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
+			secondaryId: null,
+			newMainName: ADVICE_EDUCATION_PATH.mainName,
+			newSubName: ADVICE_EDUCATION_PATH.subName,
+			newSecondaryName: ADVICE_EDUCATION_PATH.secondaryName,
+			confidence: 0.96,
+			reasoning: 'قاعدة مخصّصة: كتاب النصائح/التعليمات العلمية يُصنَّف تحت الدعوة والتربية ← التربية والتعليم.',
+			method: 'heuristic'
+		};
+	}
+
+	const sub = findNodeByNames(main.children || [], [
+		ADVICE_EDUCATION_PATH.subName,
+		'التعليم والتربية',
+		'التربية'
+	]);
+
+	if (!sub) {
+		return {
+			kind: 'create_sub',
+			mainId: String(main.id),
+			subId: null,
+			secondaryId: null,
+			newSubName: ADVICE_EDUCATION_PATH.subName,
+			newSecondaryName: ADVICE_EDUCATION_PATH.secondaryName,
+			confidence: 0.94,
+			reasoning: `قاعدة مخصّصة: وُجد "${main.name}" وسينشأ فرع "${ADVICE_EDUCATION_PATH.subName}".`,
+			method: 'heuristic'
+		};
+	}
+
+	const existingSecondary =
+		findNodeByNames(sub.children || [], [
+			ADVICE_EDUCATION_PATH.secondaryName,
+			'نصائح وتوجيهات علمية',
+			'النصائح العلمية',
+			'التوجيهات العلمية'
+		]) ||
+		pickReuseSecondary(sections, String(sub.id), bookMeta, {
+			proposedNewName: ADVICE_EDUCATION_PATH.secondaryName,
+			minScore: 5
+		});
+
+	if (existingSecondary) {
+		return {
+			kind: 'existing',
+			mainId: String(main.id),
+			subId: String(sub.id),
+			secondaryId: String(existingSecondary.id),
+			confidence: 0.97,
+			reasoning: `قاعدة مخصّصة: المسار الأنسب موجود ${main.name} ← ${sub.name} ← ${existingSecondary.name}.`,
+			method: 'heuristic'
+		};
+	}
+
+	return {
+		kind: 'create_secondary',
+		mainId: String(main.id),
+		subId: String(sub.id),
+		secondaryId: null,
+		newSecondaryName: ADVICE_EDUCATION_PATH.secondaryName,
+		confidence: 0.95,
+		reasoning: `قاعدة مخصّصة: إنشاء قسم ثانوي "${ADVICE_EDUCATION_PATH.secondaryName}" تحت "${sub.name}".`,
+		method: 'heuristic'
+	};
+}
+
 /**
  * Heuristic fallback — يعطي درجة لكلّ section بمقدار
  * تقاطع كلماتها مع (title + categoryHints + description). يختار أعلى main
  * ثمّ أعلى sub داخله ثمّ أعلى secondary داخله.
  */
 function classifyHeuristic({ tree, index }, bookMeta) {
-	const haystack = normalizeArabic(
-		[
-			bookMeta.title,
-			bookMeta.author,
-			bookMeta.description,
-			...(bookMeta.categoryHints || [])
-		].filter(Boolean).join(' ')
-	);
-	const tokens = new Set(haystack.split(' ').filter((t) => t.length >= 3));
+	const haystack = textHaystack(bookMeta);
+	const tokens = tokensOf(haystack);
 
 	function scoreOf(name) {
 		const n = normalizeArabic(name);
@@ -73,6 +215,9 @@ function classifyHeuristic({ tree, index }, bookMeta) {
 		mainId: bestMain.id,
 		subId: bestSub.id,
 		secondaryId: bestSec ? bestSec.id : null,
+		mainScore: bestMainScore,
+		subScore: bestSubScore,
+		secondaryScore: bestSecScore,
 		confidence: Math.min(0.5 + bestMainScore * 0.05 + bestSubScore * 0.05, 0.85),
 		reasoning: 'heuristic مطابقة محليّة',
 		method: 'heuristic'
@@ -209,31 +354,83 @@ export async function classifyAutonomous(sections, bookMeta) {
 	const treeIsEmpty = !sections.tree || sections.tree.length === 0;
 
 	if (treeIsEmpty) {
-		throw Object.assign(
-			new Error('لا توجد أقسام في قاعدة البيانات — لا يمكن إنشاء أقسام جديدة محلياً.'),
-			{ reason: 'empty_sections_tree', status: 412 }
-		);
-	}
-	const sug = classifyHeuristic(sections, bookMeta);
-	if (!sug) {
+		const subName = pickBestHint(bookMeta, ADVICE_EDUCATION_PATH.subName);
 		return {
-			kind: 'existing',
-			mainId: sections.tree[0].id,
-			subId: sections.tree[0].children[0]?.id || '',
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
 			secondaryId: null,
-			confidence: 0.1,
-			reasoning: 'لم تعطِ خوارزميّة المطابقة نتيجة — أوّل قسم رئيسي/فرعي.',
+			newMainName: hasAdviceEducationSignature(bookMeta)
+				? ADVICE_EDUCATION_PATH.mainName
+				: 'مكتبة نور',
+			newSubName: hasAdviceEducationSignature(bookMeta)
+				? ADVICE_EDUCATION_PATH.subName
+				: subName,
+			newSecondaryName: proposedSecondaryName(bookMeta),
+			confidence: 0.35,
+			reasoning: 'لا توجد أقسام مناسبة — إنشاء مسار كامل وفق الهيكل الثلاثي.',
 			method: 'heuristic'
 		};
 	}
-	let secId = sug.secondaryId ? String(sug.secondaryId) : null;
+
+	const adviceDecision = makeAdviceEducationDecision(sections, bookMeta);
+	if (adviceDecision) return adviceDecision;
+
+	const sug = classifyHeuristic(sections, bookMeta);
+	if (!sug || Number(sug.mainScore || 0) <= 0) {
+		const subName = pickBestHint(bookMeta, 'كتب عامة');
+		return {
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
+			secondaryId: null,
+			newMainName: 'مكتبة نور',
+			newSubName: subName,
+			newSecondaryName: proposedSecondaryName(bookMeta),
+			confidence: 0.3,
+			reasoning: 'لم يُعثَر على قسم رئيسي مناسب — إنشاء مسار كامل بدلاً من خلط التصنيفات.',
+			method: 'heuristic'
+		};
+	}
+
+	if (!sug.subId || Number(sug.subScore || 0) <= 0) {
+		return {
+			kind: 'create_sub',
+			mainId: String(sug.mainId),
+			subId: null,
+			secondaryId: null,
+			newSubName: pickBestHint(bookMeta, 'كتب عامة'),
+			newSecondaryName: proposedSecondaryName(bookMeta),
+			confidence: Math.min(0.45 + Number(sug.mainScore || 0) * 0.05, 0.75),
+			reasoning: 'وُجد قسم رئيسي مناسب، لكن لا يوجد قسم فرعي ملائم — إنشاء فرع جديد.',
+			method: 'heuristic'
+		};
+	}
+
+	let secId = sug.secondaryId && Number(sug.secondaryScore || 0) > 0
+		? String(sug.secondaryId)
+		: null;
+	const proposedSecName = proposedSecondaryName(bookMeta);
 	if (!secId) {
 		const autoSec = pickReuseSecondary(sections, String(sug.subId), bookMeta, {
-			proposedNewName: '',
-			minScore: 9
+			proposedNewName: proposedSecName,
+			minScore: 7
 		});
 		if (autoSec) secId = autoSec.id;
 	}
+	if (!secId) {
+		return {
+			kind: 'create_secondary',
+			mainId: String(sug.mainId),
+			subId: String(sug.subId),
+			secondaryId: null,
+			newSecondaryName: proposedSecName,
+			confidence: Math.min(0.5 + Number(sug.mainScore || 0) * 0.05 + Number(sug.subScore || 0) * 0.05, 0.82),
+			reasoning: 'وُجد قسم رئيسي وفرعي مناسبان، ولا يوجد قسم ثانوي دقيق — إنشاء قسم ثانوي قبل إضافة الكتاب.',
+			method: 'heuristic'
+		};
+	}
+
 	return {
 		kind: 'existing',
 		mainId: String(sug.mainId),

@@ -81,6 +81,13 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		const requireStealth = readBoolEnv('NOOR_REQUIRE_STEALTH', true);
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'تعذّر تحميل puppeteer-extra-plugin-stealth، وNOOR_REQUIRE_STEALTH=true — لن يعمل Noor Puppeteer بدون Stealth Mode.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {

@@ -69,7 +69,18 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+
+	const compact = n.replace(/\s+/g, '');
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		const blockedCompact = blocked.replace(/\s+/g, '');
+		if (!blockedCompact) continue;
+		if (compact.includes(blockedCompact) || blockedCompact.includes(compact)) return true;
+	}
+
+	// التهجئات الفاسدة لهذا القسم تأتي غالباً بصيغة "دروس ..." مع بقايا
+	// "ترخيص" أو السلسلة المكسورة "بتدكصهك". نمنعها كحماية إضافية.
+	return n.includes('دروس') && (n.includes('ترخيص') || n.includes('بتدكصهك') || n.includes('كصهك'));
 }
 
 async function readLevel(level) {
