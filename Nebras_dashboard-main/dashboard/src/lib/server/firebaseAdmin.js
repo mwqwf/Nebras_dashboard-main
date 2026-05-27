@@ -195,24 +195,31 @@ export async function sendTopicMessage({ topic, title, body, data = {} }) {
 		if (v === null || v === undefined) continue;
 		safeData[k] = typeof v === 'string' ? v : String(v);
 	}
+	// نضع العنوان والنصّ داخل `data` لأنّ التطبيق هو من يبني الإشعار المحلّيّ.
+	if (title !== undefined && title !== null) safeData.title = String(title);
+	if (body !== undefined && body !== null) safeData.body = String(body);
 
+	// 🔑 رسالة **data-only** (بلا كتلة `notification`): لا يعرضها نظام أندرويد
+	// تلقائياً في الخلفية؛ بل يستقبلها معالج الخلفية في التطبيق ويقرّر العرض
+	// حسب تفضيل المستخدم. هذا يجعل زرّ إيقاف الإشعارات يوقف التدفّق فعلاً —
+	// حتى في الخلفية — بدل الاعتماد على سريان إلغاء اشتراك الـ topic فقط.
+	// ⚠️ ملاحظة نشر: يجب أن يصاحب هذا التغييرَ إصدارُ التطبيق الذي يَعرض
+	// رسائل data-only؛ وإلّا فلن تُعرض إشعارات الخلفية على النسخ الأقدم.
 	/** @type {import('firebase-admin/messaging').Message} */
 	const message = {
 		topic,
-		notification: { title, body },
 		data: safeData,
 		android: {
-			priority: 'high',
-			notification: {
-				channelId: 'nebras_notifications',
-				clickAction: 'FLUTTER_NOTIFICATION_CLICK'
-			}
+			priority: 'high'
 		},
 		apns: {
+			headers: {
+				'apns-priority': '5',
+				'apns-push-type': 'background'
+			},
 			payload: {
 				aps: {
-					alert: { title, body },
-					sound: 'default'
+					'content-available': 1
 				}
 			}
 		}
