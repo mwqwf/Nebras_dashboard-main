@@ -30,6 +30,7 @@
  *   - shutdownBrowser() → Promise<void>      (تنظيف عند إيقاف الـ process)
  */
 
+import { existsSync } from 'node:fs';
 import { env } from '$env/dynamic/private';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
@@ -63,7 +64,8 @@ function readBoolEnv(name, fallback) {
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
  *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * محرك Noor يحتاج Stealth Mode لاجتياز Cloudflare؛ لذلك لا نسقط إلى
+ * puppeteer العادي إلا إذا فُعّل NOOR_ALLOW_PLAIN_PUPPETEER صراحةً.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,8 +83,13 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		if (!readBoolEnv('NOOR_ALLOW_PLAIN_PUPPETEER', false)) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'تعذّر تحميل puppeteer-extra أو stealth-plugin. ثبّت puppeteer-extra-plugin-stealth أو عطّل NOOR_USE_PUPPETEER.';
+			return null;
+		}
+		// وضع تطوير اختياري فقط: puppeteer العادي لا يحقق شرط Stealth Mode.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
@@ -97,6 +104,18 @@ async function loadPuppeteer() {
 			return null;
 		}
 	}
+}
+
+function readExecutablePath() {
+	const raw = String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim();
+	if (!raw) return undefined;
+	if (!existsSync(raw)) {
+		throw Object.assign(
+			new Error(`PUPPETEER_EXECUTABLE_PATH غير صالح أو غير موجود: ${raw}`),
+			{ reason: 'invalid_puppeteer_executable_path', status: 500 }
+		);
+	}
+	return raw;
 }
 
 /**
@@ -144,9 +163,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = readExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({
