@@ -106,6 +106,137 @@ function haystackForReuse(bookMeta) {
 	);
 }
 
+const SCIENTIFIC_ADVICE_ROUTE = Object.freeze({
+	mainName: 'الدعوة والتربية',
+	subName: 'التربية والتعليم',
+	secondaryName: 'النصائح والتوجيهات العلمية'
+});
+
+function hasAnyPhrase(haystack, phrases) {
+	for (const phrase of phrases) {
+		const n = normalizeArabic(phrase);
+		if (n && haystack.includes(n)) return true;
+	}
+	return false;
+}
+
+function isScientificAdviceEducationBook(bookMeta) {
+	const hay = haystackForReuse(bookMeta);
+	if (!hay) return false;
+
+	const hasAdvice = hasAnyPhrase(hay, [
+		'النصائح',
+		'نصائح',
+		'التوجيهات',
+		'توجيهات',
+		'وصايا'
+	]);
+	const hasScientificInstruction = hasAnyPhrase(hay, [
+		'التعليمات العلمية',
+		'تعليمات علمية',
+		'التوجيهات العلمية',
+		'التربية العلمية',
+		'التعليم العلمي'
+	]);
+
+	return (
+		(hasAdvice && hasScientificInstruction) ||
+		hasAnyPhrase(hay, [
+			'النصائح حول التعليمات العلمية',
+			'النصائح في التعليمات العلمية',
+			'النصائح والتوجيهات العلمية'
+		])
+	);
+}
+
+function findMainNodeByName(tree, name) {
+	const target = normalizeArabic(name);
+	return (tree || []).find((m) => normalizeArabic(m?.name) === target) || null;
+}
+
+function findSubNodeByName(mainNode, name) {
+	const target = normalizeArabic(name);
+	return (mainNode?.children || []).find((s) => normalizeArabic(s?.name) === target) || null;
+}
+
+function findSecondaryNodeByName(subNode, name) {
+	const target = normalizeArabic(name);
+	return (subNode?.children || []).find((s) => normalizeArabic(s?.name) === target) || null;
+}
+
+function buildScientificAdviceDecision(sections, bookMeta) {
+	if (!isScientificAdviceEducationBook(bookMeta)) return null;
+
+	const main = findMainNodeByName(sections.tree, SCIENTIFIC_ADVICE_ROUTE.mainName);
+	const common = {
+		confidence: 0.98,
+		reasoning:
+			'قاعدة موضوعية: النصائح/التوجيهات العلمية تُصنّف تحت الدعوة والتربية > التربية والتعليم.',
+		method: 'rule:scientific_advice_education'
+	};
+
+	if (!main) {
+		return {
+			kind: 'create_main',
+			mainId: null,
+			subId: null,
+			secondaryId: null,
+			newMainName: SCIENTIFIC_ADVICE_ROUTE.mainName,
+			newSubName: SCIENTIFIC_ADVICE_ROUTE.subName,
+			newSecondaryName: SCIENTIFIC_ADVICE_ROUTE.secondaryName,
+			...common
+		};
+	}
+
+	const sub = findSubNodeByName(main, SCIENTIFIC_ADVICE_ROUTE.subName);
+	if (!sub) {
+		return {
+			kind: 'create_sub',
+			mainId: String(main.id),
+			subId: null,
+			secondaryId: null,
+			newSubName: SCIENTIFIC_ADVICE_ROUTE.subName,
+			newSecondaryName: SCIENTIFIC_ADVICE_ROUTE.secondaryName,
+			...common
+		};
+	}
+
+	const exactSecondary = findSecondaryNodeByName(sub, SCIENTIFIC_ADVICE_ROUTE.secondaryName);
+	if (exactSecondary) {
+		return {
+			kind: 'existing',
+			mainId: String(main.id),
+			subId: String(sub.id),
+			secondaryId: String(exactSecondary.id),
+			...common
+		};
+	}
+
+	const reusable = pickReuseSecondary(sections, String(sub.id), bookMeta, {
+		proposedNewName: SCIENTIFIC_ADVICE_ROUTE.secondaryName,
+		minScore: 7
+	});
+	if (reusable) {
+		return {
+			kind: 'existing',
+			mainId: String(main.id),
+			subId: String(sub.id),
+			secondaryId: reusable.id,
+			...common,
+			reasoning: `${common.reasoning} أُعيد استخدام القسم الثانوي القريب: "${reusable.name}".`
+		};
+	}
+
+	return {
+		kind: 'create_secondary',
+		mainId: String(main.id),
+		subId: String(sub.id),
+		secondaryId: null,
+		newSecondaryName: SCIENTIFIC_ADVICE_ROUTE.secondaryName,
+		...common
+	};
+}
+
 function getSecondariesUnderSubInTree(tree, subId) {
 	for (const m of tree || []) {
 		for (const s of m.children || []) {
@@ -181,6 +312,34 @@ export async function classifyBookIntoHierarchy(sections, bookMeta) {
 		);
 	}
 
+	const ruleDecision = buildScientificAdviceDecision(sections, bookMeta);
+	if (ruleDecision) {
+		const validation =
+			ruleDecision.kind === 'existing'
+				? validateHierarchyPath(
+						{
+							mainId: ruleDecision.mainId,
+							subId: ruleDecision.subId,
+							secondaryId: ruleDecision.secondaryId || null
+						},
+						sections.index
+					)
+				: { valid: false, reason: 'requires_section_creation' };
+		return {
+			suggested: {
+				mainId: ruleDecision.mainId || '',
+				subId: ruleDecision.subId || '',
+				secondaryId: ruleDecision.secondaryId || null,
+				confidence: ruleDecision.confidence,
+				reasoning: ruleDecision.reasoning,
+				method: ruleDecision.method
+			},
+			alternatives: [],
+			validation,
+			autonomousDecision: ruleDecision
+		};
+	}
+
 	const sug = classifyHeuristic(sections, bookMeta);
 	const validation = sug
 		? validateHierarchyPath(
@@ -214,6 +373,10 @@ export async function classifyAutonomous(sections, bookMeta) {
 			{ reason: 'empty_sections_tree', status: 412 }
 		);
 	}
+
+	const ruleDecision = buildScientificAdviceDecision(sections, bookMeta);
+	if (ruleDecision) return ruleDecision;
+
 	const sug = classifyHeuristic(sections, bookMeta);
 	if (!sug) {
 		return {

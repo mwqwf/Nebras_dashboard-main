@@ -22,6 +22,8 @@
  *                                          true إن كانت الحزمة موجودة).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
+ *       NOOR_REQUIRE_STEALTH=true|false — افتراضياً true: لا نرجع إلى
+ *                                          puppeteer العادي إذا تعذّر stealth.
  *
  * الواجهة العامّة:
  *   - isPuppeteerEnabled() → boolean
@@ -81,8 +83,16 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		const requireStealth = readBoolEnv('NOOR_REQUIRE_STEALTH', true);
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'puppeteer-extra/stealth غير متاح — NOOR_REQUIRE_STEALTH=true يمنع التشغيل بدون Stealth Mode.';
+			return null;
+		}
+
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		// لكن أفضل من لا شيء أثناء التطوير إذا عُطّل شرط stealth صراحةً).
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
