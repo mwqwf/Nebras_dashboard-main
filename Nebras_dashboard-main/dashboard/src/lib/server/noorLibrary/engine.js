@@ -508,6 +508,42 @@ async function processBook({ url, bookId, sections }) {
 		}
 	}
 
+	// التزام صارم بالهيكل الثلاثي: لا نرفع كتاباً تحت main/sub فقط.
+	// إذا لم يجد المصنّف ثانوياً مناسباً، ننشئ ثانوياً محافظاً تحت الفرع النهائي.
+	if (subId && !secondaryId) {
+		const secondaryName =
+			String(
+				decision.newSecondaryName ||
+					(Array.isArray(meta.categoryHints) ? meta.categoryHints[0] : '') ||
+					meta.title ||
+					'كتب عامة'
+			)
+				.trim()
+				.slice(0, 80) || 'كتب عامة';
+		const created = await createSecondarySectionAdmin(subId, secondaryName);
+		secondaryId = String(created.id);
+		if (!created.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			const parentSub = sections.index.subsById[subId];
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName: parentSub?.name || '',
+				sectionId: created.id,
+				parentId: subId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSub?.name || subId}"`,
+				sectionId: created.id,
+				parentId: subId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
+	}
+
 	// إعادة قراءة الأقسام (لجلب أسماء الأقسام الجديدة).
 	const refreshed = await buildSectionsTree();
 	const main = refreshed.index.mainsById[mainId];
