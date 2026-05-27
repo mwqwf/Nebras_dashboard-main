@@ -19,7 +19,7 @@
  *     تنكسر بناءات serverless (Vercel) عند غيابهم.
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
- *                                          true إن كانت الحزمة موجودة).
+ *                                          false؛ فعّله فقط مع Chromium).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
  *
@@ -61,9 +61,8 @@ function readBoolEnv(name, fallback) {
 
 /**
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
- * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
- *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * null دون رمي خطأ. لا يوجد fallback إلى puppeteer العاديّ: محرّك نور
+ * يجب أن يعمل Stealth Mode أو يتوقف بتشخيص واضح.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
@@ -81,21 +80,10 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
-		try {
-			const mod = await import('puppeteer');
-			state.puppeteerModule = mod.default || mod;
-			state.puppeteerEnabled = true;
-			state.lastError =
-				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
-			return state.puppeteerModule;
-		} catch (errPlain) {
-			state.puppeteerEnabled = false;
-			state.lastError =
-				'لا puppeteer ولا puppeteer-extra مثبّتَيْن. شغّل: npm i -D puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
-			return null;
-		}
+		state.puppeteerEnabled = false;
+		state.lastError =
+			'Stealth Mode غير متاح: يلزم تثبيت puppeteer-extra و puppeteer-extra-plugin-stealth مع puppeteer.';
+		return null;
 	}
 }
 
