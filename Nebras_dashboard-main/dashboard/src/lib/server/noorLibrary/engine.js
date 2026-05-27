@@ -436,6 +436,29 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+		if (decision.newSecondaryName) {
+			const createdSecondary = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
+			secondaryId = String(createdSecondary.id);
+			if (!createdSecondary.alreadyExisted) {
+				createdSectionsIds.push(secondaryId);
+				sectionsCreatedDelta += 1;
+				await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+				await notifyFcmSectionCreated({
+					level: 'secondary',
+					name: createdSecondary.name,
+					parentName: createdSub.name,
+					sectionId: createdSecondary.id,
+					parentId: subId
+				});
+				await appendLog({
+					level: 'success',
+					message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSecondary.name}" تحت "${createdSub.name}"`,
+					sectionId: createdSecondary.id,
+					parentId: subId,
+					kind: 'secondary_section_created'
+				}).catch(() => {});
+			}
+		}
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
@@ -460,6 +483,29 @@ async function processBook({ url, bookId, sections }) {
 				parentId: mainId,
 				kind: 'sub_section_created'
 			}).catch(() => {});
+		}
+		if (decision.newSecondaryName) {
+			const createdSecondary = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
+			secondaryId = String(createdSecondary.id);
+			if (!createdSecondary.alreadyExisted) {
+				createdSectionsIds.push(secondaryId);
+				sectionsCreatedDelta += 1;
+				await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+				await notifyFcmSectionCreated({
+					level: 'secondary',
+					name: createdSecondary.name,
+					parentName: created.name,
+					sectionId: createdSecondary.id,
+					parentId: subId
+				});
+				await appendLog({
+					level: 'success',
+					message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSecondary.name}" تحت "${created.name}"`,
+					sectionId: createdSecondary.id,
+					parentId: subId,
+					kind: 'secondary_section_created'
+				}).catch(() => {});
+			}
 		}
 	} else if (decision.kind === 'create_secondary') {
 		subId = decision.subId;
@@ -508,14 +554,44 @@ async function processBook({ url, bookId, sections }) {
 		}
 	}
 
+	// القاعدة المطلوبة لمكتبة نور: لا يُسجَّل المحتوى تحت main/sub فقط.
+	// إن وصلنا إلى هنا بلا قسم ثانوي، ننشئ حاوية عامّة تحت الفرعي المختار.
+	if (!secondaryId && subId) {
+		const createdSecondary = await createSecondarySectionAdmin(
+			subId,
+			decision.newSecondaryName || 'مصنفات عامة'
+		);
+		secondaryId = String(createdSecondary.id);
+		if (!createdSecondary.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			const parentSub = sections.index.subsById[subId];
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: createdSecondary.name,
+				parentName: parentSub?.name || '',
+				sectionId: createdSecondary.id,
+				parentId: subId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSecondary.name}" تحت "${parentSub?.name || subId}"`,
+				sectionId: createdSecondary.id,
+				parentId: subId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
+		}
+	}
+
 	// إعادة قراءة الأقسام (لجلب أسماء الأقسام الجديدة).
 	const refreshed = await buildSectionsTree();
 	const main = refreshed.index.mainsById[mainId];
 	const sub = refreshed.index.subsById[subId];
 	const secondary = secondaryId ? refreshed.index.secondariesById[secondaryId] : null;
 
-	if (!main || !sub) {
-		throw Object.assign(new Error('main أو sub لم يُعثر عليه بعد التصنيف.'), {
+	if (!main || !sub || !secondary) {
+		throw Object.assign(new Error('main أو sub أو secondary لم يُعثر عليه بعد التصنيف.'), {
 			reason: 'hierarchy_resolution_failed',
 			status: 500
 		});
