@@ -57,6 +57,24 @@ function asStringArray(value) {
 }
 
 /**
+ * يبني عنواناً ذا معنى للعنصر. كثير من عناصر IA (خاصّة تلاوات/مقاطع مرقّمة)
+ * عنوانها مجرّد رقم مثل "001" أو "تتمة 3"، فيظهر في التطبيق اسماً عابثاً.
+ * عند اكتشاف عنوان فقير (رقم بحت أو قصير جداً) نُثريه بالألبوم ثمّ المؤلّف
+ * (المُنشد/المحاضر) فيصير مثل «الشيخ محمود الحصري - 001» بدل «001».
+ * إن لم يتوفّر بديل نُبقي العنوان كما هو (أفضل من لا شيء).
+ */
+function buildItemTitle(metadata, id) {
+	const title = firstString(metadata?.title) || '';
+	if (!title) return String(id);
+	const isPoor = /^\d{1,4}$/.test(title) || title.length < 2;
+	if (!isPoor) return title;
+	const album = firstString(metadata?.album);
+	const creator = firstString(metadata?.creator);
+	const context = album || creator;
+	return context ? `${context} - ${title}` : title;
+}
+
+/**
  * يبني رابط الـ thumbnail الذي يصلح كصورة غلاف.
  * IA يقدّم thumbnail خدمي ثابت: https://archive.org/services/img/{id}
  */
@@ -125,7 +143,7 @@ export async function previewItem(identifier, opts = {}) {
 	/** @type {ItemPreview} */
 	const preview = {
 		identifier: id,
-		title: firstString(metadata?.title) || id,
+		title: buildItemTitle(metadata, id),
 		author: firstString(metadata?.creator) || '',
 		description: firstString(metadata?.description) || '',
 		thumbnailUrl: buildItemThumbnail(id),
