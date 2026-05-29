@@ -107,6 +107,9 @@ export function notifyContentAdded(info) {
 		data: {
 			type: 'content_added',
 			contentType: info?.contentType || '',
+			// الاسم الحقيقيّ للمحتوى — يقرأه التطبيق ليعرض العنوان الصحيح
+			// بدل عنوان العرض العامّ عند فتح المحتوى من الإشعار.
+			contentTitle: idToString(info?.title),
 			contentId: idToString(info?.contentId),
 			mainSectionId: idToString(info?.mainSectionId),
 			subSectionId: idToString(info?.subSectionId),
@@ -131,6 +134,11 @@ export function notifyContentAdded(info) {
  * }} info
  */
 export function notifySectionCreated(info) {
+	// 🔕 الإشعارات يجب أن تتعلّق بالمحتوى فقط لا الأقسام: عُطِّل إرسال إشعار
+	// إنشاء القسم عمداً. إنشاء القسم نفسه (في الواجهة) يبقى يعمل — هذه الدالّة
+	// فقط لم تَعُد تُرسل أيّ إشعار. للتراجع مستقبلاً: اجعل القيمة true.
+	const NOTIFY_SECTION_CREATION = false;
+	if (!NOTIFY_SECTION_CREATION) return Promise.resolve({ ok: false, skipped: true });
 	const levelLabel = sectionLevelLabelAr(info?.level);
 	const name = (info?.name || '').trim();
 	const parent = (info?.parentName || '').trim();

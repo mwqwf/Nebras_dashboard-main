@@ -185,6 +185,9 @@ async function notifyFcmContentAdded(info) {
 				type: 'content_added',
 				source: 'hindawi_library_engine',
 				contentType: 'document',
+				// الاسم الحقيقيّ للمحتوى — يقرأه التطبيق ليعرض العنوان الصحيح
+				// بدل عنوان العرض العامّ ("محتوى جديد في نبراس") عند فتح المحتوى من الإشعار.
+				contentTitle: (info?.title || '').trim(),
 				contentId: idToString(info?.contentId),
 				mainSectionId: idToString(info?.mainSectionId),
 				subSectionId: idToString(info?.subSectionId),

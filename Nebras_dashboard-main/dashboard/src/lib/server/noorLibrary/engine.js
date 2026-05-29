@@ -268,6 +268,9 @@ async function notifyFcmContentAdded(info) {
 				type: 'content_added',
 				source: 'noor_library_engine',
 				contentType: info?.contentType || 'document',
+				// الاسم الحقيقيّ للمحتوى — يقرأه التطبيق ليعرض العنوان الصحيح
+				// بدل عنوان العرض العامّ ("محتوى جديد في نبراس") عند فتح المحتوى من الإشعار.
+				contentTitle: (info?.title || '').trim(),
 				contentId: idToString(info?.contentId),
 				mainSectionId: idToString(info?.mainSectionId),
 				subSectionId: idToString(info?.subSectionId),
@@ -289,6 +292,12 @@ async function notifyFcmContentAdded(info) {
 }
 
 async function notifyFcmSectionCreated(info) {
+	// 🔕 الإشعارات يجب أن تتعلّق بالمحتوى فقط لا الأقسام: عُطِّل إرسال إشعار
+	// إنشاء القسم عمداً. إنشاء الأقسام نفسه يبقى يعمل بالكامل (الاستدعاءات
+	// أدناه لم تُمسّ) — هذه الدالّة فقط لم تَعُد تُرسل أيّ إشعار.
+	// للتراجع مستقبلاً: اجعل القيمة true.
+	const NOTIFY_SECTION_CREATION = false;
+	if (!NOTIFY_SECTION_CREATION) return;
 	if (!isAdminConfigured()) return;
 	const levelLabel =
 		info?.level === 'main'

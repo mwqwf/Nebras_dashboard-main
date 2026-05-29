@@ -515,6 +515,9 @@ async function notifyFcmContentAdded(info) {
 				type: 'content_added',
 				source: 'nebras_dashboard',
 				contentType: info?.contentType || 'document',
+				// الاسم الحقيقيّ للمحتوى — يقرأه التطبيق ليعرض العنوان الصحيح
+				// بدل عنوان العرض العامّ ("محتوى جديد في نبراس") عند فتح المحتوى من الإشعار.
+				contentTitle: (info?.title || '').trim(),
 				contentId: idToString(info?.contentId),
 				mainSectionId: idToString(info?.mainSectionId),
 				subSectionId: idToString(info?.subSectionId),
