@@ -40,12 +40,52 @@ service cloud.firestore {
 
     // تحقّق إنشاء بلاغ من التطبيق — يُسمح لأيّ مستخدم (موقَّع أو ضيف)
     // بالإبلاغ، شرط وجود الحقول الأساسيّة وأن تكون الحالة 'pending'.
+    //
+    // قيود مكافحة الإساءة (anti-abuse):
+    //   • contentId غير فارغ وطوله ≤ 200 (يمنع كتابة قيم ضخمة).
+    //   • reasonCode من قائمة معروفة (يمنع spam بفئات وهميّة).
+    //   • note ≤ 2000 حرف (يمنع كتابة محتوى ضخم بحجّة "ملاحظة").
+    //   • الكتابة لا تتعدّى 20 حقلاً (يمنع تضخّم المستند).
+    //   • الحالة الابتدائيّة 'pending' فقط (لا يستطيع المُبلِّغ ضبط
+    //     status='dismissed' لتلويث الإحصاءات).
+    //   • إن كان المُبلِّغ موقَّعاً، يجب أن يطابق reporterUid هويّته
+    //     (يمنع انتحال هويّة الآخرين).
     function isValidContentReport() {
-      return request.resource.data.keys().hasAll(
-          ['contentId', 'reasonCode', 'status', 'createdAt'])
-        && request.resource.data.contentId is string
-        && request.resource.data.reasonCode is string
-        && request.resource.data.status == 'pending';
+      let validReasons = ['copyright', 'sexual', 'child_safety',
+                          'violence', 'terrorism', 'other'];
+      let d = request.resource.data;
+      return d.keys().hasAll(['contentId', 'reasonCode', 'status', 'createdAt'])
+        && d.keys().size() <= 20
+        && d.contentId is string
+        && d.contentId.size() > 0
+        && d.contentId.size() <= 200
+        && d.reasonCode is string
+        && d.reasonCode in validReasons
+        && d.status == 'pending'
+        && (!('note' in d) || (d.note is string && d.note.size() <= 2000))
+        && (
+          // ضيف: يجب أن يكون reporterUid فارغاً أو غير موجود.
+          request.auth == null
+          ? (!('reporterUid' in d) || d.reporterUid == '')
+          // موقَّع: يجب أن يطابق reporterUid هويّته الحقيقيّة.
+          : (!('reporterUid' in d) || d.reporterUid == request.auth.uid)
+        );
+    }
+
+    // تحقّق إنشاء علامة الإخفاء العالميّ — يكتبها التطبيق فور بلاغ
+    // حقوق نشر. doc ID = contentId (idempotent: لا تكاثر للعنصر نفسه).
+    function isValidTakedownPending() {
+      let validReasons = ['copyright', 'sexual', 'child_safety',
+                          'violence', 'terrorism', 'other'];
+      let d = request.resource.data;
+      return d.keys().hasAll(['contentId', 'reasonCode', 'createdAt'])
+        && d.keys().size() <= 10
+        && d.contentId is string
+        && d.contentId.size() > 0
+        && d.contentId.size() <= 200
+        && d.reasonCode is string
+        && d.reasonCode in validReasons
+        && (!('reporterUid' in d) || d.reporterUid is string);
     }
 
     // تحديث عدّادات المشاهدة من التطبيق — حقول محدودة فقط، بدون UID.
@@ -118,6 +158,20 @@ service cloud.firestore {
       allow read, update: if hasOwnerRole();
       allow delete: if hasOwnerRole()
         || (isSignedIn() && resource.data.reporterUid == request.auth.uid);
+    }
+
+    // ─── الإخفاء العالميّ المؤقّت للمحتوى عند بلاغ حقوق نشر ──────
+    // doc id = contentId. التطبيق يكتبها فور بلاغ copyright فيختفي العنصر
+    // عن جميع المستخدمين فوراً (يقرأها كلّ مستخدم via snapshot). المالك
+    // يحذفها عند الـ dismiss أو delete من واجهة الإشراف.
+    //   • create: أيّ مستخدم/ضيف، شرط الـ validation.
+    //   • read: عامّ (يقرأها التطبيق في كلّ جلسة).
+    //   • update: المالك فقط (لإضافة ملاحظات إن لزم).
+    //   • delete: المالك فقط.
+    match /content_takedown_pending/{contentId} {
+      allow read: if true;
+      allow create: if isValidTakedownPending();
+      allow update, delete: if hasOwnerRole();
     }
 
     // ─── deny-by-default ────────────────────────────────────────

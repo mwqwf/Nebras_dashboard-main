@@ -27,13 +27,26 @@ service firebase.storage {
       return isSignedIn() && (
         request.auth.token.role == 'owner' ||
         request.auth.token.role == 'supervisor' ||
-        request.auth.token.email == 'bdalmjydtbwn812@gmail.com'  // المالك الرسمي (احتياطي إن لم تُفعَّل Custom Claims)
+        // ⚠️ Fallback ضروري لتعرّف اللوحة على المالك إذا لم تنتشر Custom
+        // Claims بعد (مثلاً مستخدم سجّل دخول للمرّة الأولى قبل ترقية
+        // claim له، أو بعد إعادة ضبط Firebase). لا تحذف هذا الشرط بدون
+        // التأكّد من أنّ كلّ ID Token لمالك لوحة التحكّم يحوي
+        // `role == 'owner'` فعلاً.
+        request.auth.token.email == 'bdalmjydtbwn812@gmail.com'
       );
     }
 
     function isValidUpload() {
+      // قيد MIME صارم: فقط أنواع نعرضها فعلاً في التطبيق. كان
+      // `application/.*` يقبل application/x-msdownload (exe) وغيره من
+      // التهديدات؛ التضييق هنا يمنع رفع أيّ ملفّ تنفيذيّ أو غير معروف.
       return request.resource.size < 200 * 1024 * 1024
-        && request.resource.contentType.matches('(image|video|audio|application)/.*');
+        && request.resource.contentType.matches(
+          'image/(jpeg|jpg|png|webp|gif)'
+          + '|video/(mp4|webm|x-matroska|quicktime)'
+          + '|audio/(mpeg|mp4|aac|ogg|wav|x-m4a|x-wav)'
+          + '|application/(pdf|epub\\+zip|zip)'
+        );
     }
 
     // محتوى لوحة التحكّم (الملفّات الفعلية + الـ thumbnails)

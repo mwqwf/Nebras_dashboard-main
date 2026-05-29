@@ -20,6 +20,7 @@ import {
 	NEBRAS_FS_CONTENT_FILES,
 	NEBRAS_FS_CONTENT_YOUTUBE
 } from '$lib/firebase/nebrasUnifiedPaths.js';
+import { writeAuditEntry } from '$lib/server/auditLog.js';
 
 /**
  * @param {string} contentId
@@ -33,14 +34,29 @@ export async function deleteContentEverywhere(contentId, contentType = '') {
 
 	if (isYouTube) {
 		await fs.collection(NEBRAS_FS_CONTENT_YOUTUBE).doc(id).delete().catch(() => {});
+		await writeAuditEntry({
+			action: 'delete',
+			provider: 'youtube_legacy',
+			contentId: id,
+			contentType: 'youtube',
+			result: 'ok',
+			reason: 'takedown_cleanup'
+		});
 		return;
 	}
 
 	// نقرأ storagePath قبل الحذف لإزالة الملفّ الفعليّ.
 	let storagePath = '';
+	let providerSnap = '';
+	let licenseStatusSnap = '';
 	try {
 		const snap = await fs.collection(NEBRAS_FS_CONTENT_FILES).doc(id).get();
-		if (snap.exists) storagePath = String(snap.data()?.storagePath || '');
+		if (snap.exists) {
+			const d = snap.data() || {};
+			storagePath = String(d.storagePath || '');
+			providerSnap = String(d.__provider || d.__source_provider || '');
+			licenseStatusSnap = String(d.__license_status || '');
+		}
 	} catch {
 		/* ignore */
 	}
@@ -62,4 +78,16 @@ export async function deleteContentEverywhere(contentId, contentType = '') {
 			console.warn('[takedown] storage delete failed:', err?.message || String(err));
 		}
 	}
+
+	// سجلّ التدقيق: نُثبت أنّ المحتوى حُذف فعلاً بعد بلاغ/تدقيق/DMCA.
+	await writeAuditEntry({
+		action: 'delete',
+		provider: providerSnap || 'unknown',
+		contentId: id,
+		contentType: contentType || 'document',
+		licenseStatus: licenseStatusSnap,
+		result: 'ok',
+		reason: 'takedown',
+		meta: { storagePath }
+	});
 }

@@ -188,7 +188,10 @@ service firebase.storage {
       return isSignedIn() && (
         request.auth.token.role == 'owner' ||
         request.auth.token.role == 'supervisor' ||
-        request.auth.token.email == 'bdalmjydtbwn812@gmail.com'  // المالك الرسمي (احتياطي)
+        // ⚠️ Fallback ضروري لتعرّف اللوحة على المالك إذا لم تنتشر Custom
+        // Claims بعد. ضع هنا بريد المالك الفعليّ من القاعدة التشغيليّة
+        // (يُقرَأ من `storage.rules` التشغيليّ — لا تطبع البريد علناً).
+        request.auth.token.email == '<OWNER_EMAIL_PLACEHOLDER>'
       );
     }
 

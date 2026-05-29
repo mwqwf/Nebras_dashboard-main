@@ -20,6 +20,9 @@ import { getNebrasFirestoreAdmin, isAdminConfigured } from '$lib/server/firebase
 import { deleteContentEverywhere } from '$lib/server/contentTakedown.js';
 
 const REPORTS = 'content_reports';
+// مجموعة الإخفاء العالميّ المؤقّت: يكتب فيها التطبيق فور بلاغ حقوق نشر،
+// ويحذفها هذا الـ endpoint عند مراجعة المالك (delete أو dismiss).
+const TAKEDOWN_PENDING = 'content_takedown_pending';
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function GET(event) {
@@ -79,10 +82,17 @@ export async function POST(event) {
 	const fs = getNebrasFirestoreAdmin();
 
 	if (action === 'dismiss') {
+		const contentId = String(body?.contentId || '').trim();
 		await fs.collection(REPORTS).doc(reportId).set(
 			{ status: 'dismissed', resolvedAt: FieldValue.serverTimestamp() },
 			{ merge: true }
 		);
+		// إزالة علامة الإخفاء العالميّ ⇒ المحتوى يظهر للمستخدمين من جديد.
+		// (نُحاول الحذف بصمت: المستند قد لا يكون موجوداً إن كان البلاغ
+		// لغير حقوق نشر، أو كان مكرّراً قد عُولج قبلاً.)
+		if (contentId) {
+			await fs.collection(TAKEDOWN_PENDING).doc(contentId).delete().catch(() => {});
+		}
 		return json({ ok: true, action: 'dismiss', reportId });
 	}
 
@@ -99,6 +109,10 @@ export async function POST(event) {
 			{ status: 'deleted', resolvedAt: FieldValue.serverTimestamp() },
 			{ merge: true }
 		);
+
+		// 3) إزالة علامة الإخفاء العالميّ — لم تَعُد لازمة لأنّ المحتوى نفسه
+		//    حُذف من كلّ المواضع.
+		await fs.collection(TAKEDOWN_PENDING).doc(contentId).delete().catch(() => {});
 
 		return json({ ok: true, action: 'delete', reportId, contentId });
 	}

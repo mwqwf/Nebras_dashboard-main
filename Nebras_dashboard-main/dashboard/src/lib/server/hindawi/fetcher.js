@@ -111,6 +111,67 @@ function extractAuthor(html) {
 	return m ? decodeHtmlEntities(m[1]).trim() : '';
 }
 
+/**
+ * يستخرج معلومات ترخيص الكتاب من صفحة هنداوي. هنداوي تنشر كلّ كتبها تحت
+ * Creative Commons، لكنّ تحديد المتغيِّر (CC-BY / CC-BY-SA / CC-BY-NC-ND…)
+ * يفيد للإسناد الدقيق والاحتفاظ بإثبات لكلّ كتاب على حدة (defense-in-depth
+ * إذا نُشر يوماً كتاب بدون CC).
+ *
+ * يعيد: { matched, name, url, confidence }
+ *   • confidence='high' لو وجدنا رابط CC صريحاً في الصفحة.
+ *   • confidence='medium' لو وجدنا نصّاً يذكر "creative commons" بلا رابط.
+ *   • confidence='low' fallback لسياسة الناشر العامّة.
+ *
+ * إذا وجدنا رخصة **غير** CC صراحةً (مثل "all rights reserved") نُعيد
+ * matched='rejected' فيتمّ تجاهل الكتاب.
+ */
+function extractLicenseInfo(html) {
+	const lower = String(html || '').toLowerCase();
+
+	// 1) رابط Creative Commons صريح في الصفحة أو الـ meta tags.
+	const ccLink = html.match(
+		/https?:\/\/creativecommons\.org\/(licenses\/[a-z\-]+\/[0-9.]+|publicdomain\/[a-z]+\/[0-9.]+)\/?/i
+	);
+	if (ccLink) {
+		const url = ccLink[0];
+		// استخرج المتغيّر من المسار: licenses/by-sa/4.0 → CC BY-SA 4.0
+		const m = url.match(/licenses\/([a-z\-]+)\/([0-9.]+)/i)
+			|| url.match(/publicdomain\/([a-z]+)\/([0-9.]+)/i);
+		const name = m
+			? `CC ${m[1].toUpperCase().replace(/-/g, '-')} ${m[2]}`
+			: 'Creative Commons';
+		return { matched: 'verified_open_license', name, url, confidence: 'high' };
+	}
+
+	// 2) رفض صريح لو ظهرت "all rights reserved" (نادر لكن دفاعيّ).
+	if (/all rights reserved|كل الحقوق محفوظة/i.test(lower)) {
+		return {
+			matched: 'rejected',
+			name: 'all_rights_reserved',
+			url: '',
+			confidence: 'high'
+		};
+	}
+
+	// 3) نصّ يذكر "creative commons" بلا رابط مباشر.
+	if (/creative commons|المشاع الإبداعي/i.test(lower)) {
+		return {
+			matched: 'verified_open_license',
+			name: 'Creative Commons (variant unspecified)',
+			url: 'https://creativecommons.org/',
+			confidence: 'medium'
+		};
+	}
+
+	// 4) Fallback لسياسة الناشر (هنداوي = CC).
+	return {
+		matched: 'verified_open_license',
+		name: 'CC (hindawi publisher policy)',
+		url: 'https://www.hindawi.org/',
+		confidence: 'low'
+	};
+}
+
 function extractCategoryHints(html) {
 	const hints = [];
 	const kw = extractMeta(html, 'keywords');
@@ -181,6 +242,16 @@ export async function fetchBookMetadata(pageUrl) {
 		throw makeError('تعذّر استخراج عنوان الكتاب من صفحة هنداوي.', 'no_title', 422);
 	}
 
+	// فحص فعليّ لترخيص الكتاب من صفحة هنداوي نفسها (defense-in-depth).
+	const licenseInfo = extractLicenseInfo(html);
+	if (licenseInfo.matched === 'rejected') {
+		throw makeError(
+			`الكتاب يحمل ترخيصاً غير مفتوح (${licenseInfo.name}).`,
+			'license_rejected',
+			451
+		);
+	}
+
 	return {
 		title,
 		description: extractMeta(html, 'og:description') || extractMeta(html, 'description') || '',
@@ -190,7 +261,14 @@ export async function fetchBookMetadata(pageUrl) {
 		// PDF حصراً (توافق قارئ التطبيق).
 		fileUrl: parsed.pdfUrl,
 		fileType: 'application/pdf',
-		license: { matched: 'creative_commons', reason: 'hindawi_trusted_publisher', tier: 'verified' },
+		license: {
+			matched: licenseInfo.matched,
+			name: licenseInfo.name,
+			url: licenseInfo.url,
+			confidence: licenseInfo.confidence,
+			reason: 'hindawi_trusted_publisher',
+			tier: 'verified'
+		},
 		source: {
 			url: parsed.canonicalUrl,
 			finalUrl,
