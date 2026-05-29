@@ -6,9 +6,10 @@ name: Library Engines Auto-Tick (Noor + Hindawi)
 # Stagger: نستعمل دقائق مزاحة (5,15,25...) كي لا تتداخل مع ia-cron
 # (الذي يعمل على 0,10,20...) فلا نضرب الخادم بثلاثة ticks في اللحظة نفسها.
 #
-# Secrets (كلها اختياريّة):
-#   • VERCEL_URL   — قاعدة عنوان النشر (افتراضي nebras-dashboard-main.vercel.app)
-#   • CRON_SECRET  — إن ضُبط في الخادم، يجب أن يطابقه
+# Secrets في GitHub:
+#   • VERCEL_URL  (اختياري) — قاعدة عنوان النشر (افتراضي nebras-dashboard-main.vercel.app)
+#   • CRON_SECRET (مطلوب)   — يجب أن يطابق Vercel env. الـ endpoint صار
+#     fail-closed: بلا هذا السرّ يردّ 401 ولا يعمل الـ cron.
 
 on:
   schedule:
@@ -45,6 +46,7 @@ jobs:
           if [ -n "$CRON_SECRET" ]; then
             AUTH_HEADER="Authorization: Bearer $CRON_SECRET"
           else
+            echo "⚠ CRON_SECRET غير مضبوط في GitHub secrets — الـ endpoints صارت fail-closed وسترّد 401. اضبطه ليطابق Vercel env."
             AUTH_HEADER="X-No-Auth: 1"
           fi
 

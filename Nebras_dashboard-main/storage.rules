@@ -23,16 +23,16 @@ service firebase.storage {
       return request.auth != null;
     }
 
+    // الصلاحية تعتمد حصراً على Custom Claim `role` الذي يضبطه الخادم في
+    // dashboardClaimsSync.js انطلاقاً من `dashboard_users/{uid}.role` في RTDB.
+    // أُزيل fallback البريد الصلب لتجنّب bypass دائم لو عُرف البريد لأيّ سبب
+    // (تسريب، حذف الحساب، انتحال هوية بعد إعادة الضبط). الشرط: لكلّ مالك في
+    // RTDB يجب أن يكون لديه `role: 'owner'` لينتشر في ID Token. إن كان حسابك
+    // جديداً، استدعِ `firebase/auth.getIdToken(true)` بعد الترقية لتحديث التوكن.
     function hasOwnerOrSupervisor() {
       return isSignedIn() && (
         request.auth.token.role == 'owner' ||
-        request.auth.token.role == 'supervisor' ||
-        // ⚠️ Fallback ضروري لتعرّف اللوحة على المالك إذا لم تنتشر Custom
-        // Claims بعد (مثلاً مستخدم سجّل دخول للمرّة الأولى قبل ترقية
-        // claim له، أو بعد إعادة ضبط Firebase). لا تحذف هذا الشرط بدون
-        // التأكّد من أنّ كلّ ID Token لمالك لوحة التحكّم يحوي
-        // `role == 'owner'` فعلاً.
-        request.auth.token.email == 'bdalmjydtbwn812@gmail.com'
+        request.auth.token.role == 'supervisor'
       );
     }
 

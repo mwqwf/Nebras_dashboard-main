@@ -115,21 +115,19 @@ function matchesAllowedLicense(text) {
 }
 
 /**
- * مجموعات IA معروفة بمحتوى عامّ آمن للنشر (allowlist تشغيلي).
- * مسمّيات IA الفعليّة — تحقّقنا منها بـ Scrape API. القائمة القديمة كانت
- * تحوي مسمّيات وهميّة (community_texts/opensource_arabic) لا تُعيد نتائج.
+ * 🔒 مجموعات الملكية العامّة المنسَّقة فقط (Public-Domain allowlist).
+ * هذه قوائم مغلقة لا يرفع إليها عامّة الناس عشوائياً، فعضويّتها دليل ملكية
+ * عامّة كافٍ — تُمنح وحدها تساهل "غياب الترخيص". أُزيلت المجموعات المجتمعيّة
+ * مفتوحة الرفع (booksbylanguage_arabic, folkscanomy_*, audio_islamic,
+ * opensource_*) لأنّها قد تحوي محتوى محميّاً بحقوق طبع؛ المحتوى منها يُقبَل فقط بترخيص
+ * PD/CC صريح. هذا fallback يُستعمل حين لا يُمرّر المُحرّك قائمة (نادر) —
+ * المصدر المعتمد هو PD_TRUSTED_COLLECTIONS في engine.js.
  */
 export const DEFAULT_TRUSTED_COLLECTIONS = Object.freeze([
-	'booksbylanguage_arabic',
-	'booksbylanguage',
-	'folkscanomy_religion',
-	'folkscanomy_religion_quran',
-	'folkscanomy',
-	'audio_islamic',
-	'audio_religion',
-	'opensource_movies',
-	'opensource_audio',
-	'opensource'
+	'gutenberg',
+	'librivoxaudio',
+	'librivox',
+	'prelinger'
 ]);
 
 /**

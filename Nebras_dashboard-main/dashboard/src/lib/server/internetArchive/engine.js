@@ -84,62 +84,58 @@ const LOG_MAX_ENTRIES = 60;
  * لرؤية محتوى في التطبيق فور التشغيل.
  */
 /**
- * البذور الافتراضيّة — مسمّيات المجموعات مأخوذة من **استكشاف فعلي لـ IA Scrape API**.
+ * البذور الافتراضيّة — مسمّيات المجموعات مأخوذة من استكشاف فعلي لـ IA Scrape API.
  *
- * المجموعات القديمة الخاطئة (community_texts, opensource_arabic, opensource_audio,
- * islamicliterature) كانت تُرجع 0 نتيجة. المسمّيات الحقيقيّة المُفهرسة:
+ * توجّه «معرفة عامّة» متعدّد اللغات (ar/en/fr): علوم، تاريخ، أدب، فلسفة، فنون،
+ * لغات، فكر، تربية، جغرافيا، اقتصاد، نفس، اجتماع. أيّ موضوع ديني/فلسفي يأتي
+ * كجزء من المعرفة الإنسانيّة لا كمحور حصريّ.
  *
- *   كتب عربيّة/إسلاميّة: booksbylanguage_arabic, folkscanomy_religion,
- *                        folkscanomy_religion_quran, folkscanomy
- *   صوت إسلامي:        audio_islamic, audio_religion
- *   فيديو:             opensource_movies (موجود لكن قليل المحتوى الديني)
+ * المجموعات الموثوقة (التي تمرّ بلا ترخيص صريح) محصورة في قوائم الملكية العامّة
+ * المنسَّقة فقط: gutenberg, librivoxaudio/librivox, prelinger. باقي المجموعات
+ * (booksbylanguage_arabic, folkscanomy, opensource_audio, audio_religion) لا
+ * تمرّ إلّا لعناصر تحمل ترخيص PD/CC صريحاً — حماية لحقوق الملكية ولامتثال Google Play.
  *
- * استعمال الـ q الحرّ + mediatype + language يكفي بدون قيد collection صارم —
- * لأنّ الـ q الحرّ يضيّق النطاق دلالياً، و mediatype يضمن نوع الملفّ.
+ * المسمّيات أدناه مكتشفة عمليّاً (community_texts/opensource_arabic/islamicliterature
+ * كانت أسماء وهميّة تُرجع 0 نتيجة). استعمال q الحرّ + mediatype + language يضيّق
+ * النطاق دلاليّاً، وفلتر الترخيص هو الحارس النهائيّ لحقوق النشر.
  */
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║  بذور المحرّك — توجّه «معرفة عامّة» (لا منصّة دينيّة/طائفيّة).         ║
+// ║  المواضيع: علوم، تاريخ، أدب، فلسفة، فنون، لغات، تربية، فكر،           ║
+// ║  جغرافيا، اقتصاد، نفس، اجتماع. أيّ محتوى ديني أو فلسفي يأتي كجزء      ║
+// ║  من المعرفة الإنسانيّة العامّة، لا كمحور تحريريّ.                       ║
+// ║                                                                  ║
+// ║  ⛔ أُزيلت البذور الدينيّة الحصريّة (arabic_islamic_books,            ║
+// ║     arabic_audio_islamic, islamic_video_opensource): كانت تُضيّق      ║
+// ║     التموضع لمنصّة دينيّة، كما أنّ مجموعاتها (community uploads)       ║
+// ║     لا تمرّ بوّابة PD-only الجديدة بلا ترخيص صريح فعلاً.               ║
+// ║                                                                  ║
+// ║  البذور العربيّة العامّة تستهدف مجموعات مجتمعيّة لكن لا يمرّ منها       ║
+// ║  إلّا ما حمل ترخيصاً صريحاً (PD/CC) — فلتر الترخيص الجديد يضمن ذلك.    ║
+// ║  بذور Gutenberg/LibriVox/Prelinger تستهدف قوائم ملكية عامّة          ║
+// ║  منسَّقة فتمرّ بكثافة عبر التساهل (PD_TRUSTED_COLLECTIONS).            ║
+// ╚══════════════════════════════════════════════════════════════════╝
 export const DEFAULT_SEEDS = Object.freeze([
 	{
-		id: 'arabic_islamic_books',
-		label: 'كتب عربيّة إسلاميّة',
-		q: '(islam OR إسلام OR قرآن OR حديث OR فقه OR تفسير OR سيرة OR عقيدة)',
-		languages: ['Arabic', 'ara'],
-		nebrasTypes: ['document'],
-		collections: ['booksbylanguage_arabic', 'folkscanomy_religion', 'folkscanomy_religion_quran']
-	},
-	{
-		id: 'arabic_audio_islamic',
-		label: 'صوتيّات إسلاميّة عربيّة',
-		q: '(قرآن OR تلاوة OR محاضرة OR درس OR خطبة OR تفسير)',
-		languages: ['Arabic', 'ara'],
-		nebrasTypes: ['audio'],
-		collections: ['audio_islamic', 'audio_religion']
-	},
-	{
-		id: 'islamic_video_opensource',
-		label: 'فيديو إسلامي مفتوح المصدر',
-		// عربيّ دينيّ فقط — إزالة English ومصطلحات عامّة كانت تجلب أفلاماً/كرتوناً
-		// غير متعلّقة ("لا يهلوس ويجلب عشوائياً").
-		q: '(محاضرة OR خطبة OR درس OR تلاوة OR إسلامي OR قرآن OR سيرة OR تفسير)',
-		languages: ['Arabic', 'ara'],
-		nebrasTypes: ['video'],
-		collections: ['opensource_movies']
-	},
-	// ── 📚 بذور معرفيّة عامّة (نبراس منصّة معرفيّة عامّة لا دينيّة فقط) ──
-	// كلّها مجموعات ملكية عامّة / مفتوحة معروفة؛ فلتر الترخيص يتحقّق من كلّ
-	// عنصر على حدة فلا يدخل محتوى محميّ. تُوسّع الكتالوج إلى العلوم والتاريخ
-	// والأدب والفلسفة والفنون بثلاث لغات يدعمها التطبيق (ar/en/fr).
-	{
-		id: 'arabic_general_knowledge',
-		label: 'معرفة عامّة عربيّة',
-		q: '(علوم OR تاريخ OR أدب OR فلسفة OR جغرافيا OR رياضيات OR فيزياء OR كيمياء OR طب OR فلك OR فنون OR لغة OR شعر OR رواية OR سيرة OR اقتصاد OR قانون OR نفس OR اجتماع)',
+		id: 'arabic_general_books',
+		label: 'كتب عربيّة معرفيّة عامّة',
+		q: '(علوم OR تاريخ OR أدب OR فلسفة OR جغرافيا OR رياضيات OR فيزياء OR كيمياء OR طب OR فلك OR فنون OR لغة OR شعر OR رواية OR سيرة OR اقتصاد OR قانون OR نفس OR اجتماع OR ثقافة OR تربية OR فكر OR حضارة)',
 		languages: ['Arabic', 'ara'],
 		nebrasTypes: ['document'],
 		collections: ['booksbylanguage_arabic', 'folkscanomy']
 	},
 	{
+		id: 'arabic_general_audio',
+		label: 'صوتيّات عربيّة معرفيّة عامّة',
+		q: '(محاضرة OR درس OR ندوة OR ثقافة OR علم OR تاريخ OR أدب OR فلسفة OR شعر OR تربية OR فكر)',
+		languages: ['Arabic', 'ara'],
+		nebrasTypes: ['audio'],
+		collections: ['opensource_audio', 'audio_religion']
+	},
+	{
 		id: 'gutenberg_classics',
 		label: 'كلاسيكيّات المعرفة (Project Gutenberg — ملكية عامّة)',
-		q: '(science OR history OR literature OR philosophy OR mathematics OR geography OR biography OR art OR economics OR psychology)',
+		q: '(science OR history OR literature OR philosophy OR mathematics OR geography OR biography OR art OR economics OR psychology OR sociology OR education OR culture)',
 		languages: ['English', 'eng', 'French', 'fre', 'fra', 'Arabic', 'ara'],
 		nebrasTypes: ['document'],
 		collections: ['gutenberg']
@@ -147,7 +143,7 @@ export const DEFAULT_SEEDS = Object.freeze([
 	{
 		id: 'librivox_public_audiobooks',
 		label: 'كتب صوتيّة (LibriVox — ملكية عامّة)',
-		q: '(literature OR history OR science OR philosophy OR poetry)',
+		q: '(literature OR history OR science OR philosophy OR poetry OR biography OR education)',
 		languages: ['English', 'eng', 'French', 'fre', 'fra', 'Arabic', 'ara'],
 		nebrasTypes: ['audio'],
 		collections: ['librivoxaudio', 'librivox']
@@ -155,7 +151,7 @@ export const DEFAULT_SEEDS = Object.freeze([
 	{
 		id: 'prelinger_public_films',
 		label: 'أفلام تعليميّة (Prelinger — ملكية عامّة)',
-		q: '(educational OR documentary OR science OR history OR geography)',
+		q: '(educational OR documentary OR science OR history OR geography OR culture OR art)',
 		languages: ['English', 'eng'],
 		nebrasTypes: ['video'],
 		collections: ['prelinger']
@@ -165,43 +161,58 @@ export const DEFAULT_SEEDS = Object.freeze([
 /**
  * عبارات بحث دوّارة — تُغذّي فهرس Firestore بعناوين يبحث عنها المستخدمون في التطبيق
  * (التطبيق يقرأ Firestore فقط؛ الجلب من IA يحدث هنا خلفياً).
+ *
+ * توجّه «معرفة عامّة» (لا منصّة دينيّة): علوم، تاريخ، أدب، فلسفة، فنون، لغات،
+ * فكر، تربية، جغرافيا، اقتصاد، نفس، اجتماع — بالعربيّة والإنجليزيّة والفرنسيّة.
+ * يقابل توجّه DEFAULT_SEEDS؛ كلّ نتيجة تمرّ بوّابة الترخيص PD-only فلا يدخل
+ * إلّا محتوى مرخّص صريحاً أو من قوائم ملكية عامّة منسَّقة.
  */
 export const SEARCH_QUERY_ROTATION = Object.freeze([
-	'تفسير القرآن',
-	'سيرة النبي',
-	'الفقه الإسلامي',
-	'حديث نبوي',
-	'العقيدة الإسلامية',
-	'تربية إسلامية',
+	// ── علوم وتاريخ ─────────────────────────────
+	'تاريخ العالم',
+	'تاريخ الحضارات',
+	'تاريخ العرب',
+	'الحضارة الإسلامية',
+	'علم الفلك',
+	'الفيزياء',
+	'الكيمياء',
+	'علم الأحياء',
+	'الرياضيات',
+	'الجغرافيا',
+	// ── أدب وشعر ─────────────────────────────
+	'الأدب العربي',
+	'الشعر العربي',
+	'الرواية العربية',
+	'النقد الأدبي',
+	'الأدب العالمي',
+	// ── لغة وثقافة ───────────────────────────
 	'اللغة العربية',
-	'تاريخ إسلامي',
-	'ابن كثير',
-	'النووي',
-	'ابن تيمية',
-	'الغزالي',
-	'ابن القيم',
-	'محمد بن عبد الوهاب',
-	'كتاب التوحيد',
-	'رياض الصالحين',
-	'صحيح البخاري',
-	'صحيح مسلم',
-	'تفسير ابن كثير',
-	'الأذكار',
-	'فقه السنة',
-	'السيرة النبوية',
-	'علوم القرآن',
-	'أصول الفقه',
-	'الحديث الشريف',
-	'الزهد',
-	'الرقائق',
-	'الفتاوى',
-	'المنهاج',
-	'شرح العقيدة',
-	'التفسير',
-	'القرآن الكريم',
-	'محاضرة إسلامية',
-	'درس ديني',
-	'خطبة جمعة'
+	'فقه اللغة',
+	'النحو العربي',
+	'الثقافة العامة',
+	'علم اللغة',
+	// ── فلسفة وفكر ──────────────────────────
+	'الفلسفة',
+	'الفلسفة اليونانية',
+	'الفلسفة الإسلامية',
+	'الفكر العربي',
+	'علم النفس',
+	'علم الاجتماع',
+	'الاقتصاد',
+	// ── تربية وتعليم ────────────────────────
+	'التربية',
+	'علم التربية',
+	'تعليم اللغة',
+	// ── فنون وسير ───────────────────────────
+	'الفنون الإسلامية',
+	'تاريخ الفن',
+	'سير الأعلام',
+	// ── إنجليزي عام ────────────────────────
+	'world history',
+	'classical literature',
+	'natural sciences',
+	'philosophy',
+	'mathematics'
 ]);
 
 /**
@@ -210,16 +221,41 @@ export const SEARCH_QUERY_ROTATION = Object.freeze([
  * يضمن المحرّك أنّ لديه دائماً ما يجلبه.
  */
 /**
+ * 🔒 بوّابة الملكية العامّة (Public-Domain allowlist) — حارس حقوق النشر.
+ *
+ * هذه **وحدها** المجموعات التي نمنحها تساهل "غياب الترخيص"
+ * (allowMissingLicense): قوائم منسَّقة (curated) مغلقة لا يرفع إليها عامّة
+ * الناس عشوائياً، فعضويّة العنصر فيها دليل ملكية عامّة كافٍ بذاته:
+ *   • gutenberg            — Project Gutenberg (نصوص ملكية عامّة مُدقّقة)
+ *   • librivoxaudio/librivox — تسجيلات صوتيّة لنصوص ملكية عامّة
+ *   • prelinger            — أفلام Prelinger التعليميّة (ملكية عامّة)
+ *
+ * ⛔ أُزيلت عمداً المجموعات المجتمعيّة مفتوحة الرفع
+ * (booksbylanguage_arabic / folkscanomy* / audio_islamic / opensource*):
+ * أيّ شخص يرفع إليها، فقد تحوي محتوى محميّاً بحقوق طبع. المحتوى منها
+ * يُقبَل **فقط** إن حمل ترخيص PD/CC صريحاً (المسار المبكّر في
+ * licenseFilter.js)، وإلّا يُرفَض. هذا يغلق أخطر ثغرة امتثال لـ Google Play.
+ *
+ * ملاحظة: readConfig يقصر trustedCollections على هذه القائمة دائماً (تقاطع)،
+ * فحتى لو أعاد إعداد RTDB قديم حقن مجموعة مجتمعيّة، لا تمرّ.
+ */
+const PD_TRUSTED_COLLECTIONS = Object.freeze([
+	'gutenberg',
+	'librivoxaudio',
+	'librivox',
+	'prelinger'
+]);
+
+/**
  * إعدادات الإنتاج — مضبوطة للعمل على GitHub Action (60s timeout) + Vercel Pro/Hobby:
  *  - batchSize=8  → حتى 8 عناصر ناجحة لكل tick (مُسرَّع، مع تزامن داخليّ).
  *  - scrapeCount=300 → نطاق أوسع للمرشّحين قبل تطبيق الفلاتر.
  *  - tickIntervalMs=6000 → دورات أكثف للحلقة المحليّة (الخادم طويل الأمد).
- *  - allowMissingLicenseInTrustedCollections=true: نثق بالمجموعات المنسَّقة
- *    (booksbylanguage_arabic/folkscanomy/audio_islamic/opensource...) كمصدر
- *    آمن عند غياب حقل الترخيص الصريح (IA لا يفهرسه لمعظم العناصر العربيّة).
- *    تبقى COPYRIGHT_DENY_PATTERNS شبكة أمان: أيّ عنصر يُصرّح بحقوق محفوظة
- *    (All Rights Reserved / copyrighted / NC / ND) يُرفض فوراً.
- *  - trustedCollections موسَّعة لتشمل المجموعات الإسلاميّة/العربيّة الرئيسيّة.
+ *  - allowMissingLicenseInTrustedCollections=true: التساهل بغياب الترخيص
+ *    **مقصور على PD_TRUSTED_COLLECTIONS** (قوائم منسَّقة ملكية عامّة فقط).
+ *    أيّ عنصر بترخيص محفوظ صريح يُرفَض عبر COPYRIGHT_DENY_PATTERNS، وأيّ
+ *    عنصر من مجموعة مجتمعيّة بلا ترخيص صريح يُرفَض أيضاً (ليس موثوقاً).
+ *  - trustedCollections = PD-only (انظر PD_TRUSTED_COLLECTIONS أعلاه).
  */
 const DEFAULT_CONFIG = Object.freeze({
 	enabled: true,
@@ -230,26 +266,8 @@ const DEFAULT_CONFIG = Object.freeze({
 	// السرعة تأتي من تعدّد الدورات في الـ cron لا من تضخيم الدورة الواحدة.
 	batchSize: 8,
 	scrapeCount: 300,
-	// مسمّيات مجموعات IA المُفهرسة فعلاً — كلّها ملكية عامّة / مفتوحة.
-	// وُسِّعت بمجموعات معرفيّة عامّة (Gutenberg/LibriVox/Prelinger) إضافةً
-	// إلى العربيّة/الإسلاميّة، لتغطية معرفة عامّة أوسع دون محتوى محميّ.
-	trustedCollections: [
-		'booksbylanguage_arabic',
-		'booksbylanguage',
-		'folkscanomy_religion',
-		'folkscanomy_religion_quran',
-		'folkscanomy',
-		'audio_islamic',
-		'audio_religion',
-		'opensource_movies',
-		'opensource_audio',
-		'opensource',
-		// ── مجموعات ملكية عامّة عامّة (معرفة عامّة) ──
-		'gutenberg',
-		'librivoxaudio',
-		'librivox',
-		'prelinger'
-	],
+	// مجموعات الملكية العامّة المنسَّقة فقط — حارس حقوق النشر (انظر أعلاه).
+	trustedCollections: [...PD_TRUSTED_COLLECTIONS],
 	allowMissingLicenseInTrustedCollections: true
 });
 
@@ -312,11 +330,16 @@ async function readConfig() {
 	}
 	const seeds = seedsById.size > 0 ? [...seedsById.values()] : [...DEFAULT_SEEDS];
 
-	// اتحاد المجموعات الموثوقة (المخزَّنة + الافتراضيّة) بلا تكرار — إضافة فقط.
+	// المجموعات الموثوقة = تقاطع (المخزَّن + الافتراضيّ) مع قائمة الملكية
+	// العامّة المسموحة (PD_TRUSTED_COLLECTIONS). التقاطع حارس حقوق نشر صارم:
+	// حتى لو أعاد إعداد RTDB قديم حقن مجموعة مجتمعيّة مفتوحة الرفع
+	// (booksbylanguage_arabic/opensource…)، تُصفّى هنا فلا تصل لفلتر الترخيص،
+	// فلا يُقبَل أيّ محتوى بلا ترخيص صريح إلّا من قوائم ملكية عامّة منسَّقة.
 	const storedTrusted = Array.isArray(v.trustedCollections) ? v.trustedCollections : [];
+	const pdAllow = new Set(PD_TRUSTED_COLLECTIONS.map((c) => String(c).toLowerCase()));
 	const trustedCollections = [
 		...new Set([...storedTrusted, ...DEFAULT_CONFIG.trustedCollections].map((c) => String(c)))
-	];
+	].filter((c) => pdAllow.has(c.toLowerCase()));
 
 	return {
 		enabled: v.enabled === undefined ? true : Boolean(v.enabled),
@@ -1340,22 +1363,44 @@ export async function autoBootIfNeeded(opts = {}) {
 				String(s?.q || '').trim() === 'language:Arabic' &&
 				(!Array.isArray(s.languages) || s.languages.length === 0)
 		) ||
-		// مسمّيات collections القديمة الخاطئة → فرض التحديث
+		// مسمّيات collections قديمة وهميّة (تُرجع 0 نتيجة) → فرض التحديث.
+		// أُزيلت 'opensource_audio' لأنّها مجموعة حقيقيّة تستعملها بذور
+		// arabic_general_audio؛ إبقاؤها هنا كان يسبّب إعادة كتابة كل إقلاع.
 		rawCfg.seeds.some(
 			(s) =>
 				Array.isArray(s?.collections) &&
 				s.collections.some((c) =>
-					['opensource_arabic', 'community_texts', 'arabicliterature', 'opensource_audio'].includes(String(c))
+					['opensource_arabic', 'community_texts', 'arabicliterature'].includes(String(c))
 				)
 		);
-	// نتحقّق إن كانت المجموعات الموثوقة الحاليّة تحوي المسمّيات الصحيحة الجديدة.
-	// لو كانت تحوي أيّاً من المسمّيات الخاطئة القديمة، نُحدّث.
+	// ترقية المجموعات الموثوقة إلى قائمة الملكية العامّة الجديدة (PD-only).
+	// نعتبر الإعداد قديماً إن:
+	//   • لم يكن مصفوفة، أو
+	//   • احتوى أيّ مجموعة مجتمعيّة مفتوحة الرفع (تُزال لأسباب حقوق النشر)، أو
+	//   • لم يحتوِ المرتكز الجديد 'gutenberg' (دليل أنّه سابق لبوّابة PD).
+	// المرتكز الآن 'gutenberg' (لا 'booksbylanguage_arabic') كي لا تتكرّر
+	// إعادة الكتابة كل إقلاع بعد حصر القائمة في PD-only.
 	const collectionsStale =
 		!Array.isArray(rawCfg.trustedCollections) ||
 		rawCfg.trustedCollections.some((c) =>
-			['opensource_arabic', 'community_texts', 'arabicliterature', 'islamicbooks_archive'].includes(String(c))
+			[
+				'opensource_arabic',
+				'community_texts',
+				'arabicliterature',
+				'islamicbooks_archive',
+				'booksbylanguage_arabic',
+				'booksbylanguage',
+				'folkscanomy_religion',
+				'folkscanomy_religion_quran',
+				'folkscanomy',
+				'audio_islamic',
+				'audio_religion',
+				'opensource_movies',
+				'opensource_audio',
+				'opensource'
+			].includes(String(c))
 		) ||
-		!rawCfg.trustedCollections.includes('booksbylanguage_arabic');
+		!rawCfg.trustedCollections.includes('gutenberg');
 	if (
 		Number(rawCfg.scrapeCount) < 200 ||
 		Number(rawCfg.batchSize) < 3 ||

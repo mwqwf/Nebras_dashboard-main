@@ -31,9 +31,12 @@ const CRON_MAX_TICKS = 8;
 
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
-	// إذا لم يقم المستخدم بإعداد CRON_SECRET، نسمح بالوصول لكي يعمل المحرّك تلقائياً 
-	// عبر GitHub Actions بدون أيّ إعداد يدوي من المستخدم.
-	if (!secret) return { ok: true, reason: 'cron_secret_not_configured_but_allowed' };
+	// 🔒 fail-closed: بلا CRON_SECRET نرفض. نقطة الـ cron تُشغّل محرّك الجلب،
+	// وفتحها للعالم يتيح لأيّ شخص استنزاف الموارد وقصف Internet Archive باسم
+	// التطبيق (قد يؤدّي لحظر IP). الإقلاع التلقائي (autoBoot من hooks.server)
+	// يبقى يعمل عبر زيارات اللوحة، فلا يتوقّف إطعام التطبيق كليّاً بانتظار ضبط
+	// السرّ. اضبط CRON_SECRET في Vercel env + GitHub secret لاستئناف الـ cron.
+	if (!secret) return { ok: false, reason: 'cron_secret_required' };
 	const header =
 		event.request.headers.get('authorization') ||
 		event.request.headers.get('Authorization') ||

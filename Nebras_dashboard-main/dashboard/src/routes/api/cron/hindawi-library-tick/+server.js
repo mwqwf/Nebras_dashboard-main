@@ -20,7 +20,8 @@ const CRON_MAX_TICKS = 8;
 
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
-	if (!secret) return { ok: true, reason: 'cron_secret_not_configured_but_allowed' };
+	// 🔒 fail-closed: بلا CRON_SECRET نرفض (يمنع تشغيل المحرّك من الخارج).
+	if (!secret) return { ok: false, reason: 'cron_secret_required' };
 	const header =
 		event.request.headers.get('authorization') ||
 		event.request.headers.get('Authorization') ||
