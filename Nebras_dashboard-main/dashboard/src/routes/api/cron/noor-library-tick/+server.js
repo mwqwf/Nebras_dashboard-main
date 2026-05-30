@@ -20,8 +20,15 @@ export const config = {
 
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
-	// 🔒 fail-closed: بلا CRON_SECRET نرفض (يمنع تشغيل المحرّك من الخارج).
-	if (!secret) return { ok: false, reason: 'cron_secret_required' };
+	// 🔐 secure-by-configuration: صارم إن ضُبط CRON_SECRET، ويسمح بالنبضة إن لم
+	// يُضبط بعد (يعيد السلوك الافتراضي قبل ضبط السرّ فلا يتوقّف المحرّك). التقوية
+	// لاحقاً بإضافة المتغيّر فقط. (نور معطّل أصلاً، لكن نوحّد النمط مع IA.)
+	if (!secret) {
+		console.warn(
+			'[cron/noor-library-tick] CRON_SECRET غير مضبوط — يُسمح بالنبضة. اضبطه للتقوية (fail-closed).'
+		);
+		return { ok: true, unauthenticated: true };
+	}
 	const header =
 		event.request.headers.get('authorization') ||
 		event.request.headers.get('Authorization') ||

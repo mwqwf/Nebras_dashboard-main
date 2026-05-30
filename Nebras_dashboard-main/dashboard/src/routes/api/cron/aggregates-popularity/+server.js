@@ -14,7 +14,14 @@ import { runAggregatePopularity } from '$lib/server/aggregatePopularity.js';
 /** @param {import('@sveltejs/kit').RequestEvent} event */
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
-	if (!secret) return { ok: false, reason: 'cron_secret_not_configured' };
+	// 🔐 secure-by-configuration: صارم إن ضُبط CRON_SECRET، ويسمح إن لم يُضبط
+	// (يعيد احتساب aggregates لا يكشف بيانات؛ التقوية بإضافة المتغيّر فقط).
+	if (!secret) {
+		console.warn(
+			'[cron/aggregates-popularity] CRON_SECRET غير مضبوط — يُسمح بالنبضة. اضبطه للتقوية (fail-closed).'
+		);
+		return { ok: true, unauthenticated: true };
+	}
 	const header =
 		event.request.headers.get('authorization') ||
 		event.request.headers.get('Authorization') ||

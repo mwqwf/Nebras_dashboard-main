@@ -18,8 +18,8 @@ name: Internet Archive Auto-Tick
 # ║                                                                   ║
 # ║  Secrets في GitHub repo settings:                                  ║
 # ║    • VERCEL_URL  (اختياري) — URL النشر (افتراضي: nebras-dashboard) ║
-# ║    • CRON_SECRET (مطلوب)   — يجب أن يطابق Vercel env. الـ endpoint  ║
-# ║      صار fail-closed: بلا هذا السرّ يردّ 401 ولا يعمل الـ cron.      ║
+# ║    • CRON_SECRET (مُستحسَن) — اضبطه في GitHub + Vercel env معاً     ║
+# ║      للتقوية (fail-closed). بدونه المنفذ يسمح بالنبضة افتراضياً.     ║
 # ╚═══════════════════════════════════════════════════════════════════╝
 
 on:
@@ -64,7 +64,7 @@ jobs:
           if [ -n "$CRON_SECRET" ]; then
             AUTH_HEADER="Authorization: Bearer $CRON_SECRET"
           else
-            echo "⚠ CRON_SECRET غير مضبوط في GitHub secrets — الـ endpoint fail-closed وسيردّ 401. اضبطه ليطابق Vercel env."
+            echo "ℹ CRON_SECRET غير مضبوط في GitHub secrets — المنفذ سيسمح بالنبضة (secure-by-configuration). اضبطه + Vercel env معاً للتقوية (fail-closed)."
             AUTH_HEADER="X-No-Auth: 1"
           fi
 

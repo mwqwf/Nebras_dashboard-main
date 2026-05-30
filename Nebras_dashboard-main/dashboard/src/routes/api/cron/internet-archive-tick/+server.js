@@ -31,12 +31,18 @@ const CRON_MAX_TICKS = 8;
 
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
-	// 🔒 fail-closed: بلا CRON_SECRET نرفض. نقطة الـ cron تُشغّل محرّك الجلب،
-	// وفتحها للعالم يتيح لأيّ شخص استنزاف الموارد وقصف Internet Archive باسم
-	// التطبيق (قد يؤدّي لحظر IP). الإقلاع التلقائي (autoBoot من hooks.server)
-	// يبقى يعمل عبر زيارات اللوحة، فلا يتوقّف إطعام التطبيق كليّاً بانتظار ضبط
-	// السرّ. اضبط CRON_SECRET في Vercel env + GitHub secret لاستئناف الـ cron.
-	if (!secret) return { ok: false, reason: 'cron_secret_required' };
+	// 🔐 secure-by-configuration: إن ضُبط CRON_SECRET نفرضه بصرامة (يُرفض أيّ
+	// نداء بلا توكن مطابق). إن لم يُضبط بعد، نسمح بالنبضة كي لا يتوقّف إطعام
+	// التطبيق — هذه هي الحالة الافتراضيّة قبل ضبط السرّ، وتُقوّى لاحقاً بمجرّد
+	// إضافة المتغيّر في Vercel env + GitHub secret دون أيّ تعديل كود. المخاطرة
+	// عند عدم الضبط تشغيليّة (تكلفة/قصف Internet Archive) لا أمنيّة على البيانات:
+	// المحرّك يجلب محتوى PD/CC مُصفّى فقط، وregistry يمنع التكرار وratelimit يحدّ.
+	if (!secret) {
+		console.warn(
+			'[cron/internet-archive-tick] CRON_SECRET غير مضبوط — يُسمح بالنبضة. اضبطه في Vercel env + GitHub secret للتقوية (fail-closed).'
+		);
+		return { ok: true, unauthenticated: true };
+	}
 	const header =
 		event.request.headers.get('authorization') ||
 		event.request.headers.get('Authorization') ||

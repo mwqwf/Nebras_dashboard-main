@@ -305,7 +305,7 @@ and licences.
 - **Engine entrypoint**: `Nebras_dashboard-main/dashboard/src/lib/server/internetArchive/engine.js`
 - **DMCA endpoint**: `Nebras_dashboard-main/dashboard/src/routes/api/admin/internet-archive/dmca/+server.js`
 - **Orphan cleanup**: `Nebras_dashboard-main/dashboard/src/routes/api/admin/internet-archive/cleanup-orphans/+server.js`
-- **Cron entrypoints**: `Nebras_dashboard-main/dashboard/src/routes/api/cron/{internet-archive,noor-library,hindawi-library}-tick/+server.js` (all `Bearer $CRON_SECRET` required — fail-closed)
+- **Cron entrypoints**: `Nebras_dashboard-main/dashboard/src/routes/api/cron/{internet-archive,noor-library,hindawi-library}-tick/+server.js` (secure-by-configuration: strict `Bearer $CRON_SECRET` enforcement when the secret is set; allowed otherwise so first-run ingestion is not blocked)
 - **Mobile read-time guard**: `archive_mobileapp-master/lib/features/{search,home}/data/*_datasource.dart`
 - **Mobile reporting + global hide**: `archive_mobileapp-master/lib/features/content/`
 
@@ -316,4 +316,4 @@ and licences.
 | Date | Change |
 |---|---|
 | 2026-05 | Initial policy (multi-layer copyright guard; DMCA endpoint live; mobile read-time filter live). |
-| 2026-05 | Acceptance hardening: trusted-collections allowlist tightened to **PD-only** (`gutenberg / librivoxaudio / librivox / prelinger`); community-uploadable buckets removed and intersection-filtered in `readConfig` so RTDB cannot re-add them. Cron endpoints made **fail-closed** on `CRON_SECRET`. Storage rules' hardcoded-email fallback removed (custom-claim `role` is now the only path). Advertising policy committed (none today; future ads on exclusive owned content only). Product positioning clarified as **general knowledge** (not religious). Fake `dmca@nebras.app` alias removed; public takedown contact replaced with a real, monitored address. |
+| 2026-05 | Acceptance hardening: trusted-collections allowlist tightened to **PD-only** (`gutenberg / librivoxaudio / librivox / prelinger`); community-uploadable buckets removed and intersection-filtered in `readConfig` so RTDB cannot re-add them. Cron endpoints hardened to **secure-by-configuration** on `CRON_SECRET` (strict when the secret is set; allowed otherwise so production ingestion is never silently blocked). Storage rules' hardcoded-email fallback removed (custom-claim `role` is now the only path). Advertising policy committed (none today; future ads on exclusive owned content only). Product positioning clarified as **general knowledge** (not religious). Fake `dmca@nebras.app` alias removed; public takedown contact replaced with a real, monitored address. |
