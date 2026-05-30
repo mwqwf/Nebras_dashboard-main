@@ -108,7 +108,19 @@ service cloud.firestore {
     // ─── ملفّات الرفع (مرايا متماثلة) ────────────────────────────
     // كلّ مستند يجب أن يحمل id/fileId — مطابق لقواعد RTDB القديمة.
     function validFileDoc() {
-      return request.resource.data.keys().hasAny(['id', 'fileId']);
+      // شبكة أمان على مستوى القاعدة ضدّ تضخّم الحمولة (سبب انهيار سابق):
+      // نرفض وصفاً يتجاوز 20000 حرف حتى لو نسي مسار كتابة مستقبليّ استدعاء
+      // القصّ التطبيقيّ (clampContentTextFields). 20000 هامش آمن فوق حدّ
+      // التطبيق (8000) وتحت حدّ مستند Firestore (~1MB).
+      return request.resource.data.keys().hasAny(['id', 'fileId'])
+        && (
+          !('description' in request.resource.data)
+          || request.resource.data.description == null
+          || (
+            request.resource.data.description is string
+            && request.resource.data.description.size() < 20000
+          )
+        );
     }
 
     match /dashboard_uploads/{docId} {

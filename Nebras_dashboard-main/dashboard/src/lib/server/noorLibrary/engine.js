@@ -86,6 +86,17 @@ const DEFAULT_CONFIG = Object.freeze({
 	maxPagesPerCall: 4
 });
 
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║ ⛔ مفتاح إيقاف صارم لمحرّك «مكتبة نور» — إيقاف بدواعي امتثال حقوق   ║
+// ║    النشر. طالما القيمة = true:                                     ║
+// ║      • لا يجلب المحرّك أيّ كتاب — لا آلياً (cron) ولا يدوياً (زرّ).  ║
+// ║      • يتجاهل إعدادات RTDB حتى لو كانت enabled=true من تشغيل سابق.  ║
+// ║    الكود محفوظ بالكامل للتطوير/الضبط لاحقاً (تشديد فلتر الترخيص).   ║
+// ║    لإعادة التفعيل مستقبلاً: اجعلها false، وأعد سطر noor في          ║
+// ║    .github/workflows/library-engines-cron.yml.                     ║
+// ╚══════════════════════════════════════════════════════════════════╝
+export const NOOR_ENGINE_HARD_DISABLED = true;
+
 // ── Singleton state (per Node process) ───────────────────────────────
 const GLOBAL_KEY = '__NEBRAS_NOOR_ENGINE__';
 function getGlobalState() {
@@ -628,6 +639,9 @@ async function processBook({ url, bookId, sections }) {
  * }>}
  */
 export async function runEngineTick() {
+	if (NOOR_ENGINE_HARD_DISABLED) {
+		return { ok: true, skipped: true, reason: 'noor_engine_hard_disabled' };
+	}
 	const cfg = await readConfig();
 	if (cfg.seedUrls.length === 0) {
 		throw Object.assign(new Error('لا توجد بذور (seedUrls) — أضف على الأقل واحدة.'), {
@@ -824,17 +838,17 @@ export async function runEngineTick() {
  *   • نُمسك أي خطأ ونعيده كنتيجة بدل أن نُسقط النداء.
  */
 export async function runCronTick() {
-	const cfg = await readConfig();
-	// enabled افتراضيّاً true في DEFAULT_CONFIG=false؟ لا — DEFAULT_CONFIG.enabled=false.
-	// لكن لتشغيل تلقائيّ بلا تدخّل (مثل IA) نعتبر الغياب/التهيئة الأولى = تشغيل.
-	const snap = await getAdminDatabase().ref(`${CONFIG_PATH}/enabled`).get().catch(() => null);
-	const explicitlyDisabled = snap && snap.exists() && snap.val() === false;
-	if (explicitlyDisabled) {
-		return { ok: true, skipped: true, reason: 'engine_stopped_by_user' };
+	// ⛔ مفتاح الإيقاف الصارم له الأولوية المطلقة (امتثال حقوق النشر).
+	if (NOOR_ENGINE_HARD_DISABLED) {
+		return { ok: true, skipped: true, reason: 'noor_engine_hard_disabled' };
 	}
-	// تأكّد من وجود config (يكتب enabled=true عند أوّل نداء cron).
-	if (!snap || !snap.exists()) {
-		await writeConfig({ enabled: true });
+	// نور لا يُفعّل نفسه تلقائياً (بخلاف Internet Archive): لا يعمل إلا إذا
+	// فعّله المستخدم صراحةً عبر اللوحة (enabled=true في RTDB). الغياب/التهيئة
+	// الأولى = معطّل (fail-safe OFF) حمايةً من جلب محتوى غير مضبوط الترخيص.
+	const snap = await getAdminDatabase().ref(`${CONFIG_PATH}/enabled`).get().catch(() => null);
+	const enabled = snap && snap.exists() && snap.val() === true;
+	if (!enabled) {
+		return { ok: true, skipped: true, reason: 'engine_disabled_by_default' };
 	}
 	try {
 		const result = await runEngineTick();
@@ -913,6 +927,14 @@ async function tickLoop() {
  * يبدأ المحرّك في الخلفية. آمن للاستدعاء أكثر من مرّة (idempotent).
  */
 export async function startEngine() {
+	if (NOOR_ENGINE_HARD_DISABLED) {
+		return {
+			ok: false,
+			started: false,
+			reason: 'noor_engine_hard_disabled',
+			message: 'محرّك نور موقوف بمفتاح إيقاف صارم (امتثال حقوق النشر). لإعادة تفعيله اجعل NOOR_ENGINE_HARD_DISABLED=false بعد ضبط فلتر الترخيص.'
+		};
+	}
 	const state = getGlobalState();
 	const cfg = await writeConfig({ enabled: true });
 

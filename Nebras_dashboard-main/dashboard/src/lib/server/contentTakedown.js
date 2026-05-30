@@ -21,6 +21,7 @@ import {
 	NEBRAS_FS_CONTENT_YOUTUBE
 } from '$lib/firebase/nebrasUnifiedPaths.js';
 import { writeAuditEntry } from '$lib/server/auditLog.js';
+import { recordFailure as recordHindawiFailure } from '$lib/server/hindawi/registry.js';
 
 /**
  * @param {string} contentId
@@ -49,6 +50,7 @@ export async function deleteContentEverywhere(contentId, contentType = '') {
 	let storagePath = '';
 	let providerSnap = '';
 	let licenseStatusSnap = '';
+	let sourceBookIdSnap = '';
 	try {
 		const snap = await fs.collection(NEBRAS_FS_CONTENT_FILES).doc(id).get();
 		if (snap.exists) {
@@ -56,6 +58,7 @@ export async function deleteContentEverywhere(contentId, contentType = '') {
 			storagePath = String(d.storagePath || '');
 			providerSnap = String(d.__provider || d.__source_provider || '');
 			licenseStatusSnap = String(d.__license_status || '');
+			sourceBookIdSnap = String(d.__sourceBookId || d.__hindawiId || '');
 		}
 	} catch {
 		/* ignore */
@@ -76,6 +79,22 @@ export async function deleteContentEverywhere(contentId, contentType = '') {
 			}
 		} catch (err) {
 			console.warn('[takedown] storage delete failed:', err?.message || String(err));
+		}
+	}
+
+	// 🛡️ منع إعادة الجلب بعد الإزالة: نسجّل كتاب هنداوي في قائمة الفشل الدائم
+	// (permanent=true) كي لا يعيد المحرّك استيراده في الدورة التالية — مطابق
+	// لما يفعله مسار DMCA لأرشيف الإنترنت (ia_library_dmca_blacklist).
+	// (مكتبة نور موقوفة بمفتاح صارم فلا حاجة لقائمة منع لها حالياً.)
+	if (sourceBookIdSnap && providerSnap.toLowerCase().includes('hindawi')) {
+		try {
+			await recordHindawiFailure(sourceBookIdSnap, {
+				reason: 'takedown',
+				message: 'removed by report/audit/DMCA',
+				permanent: true
+			});
+		} catch (err) {
+			console.warn('[takedown] hindawi blacklist write failed:', err?.message || String(err));
 		}
 	}
 

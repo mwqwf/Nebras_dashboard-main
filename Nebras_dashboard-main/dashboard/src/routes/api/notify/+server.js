@@ -29,6 +29,12 @@ import {
 
 const DEFAULT_TOPIC = 'nebras_all_users';
 
+// 🛡️ حدّ معدّل بسيط (لكل عملية خادم): يمنع البثّ المتكرّر السريع لكامل قاعدة
+// المستخدمين (إرسال مزدوج بالخطأ أو إساءة). نافذة قصيرة لا تُعيق الاستخدام
+// الطبيعيّ. على serverless القيمة لكل نسخة، لكنها تكفي لكبح الحالة الشائعة.
+const NOTIFY_COOLDOWN_MS = 8000;
+let __lastNotifyAt = 0;
+
 function resolveTopic(bodyTopic) {
 	const envTopic = env.FCM_BROADCAST_TOPIC?.trim();
 	return (bodyTopic && String(bodyTopic).trim()) || envTopic || DEFAULT_TOPIC;
@@ -64,10 +70,21 @@ export async function POST({ request }) {
 		);
 	}
 
+	// 🛡️ حدّ المعدّل: نرفض البثّ إن لم تمضِ نافذة التهدئة منذ آخر إرسال ناجح.
+	const now = Date.now();
+	const sinceLast = now - __lastNotifyAt;
+	if (__lastNotifyAt && sinceLast < NOTIFY_COOLDOWN_MS) {
+		return json(
+			{ ok: false, reason: 'rate_limited', retryAfterMs: NOTIFY_COOLDOWN_MS - sinceLast },
+			{ status: 429 }
+		);
+	}
+
 	const topic = resolveTopic(payload?.topic);
 	const data = payload?.data && typeof payload.data === 'object' ? payload.data : {};
 
 	try {
+		__lastNotifyAt = Date.now();
 		const messageId = await sendTopicMessage({ topic, title, body, data });
 		return json({ ok: true, topic, messageId });
 	} catch (err) {

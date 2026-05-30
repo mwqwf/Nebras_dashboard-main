@@ -71,19 +71,26 @@ export async function recordImported(bookId, record) {
 	});
 }
 
-/** @param {string} bookId @param {{ reason?:string, message?:string, url?:string }} info */
+/** @param {string} bookId @param {{ reason?:string, message?:string, url?:string, permanent?:boolean }} info */
 export async function recordFailure(bookId, info = {}) {
 	const key = safeKey(bookId);
 	if (!key) return;
 	const ref = getAdminDatabase().ref(`${FAILURES_ROOT}/${key}`);
 	await ref.transaction((current) => {
 		const c = current || { count: 0, firstFailedAt: Date.now() };
+		// permanent=true (إزالة/DMCA): نرفع العدّاد إلى العتبة فوراً كي يُعدّ
+		// الكتاب «معروفاً» في partitionKnownBooks فلا يُعاد جلبه أبداً —
+		// مكافئ لـ ia_library_dmca_blacklist في محرّك أرشيف الإنترنت.
+		const nextCount = info?.permanent
+			? FAILURE_BLACKLIST_THRESHOLD
+			: Number(c.count || 0) + 1;
 		return {
-			count: Number(c.count || 0) + 1,
+			count: nextCount,
 			firstFailedAt: c.firstFailedAt || Date.now(),
 			lastFailedAt: Date.now(),
 			lastReason: String(info?.reason || 'unknown').slice(0, 60),
 			lastMessage: String(info?.message || '').slice(0, 300),
+			permanent: Boolean(info?.permanent) || Boolean(c.permanent),
 			url: String(info?.url || c.url || '').slice(0, 1000)
 		};
 	});

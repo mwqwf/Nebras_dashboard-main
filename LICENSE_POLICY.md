@@ -38,13 +38,29 @@ native players. It never reaches out to a third-party host at runtime.
 | **Automated ingestion — Hindawi Foundation** | Server-side engine (`dashboard/src/lib/server/hindawi/`) | Hindawi publishes its catalogue under Creative Commons (CC BY-NC-ND for Arabic literature) — only items the engine identifies as CC are imported |
 
 No client-side fetching of third-party content occurs. Legacy "bridge"
-files for IslamHouse, Mshcat, OldApp, and the partial Noor Library wiring
-are **disabled stubs** and the codebase blocks them from being re-enabled
-without review.
+files for IslamHouse, Mshcat, and OldApp are **disabled stubs**. The Noor
+Library automated engine exists in full but is **hard-disabled** — a
+build-time kill switch (`NOOR_ENGINE_HARD_DISABLED` in
+`noorLibrary/engine.js`) blocks every fetch path (cron, background loop,
+manual start, and the manual import/preview endpoints), and the engine is
+removed from the cron schedule (`.github/workflows/library-engines-cron.yml`).
+It ingests **nothing** — automatically or manually — until re-enabled under
+a strict PD/CC license gate.
 
 ---
 
 ## 2. Internet Archive ingestion pipeline
+
+> **Delivery model (accuracy note):** Internet Archive items are served
+> **metadata-only + reverse proxy** — Nebras does **not** download or
+> re-host IA bytes to Firebase Storage. The mobile app receives an internal
+> proxy URL (`/api/proxy/ia/{id}`) and the dashboard streams the file from
+> archive.org on demand (see `internetArchive/metadataRegister.js`,
+> `__delivery: "proxy_stream"`). The "download → verify-after-download →
+> Storage upload" language in §2.4 below describes the **manual-upload and
+> Hindawi** paths; for IA, byte verification is a ranged probe (first/last
+> bytes), not a full download. Hindawi books **are** downloaded and
+> re-hosted to Storage.
 
 ### 2.1 Pre-fetch query (Scrape API)
 
