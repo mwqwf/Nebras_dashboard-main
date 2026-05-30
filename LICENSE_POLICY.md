@@ -197,14 +197,14 @@ Action:
 ### 3.3 Public takedown contact
 
 Rights holders who cannot use the in-app report can email the maintainer
-at the address on the Play Store listing's "Developer contact" page. The
-maintainer will respond within 72 hours and remove infringing content
+directly at **cloudenarymarwano@gmail.com** — the same monitored address
+published on the app's Google Play "Developer contact" page. The
+maintainer will acknowledge within 72 hours and remove infringing content
 within 24 hours of verification.
 
-> ⚠️ **Maintainer**: please make sure the email address shown on the
-> Google Play "Developer contact" page is monitored. Do not publish a
-> domain-style alias (e.g. `dmca@…`) here unless that mailbox actually
-> exists and is checked.
+(No `dmca@…` domain alias is advertised, because no such mailbox exists; a
+real, monitored personal address is published instead so takedown requests
+are never lost.)
 
 ### 3.4 Re-import protection
 
@@ -316,4 +316,4 @@ and licences.
 | Date | Change |
 |---|---|
 | 2026-05 | Initial policy (multi-layer copyright guard; DMCA endpoint live; mobile read-time filter live). |
-| 2026-05 | Acceptance hardening: trusted-collections allowlist tightened to **PD-only** (`gutenberg / librivoxaudio / librivox / prelinger`); community-uploadable buckets removed and intersection-filtered in `readConfig` so RTDB cannot re-add them. Cron endpoints made **fail-closed** on `CRON_SECRET`. Storage rules' hardcoded-email fallback removed (custom-claim `role` is now the only path). Advertising policy committed (none today; future ads on exclusive owned content only). Product positioning clarified as **general knowledge** (not religious). |
+| 2026-05 | Acceptance hardening: trusted-collections allowlist tightened to **PD-only** (`gutenberg / librivoxaudio / librivox / prelinger`); community-uploadable buckets removed and intersection-filtered in `readConfig` so RTDB cannot re-add them. Cron endpoints made **fail-closed** on `CRON_SECRET`. Storage rules' hardcoded-email fallback removed (custom-claim `role` is now the only path). Advertising policy committed (none today; future ads on exclusive owned content only). Product positioning clarified as **general knowledge** (not religious). Fake `dmca@nebras.app` alias removed; public takedown contact replaced with a real, monitored address. |
