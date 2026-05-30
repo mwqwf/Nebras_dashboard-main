@@ -8,7 +8,7 @@ import {
 	NEBRAS_FS_UPLOADS,
 	NEBRAS_FS_CONTENT_FILES
 } from '$lib/firebase/nebrasUnifiedPaths.js';
-import { stripUndefinedDeep } from '$lib/nebrasUnifiedSanitize.js';
+import { stripUndefinedDeep, clampContentTextFields } from '$lib/nebrasUnifiedSanitize.js';
 
 function adb() {
 	return getNebrasFirestoreAdmin();
@@ -55,7 +55,8 @@ export async function adminFsDeleteSectionRecord(level, id) {
 export async function adminFsWriteFileMirrorBoth(fileId, payload) {
 	const db = adb();
 	const id = String(fileId);
-	const data = stripUndefinedDeep(payload);
+	// قصّ الوصف الضخم قبل الكتابة (يمنع تضخّم الوثيقة وانهيار قراءة الجوال).
+	const data = stripUndefinedDeep(clampContentTextFields(payload));
 	const batch = db.batch();
 	batch.set(db.collection(NEBRAS_FS_UPLOADS).doc(id), data);
 	batch.set(db.collection(NEBRAS_FS_CONTENT_FILES).doc(id), data);

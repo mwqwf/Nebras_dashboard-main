@@ -184,7 +184,7 @@
 		// قائمة الآباء في النوافذ المنبثقة: نسمح للـ API بالجلب الكامل
 		// لأنّها محدودة العدد (~عشرات) وتُطلب بفعل صريح من المستخدم.
 		try {
-			const data = await listMyMainSections({ search: '', page: 1 });
+			const data = await listMyMainSections({ search: '', all: true });
 			mainSectionsList = data.results;
 		} catch {
 			// Silent
@@ -193,7 +193,7 @@
 
 	async function fetchSubSectionsOptions(mainSectionId) {
 		try {
-			const params = { search: '', page: 1 };
+			const params = { search: '', all: true };
 			if (mainSectionId) params.main_section = mainSectionId;
 			const data = await listMySubSections(params);
 			subSectionsList = data.results;

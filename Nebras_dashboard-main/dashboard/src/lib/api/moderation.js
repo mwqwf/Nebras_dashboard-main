@@ -18,11 +18,12 @@ export function deleteReportedContent({ reportId, contentId, contentType }) {
 	});
 }
 
-/** تجاهل بلاغ كاذب. */
-export function dismissReport(reportId) {
+/** تجاهل بلاغ كاذب. نمرّر `contentId` كي يحذف الخادم علامة الإخفاء
+ *  العالميّ (content_takedown_pending) فيظهر المحتوى للمستخدمين مجدّداً. */
+export function dismissReport({ reportId, contentId } = {}) {
 	return authedJson('/api/admin/reports', {
 		method: 'POST',
-		body: { action: 'dismiss', reportId }
+		body: { action: 'dismiss', reportId, contentId }
 	});
 }
 

@@ -44,7 +44,7 @@ export async function getCachedMainSections({ force = false } = {}) {
 	if (pending.has(key)) return pending.get(key);
 	const p = (async () => {
 		try {
-			const d = await listMyMainSections({ page: 1 });
+			const d = await listMyMainSections({ all: true });
 			const data = d.results || [];
 			cache.mains = { data, at: Date.now() };
 			return data;
@@ -68,7 +68,7 @@ export async function getCachedSubSections(mainId, { force = false } = {}) {
 	if (pending.has(pkey)) return pending.get(pkey);
 	const p = (async () => {
 		try {
-			const d = await listMySubSections({ main_section: mainId || undefined, page: 1 });
+			const d = await listMySubSections({ main_section: mainId || undefined, all: true });
 			const data = d.results || [];
 			cache.subsByMain.set(k, { data, at: Date.now() });
 			return data;
@@ -92,7 +92,7 @@ export async function getCachedSecondarySections(subId, { force = false } = {}) 
 	if (pending.has(pkey)) return pending.get(pkey);
 	const p = (async () => {
 		try {
-			const d = await listMySecondarySections({ sub_section: subId || undefined, page: 1 });
+			const d = await listMySecondarySections({ sub_section: subId || undefined, all: true });
 			const data = d.results || [];
 			cache.secsBySub.set(k, { data, at: Date.now() });
 			return data;

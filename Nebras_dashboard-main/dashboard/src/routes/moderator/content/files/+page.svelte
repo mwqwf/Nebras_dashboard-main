@@ -114,16 +114,16 @@
 	}
 
 	async function fetchMainOptions() {
-		try { const d = await listMyMainSections({ page: 1 }); mainSectionsList = d.results; } catch {}
+		try { const d = await listMyMainSections({ all: true }); mainSectionsList = d.results; } catch {}
 	}
 
 	async function fetchSubOpts(mainId) {
-		try { const d = await listMySubSections({ main_section: mainId || undefined, page: 1 }); uploadSubOptions = d.results; }
+		try { const d = await listMySubSections({ main_section: mainId || undefined, all: true }); uploadSubOptions = d.results; }
 		catch { uploadSubOptions = []; }
 	}
 
 	async function fetchSecOpts(subId) {
-		try { const d = await listMySecondarySections({ sub_section: subId || undefined, page: 1 }); uploadSecondaryOptions = d.results; }
+		try { const d = await listMySecondarySections({ sub_section: subId || undefined, all: true }); uploadSecondaryOptions = d.results; }
 		catch { uploadSecondaryOptions = []; }
 	}
 
@@ -236,14 +236,14 @@
 		editingItem = item;
 		let inferredMain = item.metadata?.main_section || item.main_section || '';
 		if (mainSectionsList.length === 0) await fetchMainOptions();
-		const allSubs = await listMySubSections({ page: 1 });
+		const allSubs = await listMySubSections({ all: true });
 		const currentSub = (allSubs.results || []).find((s) => String(s.id) === String(item.metadata?.subsection || ''));
 		if (!inferredMain && currentSub?.main_section) inferredMain = currentSub.main_section;
 		editSubOptions = inferredMain
-			? (await listMySubSections({ main_section: inferredMain, page: 1 })).results || []
+			? (await listMySubSections({ main_section: inferredMain, all: true })).results || []
 			: allSubs.results || [];
 		editSecondaryOptions = item.metadata?.subsection
-			? (await listMySecondarySections({ sub_section: item.metadata.subsection, page: 1 })).results || []
+			? (await listMySecondarySections({ sub_section: item.metadata.subsection, all: true })).results || []
 			: [];
 		editForm = {
 			title: item.metadata?.title || '',
@@ -271,14 +271,14 @@
 		editForm.secondary_subsection = '';
 		editSecondaryOptions = [];
 		editSubOptions = editForm.main_section
-			? (await listMySubSections({ main_section: editForm.main_section, page: 1 })).results || []
+			? (await listMySubSections({ main_section: editForm.main_section, all: true })).results || []
 			: [];
 	}
 
 	async function handleEditSubChange() {
 		editForm.secondary_subsection = '';
 		editSecondaryOptions = editForm.subsection
-			? (await listMySecondarySections({ sub_section: editForm.subsection, page: 1 })).results || []
+			? (await listMySecondarySections({ sub_section: editForm.subsection, all: true })).results || []
 			: [];
 	}
 

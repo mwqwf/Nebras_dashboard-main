@@ -55,7 +55,7 @@
 					contentType: report.contentType
 				});
 			} else {
-				await dismissReport(report.id);
+				await dismissReport({ reportId: report.id, contentId: report.contentId });
 			}
 			// أزل البلاغ من القائمة محليّاً.
 			reports = reports.filter((r) => r.id !== report.id);

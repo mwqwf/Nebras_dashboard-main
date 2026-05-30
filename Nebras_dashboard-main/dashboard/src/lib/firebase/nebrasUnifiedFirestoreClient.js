@@ -19,7 +19,7 @@ import {
 	NEBRAS_FS_CONTENT_FILES,
 	NEBRAS_FS_CONTENT_YOUTUBE
 } from '$lib/firebase/nebrasUnifiedPaths.js';
-import { stripUndefinedDeep } from '$lib/nebrasUnifiedSanitize.js';
+import { stripUndefinedDeep, clampContentTextFields } from '$lib/nebrasUnifiedSanitize.js';
 
 function fs() {
 	const db = getNebrasFirestore();
@@ -119,7 +119,8 @@ export async function clientFsGetFileRow(fileId) {
 export async function clientFsWriteFileMirrorBoth(fileId, payload) {
 	const db = fs();
 	const id = String(fileId);
-	const data = stripUndefinedDeep(payload);
+	// قصّ الوصف الضخم قبل الكتابة (يمنع تضخّم الوثيقة وانهيار قراءة الجوال).
+	const data = stripUndefinedDeep(clampContentTextFields(payload));
 	const batch = writeBatch(db);
 	batch.set(doc(db, NEBRAS_FS_UPLOADS, id), data);
 	batch.set(doc(db, NEBRAS_FS_CONTENT_FILES, id), data);

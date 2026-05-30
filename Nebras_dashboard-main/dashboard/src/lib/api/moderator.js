@@ -37,6 +37,7 @@ import {
 // نُبقي `ref` و `deleteObject` فقط لحذف كائنات التخزين الفعليّة في Nebras
 // (مسار `removeFile`) — وهي عمليّة حذف لا رفع.
 import { ref as storageRef, deleteObject } from "firebase/storage";
+import { authedJson } from "$lib/api/_authedFetch.js";
 import { smartUpload } from "$lib/api/smartUpload.js";
 import {
   tokenize,
@@ -586,7 +587,7 @@ function applySectionFilters(
  * (mshcat:main:*) بجانب أقسام Nebras — تطابق 1:1 دون هبوط رتبة.
  * @param {Object} params - { search?, page? }
  */
-export async function listMyMainSections({ search = "", page = 1, requireSearch = false } = {}) {
+export async function listMyMainSections({ search = "", page = 1, requireSearch = false, all: fetchAll = false } = {}) {
   if (shouldSkipListing({ requireSearch, search })) return emptyPage();
   const all = await readLevel("main");
   let merged = all;
@@ -601,7 +602,8 @@ export async function listMyMainSections({ search = "", page = 1, requireSearch 
     }
   }
   const filtered = applySectionFilters(merged, { search });
-  return paginate(filtered, page);
+  // `all: true` ⇒ نتجاوز التصفّح ونُعيد القائمة كاملة (لقوائم الاختيار).
+  return paginate(filtered, fetchAll ? 1 : page, fetchAll ? (filtered.length || 1) : 10);
 }
 
 /**
@@ -781,6 +783,7 @@ export async function listMySubSections({
   search = "",
   page = 1,
   requireSearch = false,
+  all: fetchAll = false,
 } = {}) {
   if (shouldSkipListing({ requireSearch, search })) return emptyPage();
   // حالة Mshcat: إن كان الأب المحدّد قسمًا رئيسيًّا من Mshcat نعرض أقسامه
@@ -792,7 +795,7 @@ export async function listMySubSections({
         const subs = await listMshcatSubSections(parsed.docId);
         const adapted = subs.map(adaptMshcatSub);
         const filtered = applySectionFilters(adapted, { search, main_section });
-        return paginate(filtered, page);
+        return paginate(filtered, fetchAll ? 1 : page, fetchAll ? (filtered.length || 1) : 10);
       } catch (err) {
         if (import.meta.env.DEV) {
           console.warn("[moderator] Mshcat sub list failed:", err);
@@ -848,7 +851,7 @@ export async function listMySubSections({
   }
 
   const filtered = applySectionFilters(merged, { search, main_section });
-  return paginate(filtered, page);
+  return paginate(filtered, fetchAll ? 1 : page, fetchAll ? (filtered.length || 1) : 10);
 }
 
 /**
@@ -1054,6 +1057,7 @@ export async function listMySecondarySections({
   search = "",
   page = 1,
   requireSearch = false,
+  all: fetchAll = false,
 } = {}) {
   if (shouldSkipListing({ requireSearch, search })) return emptyPage();
   // Mshcat: الأب قسم فرعي من Mshcat (mshcat:sub:*) → ثانويات الأطفال مباشرة.
@@ -1064,7 +1068,7 @@ export async function listMySecondarySections({
         const secs = await listMshcatSecondarySections(parsed.docId);
         const adapted = secs.map(adaptMshcatSecondary);
         const filtered = applySectionFilters(adapted, { search, sub_section });
-        return paginate(filtered, page);
+        return paginate(filtered, fetchAll ? 1 : page, fetchAll ? (filtered.length || 1) : 10);
       } catch (err) {
         if (import.meta.env.DEV) {
           console.warn("[moderator] Mshcat secondary list failed:", err);
@@ -1082,7 +1086,7 @@ export async function listMySecondarySections({
         const subs = await listOldAppSubSections(parsed.mainDocId);
         const adapted = subs.map((s) => adaptOldAppSubAsSecondary(s, parsed.mainDocId));
         const filtered = applySectionFilters(adapted, { search, sub_section });
-        return paginate(filtered, page);
+        return paginate(filtered, fetchAll ? 1 : page, fetchAll ? (filtered.length || 1) : 10);
       } catch (err) {
         if (import.meta.env.DEV) {
           console.warn("[moderator] OldApp sub list failed:", err);
@@ -1128,7 +1132,7 @@ export async function listMySecondarySections({
       }
     }
     const filtered = applySectionFilters(merged, { search, sub_section });
-    return paginate(filtered, page);
+    return paginate(filtered, fetchAll ? 1 : page, fetchAll ? (filtered.length || 1) : 10);
   }
   if (noSubFilter && isOldAppConfigured()) {
     const all = await readLevel("secondary");
@@ -1152,13 +1156,13 @@ export async function listMySecondarySections({
       }
     }
     const filtered = applySectionFilters(merged, { search, sub_section });
-    return paginate(filtered, page);
+    return paginate(filtered, fetchAll ? 1 : page, fetchAll ? (filtered.length || 1) : 10);
   }
 
   // حالة 3: مسار RTDB العادي
   const all = await readLevel("secondary");
   const filtered = applySectionFilters(all, { search, sub_section });
-  return paginate(filtered, page);
+  return paginate(filtered, fetchAll ? 1 : page, fetchAll ? (filtered.length || 1) : 10);
 }
 
 /**
@@ -1805,6 +1809,27 @@ export async function removeFile(fileId) {
 
   const item = await clientFsGetFileRow(fileId);
   if (!item || Object.keys(item).length === 0) return true;
+
+  // ── محتوى مصدره Internet Archive ─────────────────────────────
+  // إن كان العنصر مستورَداً آليّاً من IA (يحمل __provider/__iaIdentifier)،
+  // فالحذف المجرّد لا يكفي: المحرّك التلقائيّ يُعيد استيراده لأنّ المعرّف
+  // لا يُسجَّل في قائمة الحظر. نُفوّض الحذف للمسار المخصّص (DMCA endpoint)
+  // الذي يحذف الوثيقتين + ملفّ Storage إن وُجد + يُضيف __iaIdentifier إلى
+  // ia_library_dmca_blacklist (+ permanent failure) فيمنع رجوعه نهائيّاً.
+  // ⚠️ نستدعيه قبل أيّ حذف محلّيّ كي تبقى الوثيقة موجودة حين يقرأ الـ
+  // endpoint منها __iaIdentifier (يستنتجه من الوثيقة لا من جسم الطلب).
+  // المحتوى المرفوع يدويّاً (بلا هذه العلامات) لا يمرّ من هنا إطلاقاً.
+  const isIaItem =
+    item?.__provider === "internet_archive" ||
+    Boolean(String(item?.__iaIdentifier || "").trim());
+  if (isIaItem) {
+    await authedJson("/api/admin/internet-archive/dmca", {
+      method: "POST",
+      body: { fileId: String(fileId), reason: "manual_delete_dashboard" },
+    });
+    return true;
+  }
+
   await deleteStorageUrlsByValue(collectAssetUrls(item));
   if (item?.storagePath) {
     try {

@@ -82,7 +82,17 @@ export async function POST(event) {
 	const fs = getNebrasFirestoreAdmin();
 
 	if (action === 'dismiss') {
-		const contentId = String(body?.contentId || '').trim();
+		let contentId = String(body?.contentId || '').trim();
+		// احتياط دفاعيّ: إن لم تُمرّر الواجهة المعرّف، نقرؤه من مستند البلاغ
+		// نفسه كي نضمن حذف علامة الإخفاء حتّى مع نداء قديم لا يرسل contentId.
+		if (!contentId) {
+			try {
+				const reportSnap = await fs.collection(REPORTS).doc(reportId).get();
+				contentId = String(reportSnap.data()?.contentId || '').trim();
+			} catch {
+				/* تجاهل: نكمل التجاهل حتّى لو تعذّرت قراءة المعرّف. */
+			}
+		}
 		await fs.collection(REPORTS).doc(reportId).set(
 			{ status: 'dismissed', resolvedAt: FieldValue.serverTimestamp() },
 			{ merge: true }
