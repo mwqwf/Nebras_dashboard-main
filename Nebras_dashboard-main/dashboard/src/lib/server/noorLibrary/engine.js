@@ -95,7 +95,7 @@ const DEFAULT_CONFIG = Object.freeze({
 // ║    لإعادة التفعيل مستقبلاً: اجعلها false، وأعد سطر noor في          ║
 // ║    .github/workflows/library-engines-cron.yml.                     ║
 // ╚══════════════════════════════════════════════════════════════════╝
-export const NOOR_ENGINE_HARD_DISABLED = true;
+export const NOOR_ENGINE_HARD_DISABLED = false;
 
 // ── Singleton state (per Node process) ───────────────────────────────
 const GLOBAL_KEY = '__NEBRAS_NOOR_ENGINE__';
@@ -525,6 +525,35 @@ async function processBook({ url, bookId, sections }) {
 			createdSectionsIds.push(subId);
 			sectionsCreatedDelta += 1;
 			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+		}
+	}
+
+	// قاعدة نور الجديدة: لا يمرّ أي كتاب دون مستوى secondary. إن كان القسم
+	// الرئيسي والفرعي مناسبين لكن لا يوجد ثانوي مطابق، ينشئ المصنّف اسماً
+	// محافظاً على نفس المجال العلمي بدلاً من خلط المحتوى مباشرةً تحت الفرعي.
+	if (!secondaryId && subId) {
+		const secondaryName = String(decision.newSecondaryName || 'كتب عامة').trim() || 'كتب عامة';
+		const created = await createSecondarySectionAdmin(subId, secondaryName);
+		secondaryId = String(created.id);
+		if (!created.alreadyExisted) {
+			createdSectionsIds.push(secondaryId);
+			sectionsCreatedDelta += 1;
+			await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+			const parentSub = sections.index.subsById[subId];
+			await notifyFcmSectionCreated({
+				level: 'secondary',
+				name: created.name,
+				parentName: parentSub?.name || decision.newSubName || '',
+				sectionId: created.id,
+				parentId: subId
+			});
+			await appendLog({
+				level: 'success',
+				message: `قسم ثانوي جديد أُنشئ آلياً: "${created.name}" تحت "${parentSub?.name || decision.newSubName || ''}"`,
+				sectionId: created.id,
+				parentId: subId,
+				kind: 'secondary_section_created'
+			}).catch(() => {});
 		}
 	}
 
