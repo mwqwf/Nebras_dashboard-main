@@ -86,16 +86,9 @@ const DEFAULT_CONFIG = Object.freeze({
 	maxPagesPerCall: 4
 });
 
-// ╔══════════════════════════════════════════════════════════════════╗
-// ║ ⛔ مفتاح إيقاف صارم لمحرّك «مكتبة نور» — إيقاف بدواعي امتثال حقوق   ║
-// ║    النشر. طالما القيمة = true:                                     ║
-// ║      • لا يجلب المحرّك أيّ كتاب — لا آلياً (cron) ولا يدوياً (زرّ).  ║
-// ║      • يتجاهل إعدادات RTDB حتى لو كانت enabled=true من تشغيل سابق.  ║
-// ║    الكود محفوظ بالكامل للتطوير/الضبط لاحقاً (تشديد فلتر الترخيص).   ║
-// ║    لإعادة التفعيل مستقبلاً: اجعلها false، وأعد سطر noor في          ║
-// ║    .github/workflows/library-engines-cron.yml.                     ║
-// ╚══════════════════════════════════════════════════════════════════╝
-export const NOOR_ENGINE_HARD_DISABLED = true;
+// مفتاح طوارئ فقط. التشغيل الفعلي يبقى محكوماً بـ enabled في RTDB وببوابات
+// الترخيص/التنزيل داخل fetcher.js، لذلك لا يبدأ المحرّك تلقائياً بمجرد البناء.
+export const NOOR_ENGINE_HARD_DISABLED = false;
 
 // ── Singleton state (per Node process) ───────────────────────────────
 const GLOBAL_KEY = '__NEBRAS_NOOR_ENGINE__';
@@ -456,6 +449,29 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+		if (decision.newSecondaryName) {
+			const createdSecondary = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
+			secondaryId = String(createdSecondary.id);
+			if (!createdSecondary.alreadyExisted) {
+				createdSectionsIds.push(secondaryId);
+				sectionsCreatedDelta += 1;
+				await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+				await notifyFcmSectionCreated({
+					level: 'secondary',
+					name: createdSecondary.name,
+					parentName: createdSub.name,
+					sectionId: createdSecondary.id,
+					parentId: subId
+				});
+				await appendLog({
+					level: 'success',
+					message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSecondary.name}" تحت "${createdSub.name}"`,
+					sectionId: createdSecondary.id,
+					parentId: subId,
+					kind: 'secondary_section_created'
+				}).catch(() => {});
+			}
+		}
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
@@ -480,6 +496,29 @@ async function processBook({ url, bookId, sections }) {
 				parentId: mainId,
 				kind: 'sub_section_created'
 			}).catch(() => {});
+		}
+		if (decision.newSecondaryName) {
+			const createdSecondary = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
+			secondaryId = String(createdSecondary.id);
+			if (!createdSecondary.alreadyExisted) {
+				createdSectionsIds.push(secondaryId);
+				sectionsCreatedDelta += 1;
+				await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+				await notifyFcmSectionCreated({
+					level: 'secondary',
+					name: createdSecondary.name,
+					parentName: created.name,
+					sectionId: createdSecondary.id,
+					parentId: subId
+				});
+				await appendLog({
+					level: 'success',
+					message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSecondary.name}" تحت "${created.name}"`,
+					sectionId: createdSecondary.id,
+					parentId: subId,
+					kind: 'secondary_section_created'
+				}).catch(() => {});
+			}
 		}
 	} else if (decision.kind === 'create_secondary') {
 		subId = decision.subId;

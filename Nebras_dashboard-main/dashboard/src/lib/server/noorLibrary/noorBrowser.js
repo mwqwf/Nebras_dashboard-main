@@ -20,6 +20,8 @@
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
  *                                          true إن كانت الحزمة موجودة).
+ *       NOOR_REQUIRE_STEALTH=true|false — لا نرجع إلى Puppeteer عاديّ عند
+ *                                          تعذّر stealth (افتراضي true).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
  *
@@ -31,6 +33,7 @@
  */
 
 import { env } from '$env/dynamic/private';
+import { existsSync } from 'node:fs';
 
 const GLOBAL_KEY = '__NEBRAS_NOOR_BROWSER__';
 
@@ -62,13 +65,14 @@ function readBoolEnv(name, fallback) {
 /**
  * يحاول تحميل puppeteer-extra + stealth plugin. إن لم تُثبَّت الحزم، يُرجع
  * null دون رمي خطأ. هذا يسمح للكود بالعمل على Vercel (بدون puppeteer).
- *
- * نُجرّب أوّلاً `puppeteer-extra` ثمّ نرجع لـ `puppeteer` العاديّ كاحتياط.
+ * الافتراضي يتطلّب stealth عند تفعيل Puppeteer لأنّ Noor خلف Cloudflare؛
+ * يمكن السماح بالرجوع إلى Puppeteer عادي فقط بـ NOOR_REQUIRE_STEALTH=false.
  */
 async function loadPuppeteer() {
 	const state = getGlobalState();
 	if (state.puppeteerModule) return state.puppeteerModule;
 	if (state.puppeteerEnabled === false) return null;
+	const requireStealth = readBoolEnv('NOOR_REQUIRE_STEALTH', true);
 
 	try {
 		// dynamic import لكي لا تنكسر البناءات حيث puppeteer غير مثبّت.
@@ -81,6 +85,12 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'puppeteer-extra أو stealth plugin غير متاحين — NOOR_REQUIRE_STEALTH=true يمنع التشغيل بدون Stealth.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {
@@ -97,6 +107,27 @@ async function loadPuppeteer() {
 			return null;
 		}
 	}
+}
+
+function resolveExecutablePath() {
+	const configured = String(
+		env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || ''
+	).trim();
+	if (configured) {
+		if (existsSync(configured)) return configured;
+		throw Object.assign(
+			new Error(`PUPPETEER_EXECUTABLE_PATH غير صالح أو غير موجود: ${configured}`),
+			{ reason: 'puppeteer_executable_path_invalid', status: 501 }
+		);
+	}
+	const candidates = [
+		'/usr/local/bin/google-chrome',
+		'/usr/bin/google-chrome-stable',
+		'/usr/bin/google-chrome',
+		'/usr/bin/chromium',
+		'/usr/bin/chromium-browser'
+	];
+	return candidates.find((p) => existsSync(p)) || undefined;
 }
 
 /**
@@ -144,9 +175,7 @@ async function getBrowser() {
 	}
 
 	const headless = readBoolEnv('PUPPETEER_HEADLESS', true);
-	const executablePath =
-		String(env.PUPPETEER_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '').trim() ||
-		undefined;
+	const executablePath = resolveExecutablePath();
 
 	state.browserPromise = puppeteer
 		.launch({
