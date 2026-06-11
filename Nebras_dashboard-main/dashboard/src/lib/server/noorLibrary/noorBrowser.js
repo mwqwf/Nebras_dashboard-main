@@ -20,6 +20,9 @@
  *   • متغيّرات بيئة:
  *       NOOR_USE_PUPPETEER=true|false  — تفعيل/تعطيل Puppeteer (افتراضي
  *                                          true إن كانت الحزمة موجودة).
+ *       NOOR_REQUIRE_STEALTH=true|false — اجعل stealth إلزامياً (افتراضي true)
+ *                                          لأن Noor/Cloudflare يرفضان المتصفح
+ *                                          المكشوف غالباً.
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
  *
@@ -81,14 +84,21 @@ async function loadPuppeteer() {
 		state.puppeteerEnabled = true;
 		return puppeteerExtra;
 	} catch (errExtra) {
-		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
-		// لكن أفضل من لا شيء أثناء التطوير).
+		const requireStealth = readBoolEnv('NOOR_REQUIRE_STEALTH', true);
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.lastError =
+				'Stealth Mode مطلوب لمحرّك Noor، لكن puppeteer-extra أو stealth-plugin غير متاح.';
+			return null;
+		}
+
+		// retry with plain puppeteer فقط إذا عُطّل شرط stealth صراحةً للتطوير.
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
 			state.puppeteerEnabled = true;
 			state.lastError =
-				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
+				'NOOR_REQUIRE_STEALTH=false — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare غالباً).';
 			return state.puppeteerModule;
 		} catch (errPlain) {
 			state.puppeteerEnabled = false;

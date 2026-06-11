@@ -69,7 +69,14 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	if (NORMALIZED_BLACKLIST.has(n)) return true;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (!blocked) continue;
+		// بعض الأقسام تُكتب مع زيادات وصفية أو أخطاء إملائية داخل الاسم.
+		// لذلك نرفض الاحتواء بعد التطبيع، لا المطابقة الحرفية فقط.
+		if (n.includes(blocked) || blocked.includes(n)) return true;
+	}
+	return false;
 }
 
 async function readLevel(level) {
