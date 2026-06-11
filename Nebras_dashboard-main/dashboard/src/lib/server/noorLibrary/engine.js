@@ -87,15 +87,11 @@ const DEFAULT_CONFIG = Object.freeze({
 });
 
 // ╔══════════════════════════════════════════════════════════════════╗
-// ║ ⛔ مفتاح إيقاف صارم لمحرّك «مكتبة نور» — إيقاف بدواعي امتثال حقوق   ║
-// ║    النشر. طالما القيمة = true:                                     ║
-// ║      • لا يجلب المحرّك أيّ كتاب — لا آلياً (cron) ولا يدوياً (زرّ).  ║
-// ║      • يتجاهل إعدادات RTDB حتى لو كانت enabled=true من تشغيل سابق.  ║
-// ║    الكود محفوظ بالكامل للتطوير/الضبط لاحقاً (تشديد فلتر الترخيص).   ║
-// ║    لإعادة التفعيل مستقبلاً: اجعلها false، وأعد سطر noor في          ║
-// ║    .github/workflows/library-engines-cron.yml.                     ║
+// ║ مفتاح إيقاف طارئ لمحرّك «مكتبة نور». القيمـة الافتراضية الآن false  ║
+// ║ لأن مسار الجلب محكوم ببوابة الترخيص الصارمة قبل أي تنزيل أو رفع.    ║
+// ║ إذا ظهر سبب امتثال طارئ يمكن قلبه إلى true لإيقاف اليدوي والـ cron.  ║
 // ╚══════════════════════════════════════════════════════════════════╝
-export const NOOR_ENGINE_HARD_DISABLED = true;
+export const NOOR_ENGINE_HARD_DISABLED = false;
 
 // ── Singleton state (per Node process) ───────────────────────────────
 const GLOBAL_KEY = '__NEBRAS_NOOR_ENGINE__';
@@ -456,6 +452,29 @@ async function processBook({ url, bookId, sections }) {
 				kind: 'sub_section_created'
 			}).catch(() => {});
 		}
+		if (decision.newSecondaryName) {
+			const createdSecondary = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
+			secondaryId = String(createdSecondary.id);
+			if (!createdSecondary.alreadyExisted) {
+				createdSectionsIds.push(secondaryId);
+				sectionsCreatedDelta += 1;
+				await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+				await notifyFcmSectionCreated({
+					level: 'secondary',
+					name: createdSecondary.name,
+					parentName: createdSub.name,
+					sectionId: createdSecondary.id,
+					parentId: subId
+				});
+				await appendLog({
+					level: 'success',
+					message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSecondary.name}" تحت "${createdSub.name}"`,
+					sectionId: createdSecondary.id,
+					parentId: subId,
+					kind: 'secondary_section_created'
+				}).catch(() => {});
+			}
+		}
 	} else if (decision.kind === 'create_sub') {
 		const created = await createSubSectionAdmin(mainId, decision.newSubName);
 		subId = String(created.id);
@@ -480,6 +499,29 @@ async function processBook({ url, bookId, sections }) {
 				parentId: mainId,
 				kind: 'sub_section_created'
 			}).catch(() => {});
+		}
+		if (decision.newSecondaryName) {
+			const createdSecondary = await createSecondarySectionAdmin(subId, decision.newSecondaryName);
+			secondaryId = String(createdSecondary.id);
+			if (!createdSecondary.alreadyExisted) {
+				createdSectionsIds.push(secondaryId);
+				sectionsCreatedDelta += 1;
+				await bumpStats({ sectionsCreatedDelta: 1 }).catch(() => {});
+				await notifyFcmSectionCreated({
+					level: 'secondary',
+					name: createdSecondary.name,
+					parentName: created.name,
+					sectionId: createdSecondary.id,
+					parentId: subId
+				});
+				await appendLog({
+					level: 'success',
+					message: `قسم ثانوي جديد أُنشئ آلياً: "${createdSecondary.name}" تحت "${created.name}"`,
+					sectionId: createdSecondary.id,
+					parentId: subId,
+					kind: 'secondary_section_created'
+				}).catch(() => {});
+			}
 		}
 	} else if (decision.kind === 'create_secondary') {
 		subId = decision.subId;
@@ -838,7 +880,7 @@ export async function runEngineTick() {
  *   • نُمسك أي خطأ ونعيده كنتيجة بدل أن نُسقط النداء.
  */
 export async function runCronTick() {
-	// ⛔ مفتاح الإيقاف الصارم له الأولوية المطلقة (امتثال حقوق النشر).
+	// مفتاح الإيقاف الطارئ له الأولوية المطلقة إذا فُعّل.
 	if (NOOR_ENGINE_HARD_DISABLED) {
 		return { ok: true, skipped: true, reason: 'noor_engine_hard_disabled' };
 	}
@@ -932,7 +974,7 @@ export async function startEngine() {
 			ok: false,
 			started: false,
 			reason: 'noor_engine_hard_disabled',
-			message: 'محرّك نور موقوف بمفتاح إيقاف صارم (امتثال حقوق النشر). لإعادة تفعيله اجعل NOOR_ENGINE_HARD_DISABLED=false بعد ضبط فلتر الترخيص.'
+			message: 'محرّك نور موقوف بمفتاح الإيقاف الطارئ NOOR_ENGINE_HARD_DISABLED.'
 		};
 	}
 	const state = getGlobalState();
