@@ -91,7 +91,8 @@ function idToString(value) {
  *   mainSectionName?: string,
  *   subSectionName?: string,
  *   secondarySectionName?: string,
- *   sourceUrl?: string
+ *   sourceUrl?: string,
+ *   thumbnail?: string
  * }} info
  */
 export function notifyContentAdded(info) {
@@ -117,7 +118,10 @@ export function notifyContentAdded(info) {
 			mainSectionName: info?.mainSectionName || '',
 			subSectionName: info?.subSectionName || '',
 			secondarySectionName: info?.secondarySectionName || '',
-			sourceUrl: info?.sourceUrl || ''
+			sourceUrl: info?.sourceUrl || '',
+			// الصورة المصغّرة — يقرأها التطبيق (data['thumbnail']) ليعرضها فور فتح
+			// المحتوى من الإشعار دون انتظار جلب من الشبكة.
+			thumbnail: info?.thumbnail || ''
 		}
 	});
 }

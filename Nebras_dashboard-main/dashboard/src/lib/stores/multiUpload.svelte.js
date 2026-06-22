@@ -525,6 +525,11 @@ async function uploadOne(itemId) {
 				title: startSnapshot.form.title,
 				contentType,
 				contentId: storageResult.fileId,
+				// رابط المصدر والصورة المصغّرة من نتيجة رفع Storage — يفتح بهما
+				// التطبيق المحتوى مباشرةً من حمولة الإشعار دون جلب من الشبكة.
+				sourceUrl: storageResult.downloadUrl,
+				thumbnail:
+					(storageResult.metadata && storageResult.metadata.thumbnail) || '',
 				mainSectionId: startSnapshot.form?.main_section,
 				subSectionId: startSnapshot.form?.subsection,
 				secondarySectionId: startSnapshot.form?.secondary_subsection,

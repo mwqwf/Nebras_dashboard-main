@@ -92,7 +92,16 @@ export async function commitFirestorePhase(storageResult) {
 			storagePath: storageResult.storagePath,
 			metadata: storageResult.metadata
 		});
-		return { id: storageResult.fileId, provider: 'firebase' };
+		// نُعيد رابط المصدر والصورة المصغّرة أيضاً (إضافة غير كاسرة) كي يستطيع
+		// المتصل تمريرهما في إشعار FCM، فيفتح التطبيق المحتوى نفسه مباشرةً من
+		// حمولة الإشعار دون انتظار جلب من الشبكة (أهمّ على الإنترنت الضعيف).
+		return {
+			id: storageResult.fileId,
+			provider: 'firebase',
+			downloadUrl: storageResult.downloadUrl,
+			thumbnail:
+				(storageResult.metadata && storageResult.metadata.thumbnail) || ''
+		};
 	} catch (err) {
 		await firebaseDeleteStoragePath(storageResult.storagePath);
 		throw err;

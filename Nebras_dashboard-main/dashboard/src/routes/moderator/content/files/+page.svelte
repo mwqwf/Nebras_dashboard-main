@@ -214,6 +214,11 @@
 				title: uploadForm.title,
 				contentType: contentType,
 				contentId: result?.id,
+				// رابط المصدر والصورة المصغّرة: يمكّنان التطبيق من فتح المحتوى
+				// مباشرةً من حمولة الإشعار دون جلب إضافيّ من الشبكة (مهمّ على
+				// الإنترنت الضعيف، ويتجنّب الهبوط على قائمة القسم).
+				sourceUrl: result?.downloadUrl,
+				thumbnail: result?.thumbnail,
 				mainSectionId: uploadForm.main_section,
 				subSectionId: uploadForm.subsection,
 				secondarySectionId: uploadForm.secondary_subsection,
