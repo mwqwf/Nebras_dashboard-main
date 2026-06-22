@@ -24,8 +24,7 @@
 		startEngineRemote,
 		stopEngineRemote,
 		updateEngineSeeds,
-		resetEngineCursor,
-		factoryResetEngine
+		resetEngineCursor
 	} from '$lib/api/noorLibrary.js';
 
 	// ─── State ─────────────────────────────────────────────────
@@ -35,9 +34,6 @@
 	let isToggling = $state(false);
 	let isSavingSeeds = $state(false);
 	let isResettingCursor = $state(false);
-	let isFactoryResetting = $state(false);
-	let showFactoryResetConfirm = $state(false);
-	let factoryResetTypedConfirm = $state('');
 
 	let topError = $state('');
 	let topNotice = $state('');
@@ -157,40 +153,6 @@
 			topError = err?.message || 'فشل إعادة المؤشّر.';
 		} finally {
 			isResettingCursor = false;
-		}
-	}
-
-	function openFactoryResetDialog() {
-		factoryResetTypedConfirm = '';
-		showFactoryResetConfirm = true;
-	}
-
-	function closeFactoryResetDialog() {
-		if (isFactoryResetting) return;
-		showFactoryResetConfirm = false;
-		factoryResetTypedConfirm = '';
-	}
-
-	async function handleFactoryReset() {
-		if (isFactoryResetting) return;
-		if (factoryResetTypedConfirm.trim() !== 'مسح') return;
-		isFactoryResetting = true;
-		topError = '';
-		topNotice = '';
-		try {
-			const result = await factoryResetEngine();
-			const c = result?.cleared || {};
-			topNotice =
-				`تمّ المسح: ${c.uploads + c.content_files} كتاب، ` +
-				`${c.mains} رئيسي + ${c.subs} فرعي + ${c.secondaries} ثانوي، ` +
-				`${c.registry} سجلّ مركزي، ${c.failures} فشل.`;
-			showFactoryResetConfirm = false;
-			factoryResetTypedConfirm = '';
-			await refresh();
-		} catch (err) {
-			topError = err?.message || 'فشل تنفيذ إعادة الضبط.';
-		} finally {
-			isFactoryResetting = false;
 		}
 	}
 
@@ -464,102 +426,8 @@
 			</ul>
 		{/if}
 	</section>
-
-	<!-- ═══════════════ Danger Zone — Factory Reset ═══════════════ -->
-	<section class="card danger-card">
-		<div class="card-header">
-			<div>
-				<h2 class="card-title danger-title">منطقة الخطر</h2>
-				<p class="card-desc">
-					"إعادة ضبط المصنع للروبوت" تمسح <strong>كلّ ما أحدثه المحرّك الآلي</strong>:
-					الكتب التي رفعها (<code>__provider: 'noor-library'</code>)، الأقسام التي
-					أنشأها (<code>__createdBy: 'noor_library_engine'</code>)، السجلّ المركزيّ،
-					وسجلّ الفشل، والمؤشّر الحالي. <strong>لا يلمس أيّ محتوى أو قسم أنشأه
-					مديرٌ بشريّ.</strong> العمليّة غير قابلة للتراجع.
-				</p>
-			</div>
-		</div>
-
-		<div class="danger-actions">
-			<button
-				type="button"
-				class="btn btn-nuclear"
-				onclick={openFactoryResetDialog}
-				disabled={isFactoryResetting || isLoading}
-			>
-				<span class="btn-icon">⚠️</span>
-				إعادة ضبط المصنع للروبوت (مسح الفوضى)
-			</button>
-		</div>
-	</section>
 </div>
 
-{#if showFactoryResetConfirm}
-	<div
-		class="modal-backdrop"
-		onclick={closeFactoryResetDialog}
-		onkeydown={(e) => {
-			if (e.key === 'Escape') closeFactoryResetDialog();
-		}}
-		role="presentation"
-	>
-		<div
-			class="modal-card"
-			onclick={(e) => e.stopPropagation()}
-			onkeydown={(e) => e.stopPropagation()}
-			role="dialog"
-			aria-modal="true"
-			aria-labelledby="factory-reset-title"
-			tabindex="-1"
-		>
-			<header class="modal-header">
-				<h3 id="factory-reset-title" class="modal-title">
-					<span class="modal-icon">⚠️</span>
-					تأكيد إعادة ضبط المصنع
-				</h3>
-			</header>
-			<div class="modal-body">
-				<p>
-					ستُحذف <strong>كلّ</strong> الكتب التي جلبها الروبوت من مكتبة نور،
-					و<strong>كلّ</strong> الأقسام (رئيسي/فرعي/ثانوي) التي أنشأها، والسجلّ
-					المركزيّ كاملاً.
-				</p>
-				<p class="modal-warning">
-					هذه العمليّة <strong>لا يمكن التراجع عنها</strong>. الأقسام والمحتوى
-					الذي أنشأه مديرٌ بشريّ لن يتأثّر.
-				</p>
-				<label class="modal-confirm">
-					اكتب <code>مسح</code> للتأكيد:
-					<input
-						type="text"
-						bind:value={factoryResetTypedConfirm}
-						placeholder="مسح"
-						disabled={isFactoryResetting}
-						autocomplete="off"
-					/>
-				</label>
-			</div>
-			<footer class="modal-footer">
-				<button
-					type="button"
-					class="btn btn-secondary"
-					onclick={closeFactoryResetDialog}
-					disabled={isFactoryResetting}
-				>
-					إلغاء
-				</button>
-				<button
-					type="button"
-					class="btn btn-nuclear"
-					onclick={handleFactoryReset}
-					disabled={isFactoryResetting || factoryResetTypedConfirm.trim() !== 'مسح'}
-				>
-					{isFactoryResetting ? 'جارٍ المسح...' : 'نعم، امسح كلّ شيء'}
-				</button>
-			</footer>
-		</div>
-	</div>
-{/if}
 
 <style>
 	.page { display: flex; flex-direction: column; gap: 1.25rem; max-width: 1280px; }

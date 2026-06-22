@@ -52,11 +52,6 @@
 		}
 	}
 
-	function onFactory() {
-		if (!confirm('سيحذف هذا كلّ ما رفعه هذا المحرّك (محتواه فقط). تأكيد؟')) return;
-		runAction('factory', () => api.resetEngine('factory'));
-	}
-
 	async function onDiagnose() {
 		if (actionInFlight || !api.diagnose) return;
 		actionInFlight = 'diagnose';
@@ -114,7 +109,6 @@
 		<button class="btn" disabled={actionInFlight !== ''} onclick={() => runAction('stop', api.stopEngine)}>■ إيقاف</button>
 		<button class="btn" disabled={actionInFlight !== ''} onclick={() => runAction('tick', api.runOneTick)}>⟳ دورة الآن</button>
 		<button class="btn" disabled={actionInFlight !== ''} onclick={() => runAction('reset', () => api.resetEngine('cursor'))}>↺ تصفير المؤشّر</button>
-		<button class="btn danger" disabled={actionInFlight !== ''} onclick={onFactory}>🗑 حذف الكل</button>
 		{#if api.diagnose}
 			<button class="btn warn" disabled={actionInFlight !== ''} onclick={onDiagnose}>🔎 تشخيص السبب</button>
 		{/if}

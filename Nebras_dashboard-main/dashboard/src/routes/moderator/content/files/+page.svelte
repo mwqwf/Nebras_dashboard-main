@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { listMyFiles, removeFile, updateFile, listMyMainSections, listMySubSections, listMySecondarySections, getLastPartialFailures } from '$lib/api/moderator.js';
-	import { createFileUploader, createResumeUploader, formatFileSize, mimeToContentType } from '$lib/utils/fileUpload.js';
+	import { createFileUploader, createResumeUploader, formatFileSize, mimeToContentType, validateMultiUploadFile, compressImageFile } from '$lib/utils/fileUpload.js';
 	import { notifyContentAdded } from '$lib/utils/notifyEvents.js';
 	import { t } from '$lib/i18n/store.svelte.js';
 	import { tokenize, highlightMatches } from '$lib/utils/search.js';
@@ -43,6 +43,7 @@
 	let uploadStatus = $state(''); // '' | 'initiating' | 'uploading' | 'completing' | 'completed' | 'failed'
 	let uploadProgress = $state(0);
 	let currentUploader = $state(null);
+	let isUploading = $state(false); // حارس منع الإرسال المزدوج
 
 	// Edit modal
 	let showEditModal = $state(false);
@@ -56,6 +57,11 @@
 	let editHierarchySnapshot = $state({ main_section: '', subsection: '', secondary_subsection: '' });
 	let editFormError = $state('');
 	let editFormLoading = $state(false);
+
+	// Bulk selection / delete
+	let selectedIds = $state(new Set());
+	let showBulkDeleteModal = $state(false);
+	let bulkDeleting = $state(false);
 
 	// Delete modal
 	let showDeleteModal = $state(false);
@@ -109,7 +115,7 @@
 			});
 			items = data.results; totalCount = data.count;
 			partialFailures = getLastPartialFailures();
-		} catch (err) { error = err.message; }
+		} catch (err) { error = friendlyError(err, 'تعذّر تحميل القائمة.'); }
 		finally { isLoading = false; }
 	}
 
@@ -152,9 +158,29 @@
 		if (mainSectionsList.length === 0) fetchMainOptions();
 	}
 
+	// رسائل عربية واضحة لنتيجة فحص الملف (بدل الإنجليزية الخام من المكتبة).
+	function localizeUploadCheck(check) {
+		const msg = check?.error || check?.warn || '';
+		if (/exceeds/i.test(msg)) return 'حجم الملف يتجاوز الحدّ المسموح (500 ميجابايت).';
+		if (/Unsupported/i.test(msg)) return 'نوع الملف غير مدعوم. المسموح: PDF، وثائق، صوت، فيديو، صور.';
+		if (/Large file/i.test(msg)) return 'ملف كبير الحجم — قد يستغرق الرفع وقتاً أطول.';
+		return msg;
+	}
+
 	function handleFileSelect(e) {
 		const f = e.target.files?.[0];
-		if (f) { uploadFile = f; if (!uploadForm.title) uploadForm.title = f.name.replace(/\.[^/.]+$/, ''); }
+		if (!f) return;
+		// تحقّق مبكر من النوع/الحجم قبل أيّ رفع (يمنع رفعات فاشلة واستهلاك الباندويث).
+		const check = validateMultiUploadFile(f);
+		if (!check.ok) {
+			uploadFormError = localizeUploadCheck(check);
+			uploadFile = null;
+			e.target.value = ''; // اسمح بإعادة اختيار نفس الملف لاحقاً
+			return;
+		}
+		uploadFormError = check.warn ? localizeUploadCheck(check) : '';
+		uploadFile = f;
+		if (!uploadForm.title) uploadForm.title = f.name.replace(/\.[^/.]+$/, '');
 	}
 
 	function handleUploadMainChange() {
@@ -176,10 +202,13 @@
 	}
 
 	async function startUpload() {
+		if (isUploading) return; // 🛡️ منع الإرسال المزدوج (نقرتان سريعتان)
 		uploadFormError = '';
-		if (!uploadFile) { uploadFormError = 'Please select a file.'; return; }
-		if (!uploadForm.subsection) { uploadFormError = 'Please select a sub section.'; return; }
-		if (!uploadForm.title) { uploadFormError = 'Please enter a title.'; return; }
+		if (!uploadFile) { uploadFormError = 'اختر ملفاً أولاً.'; return; }
+		const fileCheck = validateMultiUploadFile(uploadFile);
+		if (!fileCheck.ok) { uploadFormError = localizeUploadCheck(fileCheck); return; }
+		if (!uploadForm.subsection) { uploadFormError = 'اختر قسماً فرعياً.'; return; }
+		if (!uploadForm.title) { uploadFormError = 'أدخل عنواناً.'; return; }
 
 		const contentType = mimeToContentType(uploadFile.type);
 		const metadata = {
@@ -197,14 +226,19 @@
 		if (uploadForm.license_url) metadata.license_url = uploadForm.license_url.trim();
 		if (uploadForm.license_status) metadata.license_status = uploadForm.license_status.trim();
 
-		const uploader = createFileUploader(uploadFile, metadata, uploadThumbnail, {
-			onProgress: (p) => { uploadProgress = p; },
-			onStatus: (s) => { uploadStatus = s; },
-			onError: (msg) => { uploadFormError = msg; }
-		});
-		currentUploader = uploader;
-
+		isUploading = true;
 		try {
+			// ضغط الصورة المصغّرة قبل الرفع (يقلّل حجم Storage وزمن تحميل التطبيق).
+			let thumb = uploadThumbnail;
+			if (thumb) { try { thumb = await compressImageFile(thumb); } catch { thumb = uploadThumbnail; } }
+
+			const uploader = createFileUploader(uploadFile, metadata, thumb, {
+				onProgress: (p) => { uploadProgress = p; },
+				onStatus: (s) => { uploadStatus = s; },
+				onError: (msg) => { uploadFormError = msg; }
+			});
+			currentUploader = uploader;
+
 			const result = await uploader.start();
 			// إشعار FCM غير مُعطِّل: لا نَوقف التدفّق إن فشل.
 			const mainName = mainSectionsList.find((m) => String(m.id) === String(uploadForm.main_section))?.name || '';
@@ -227,7 +261,9 @@
 				secondarySectionName: secName
 			});
 			setTimeout(() => { showUploadModal = false; if (hasSearched) fetchItems(); }, 800);
-		} catch { /* error already handled via onError */ }
+		} catch { /* error already handled via onError */ } finally {
+			isUploading = false;
+		}
 	}
 
 	function cancelUpload() {
@@ -325,8 +361,22 @@
 				...(editThumbnail ? { thumbnail: editThumbnail } : {})
 			});
 			showEditModal = false; if (hasSearched) fetchItems();
-		} catch (err) { editFormError = err.message; }
+		} catch (err) { editFormError = friendlyError(err); }
 		finally { editFormLoading = false; }
+	}
+
+	// رسالة خطأ مفهومة بدل النصّ الخام/JSON الآتي من طبقة الـ API.
+	function friendlyError(err, fallback = 'حدث خطأ غير متوقّع. حاول مجدداً.') {
+		let msg = err?.message ?? String(err ?? '');
+		if (msg.startsWith('{') || msg.startsWith('[')) {
+			try { const o = JSON.parse(msg); msg = o?.message || o?.error || o?.detail || ''; } catch { /* ليست JSON */ }
+		}
+		msg = String(msg || '').trim();
+		if (!msg) return fallback;
+		if (/network|failed to fetch|networkerror/i.test(msg)) return 'تعذّر الاتصال بالخادم. تحقّق من الإنترنت وحاول مجدداً.';
+		if (/permission|forbidden|unauthor/i.test(msg)) return 'لا تملك صلاحية لهذه العملية.';
+		if (/quota|exceeded/i.test(msg)) return 'تم تجاوز حدّ التخزين/الحصّة. حاول لاحقاً.';
+		return msg; // رسالة عربية أو مفهومة أصلاً
 	}
 
 	// ─── Delete ─────────────────────────────────────────
@@ -334,8 +384,34 @@
 	async function handleDelete() {
 		deleteLoading = true;
 		try { await removeFile(deletingItem.id); showDeleteModal = false; deletingItem = null; if (hasSearched) fetchItems(); }
-		catch (err) { error = err.message; showDeleteModal = false; }
+		catch (err) { error = friendlyError(err); showDeleteModal = false; }
 		finally { deleteLoading = false; }
+	}
+
+	// ─── Bulk select / delete ───────────────────────────
+	let allSelected = $derived(items.length > 0 && items.every((it) => selectedIds.has(it.id)));
+	function toggleSelect(id) {
+		const next = new Set(selectedIds);
+		if (next.has(id)) next.delete(id); else next.add(id);
+		selectedIds = next;
+	}
+	function clearSelection() { selectedIds = new Set(); }
+	function toggleSelectAll() {
+		selectedIds = allSelected ? new Set() : new Set(items.map((it) => it.id));
+	}
+	async function handleBulkDelete() {
+		if (bulkDeleting || selectedIds.size === 0) return;
+		bulkDeleting = true;
+		const ids = [...selectedIds];
+		let ok = 0, fail = 0;
+		for (const id of ids) {
+			try { await removeFile(id); ok += 1; } catch { fail += 1; }
+		}
+		bulkDeleting = false;
+		showBulkDeleteModal = false;
+		selectedIds = new Set();
+		error = fail > 0 ? `حُذف ${ok} عنصراً، وتعذّر حذف ${fail}.` : '';
+		if (hasSearched) fetchItems();
 	}
 
 	function handleRowClick(item) {
@@ -492,11 +568,24 @@
 				<p>{t('common.search_no_results')}</p>
 			</div>
 		{:else}
+			<div class="bulk-bar" style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap; margin-bottom:0.75rem;">
+				<label style="display:flex; align-items:center; gap:0.4rem; cursor:pointer; font-size:0.85rem;">
+					<input type="checkbox" checked={allSelected} onchange={toggleSelectAll} />
+					<span>تحديد الكل</span>
+				</label>
+				{#if selectedIds.size > 0}
+					<span style="font-size:0.85rem; opacity:0.8;">{selectedIds.size} محدّد</span>
+					<button type="button" class="btn btn-danger" onclick={() => (showBulkDeleteModal = true)}>🗑 حذف المحدد</button>
+					<button type="button" class="btn btn-secondary" onclick={clearSelection}>إلغاء التحديد</button>
+				{/if}
+			</div>
 			<div class="file-list">
 				{#each items as item (item.id)}
 					<!-- svelte-ignore a11y_click_events_have_key_events -->
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div class="file-row" class:file-row-pending={item.upload_status === 'pending'} onclick={() => handleRowClick(item)}>
+						<!-- svelte-ignore a11y_click_events_have_key_events -->
+						<input type="checkbox" checked={selectedIds.has(item.id)} onclick={(e) => e.stopPropagation()} onchange={() => toggleSelect(item.id)} style="flex:none; margin-inline-start:0.25rem; width:1.05rem; height:1.05rem; cursor:pointer;" />
 						<div class="file-icon">{contentTypeIcon(item.metadata?.content_type)}</div>
 						<div class="file-info">
 							<span class="file-name">{@html highlightMatches(item.metadata?.title || item.filename || 'Untitled', searchTokens)}</span>
@@ -590,7 +679,7 @@
 								<span>{t('content.click_select')}</span>
 								<span class="upload-hint">{t('content.upload_hint')}</span>
 							</label>
-							<input type="file" id="upload-file" class="file-input-hidden" onchange={handleFileSelect} />
+							<input type="file" id="upload-file" accept=".pdf,.epub,.doc,.docx,.txt,.rtf,.mp3,.m4a,.wav,.ogg,.aac,.flac,.mp4,.webm,.mov,.mkv,.avi,.jpg,.jpeg,.png,.gif,.webp,.bmp,.svg" class="file-input-hidden" onchange={handleFileSelect} />
 						{/if}
 					</div>
 					<div class="form-group"><label for="up-title" class="form-label">{t('common.title')} *</label><input type="text" id="up-title" bind:value={uploadForm.title} class="form-input" placeholder={t('common.title')} /></div>
@@ -660,7 +749,7 @@
 					</div>
 					<div class="modal-actions">
 						<button class="btn btn-secondary" onclick={() => (showUploadModal = false)}>{t('common.cancel')}</button>
-						<button class="btn btn-primary" onclick={startUpload}>
+						<button class="btn btn-primary" onclick={startUpload} disabled={isUploading}>
 							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="btn-icon"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
 							{t('content.start_upload')}
 						</button>
@@ -698,6 +787,21 @@
 					{#if detailItem.file_url}<div class="detail-row"><span class="detail-label">{t('content.url')}</span><span class="detail-value"><a href={detailItem.file_url} target="_blank" rel="noopener" class="link">{t('content.open_file')}</a></span></div>{/if}
 					<div class="detail-row"><span class="detail-label">{t('content.created')}</span><span class="detail-value">{formatDate(detailItem.metadata?.created_at)}</span></div>
 				</div>
+			</div>
+		</div>
+	</div>
+{/if}
+
+<!-- Bulk Delete Modal -->
+{#if showBulkDeleteModal}
+	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+	<div class="modal-overlay" role="dialog" tabindex="-1" onkeydown={(e) => e.key === 'Escape' && (showBulkDeleteModal = false)} onclick={(e) => { if (e.target === e.currentTarget) showBulkDeleteModal = false; }}>
+		<div class="modal modal-sm animate-fade-in">
+			<div class="modal-header"><h2 class="modal-title">حذف مجمّع</h2><button class="modal-close" aria-label="Close" onclick={() => (showBulkDeleteModal = false)}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 18L18 6M6 6l12 12" stroke-linecap="round" stroke-linejoin="round" /></svg></button></div>
+			<p class="delete-message">سيُحذف <strong>{selectedIds.size}</strong> عنصراً نهائياً مع ملفّاتها. لا يمكن التراجع عن هذه العملية.</p>
+			<div class="modal-actions pad-actions">
+				<button class="btn btn-secondary" onclick={() => (showBulkDeleteModal = false)}>إلغاء</button>
+				<button class="btn btn-danger" onclick={handleBulkDelete} disabled={bulkDeleting}>{bulkDeleting ? 'جارٍ الحذف…' : 'حذف الكل'}</button>
 			</div>
 		</div>
 	</div>

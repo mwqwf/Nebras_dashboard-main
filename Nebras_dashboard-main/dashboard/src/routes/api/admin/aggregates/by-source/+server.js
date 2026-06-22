@@ -106,7 +106,30 @@ export async function GET(event) {
 		if (secId) b.secIds.add(secId);
 	}
 
-	for (const doc of filesSnap.docs) ingest(doc.data() || {});
+	// أثناء نفس المسح: اجمع «الأكثر مشاهدةً» و«المحتوى الذي لم يُشاهَد بعد»
+	// (بيانات view_count/play_count يكتبها التطبيق عبر ContentEngagementService).
+	const scored = [];
+	let neverViewedCount = 0;
+	for (const doc of filesSnap.docs) {
+		const d = doc.data() || {};
+		ingest(d);
+		const views = Number(d.view_count ?? d.viewCount ?? d.metadata?.view_count ?? 0) || 0;
+		const plays = Number(d.play_count ?? d.playCount ?? d.metadata?.play_count ?? 0) || 0;
+		if (views === 0 && plays === 0) {
+			neverViewedCount += 1;
+		} else {
+			scored.push({
+				id: String(doc.id),
+				title: String(d.metadata?.title ?? d.title ?? d.filename ?? doc.id),
+				type: pickType(d),
+				views,
+				plays,
+				score: views * 3 + plays * 2
+			});
+		}
+	}
+	scored.sort((a, b) => b.score - a.score);
+	const topContent = scored.slice(0, 20);
 
 	const sources = Object.entries(buckets).map(([key, b]) => ({
 		source: key,
@@ -139,6 +162,8 @@ export async function GET(event) {
 			}
 		},
 		sources,
+		topContent,
+		neverViewedCount,
 		rawProviders
 	});
 }

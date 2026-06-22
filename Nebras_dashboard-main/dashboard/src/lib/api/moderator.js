@@ -307,6 +307,75 @@ function buildUploadMirrorFields(current, metadata) {
   };
 }
 
+/**
+ * يحسب «المسار القانونيّ» (trail) لقسم محتوى انطلاقًا من المعرّفات المطلوبة:
+ * يقرأ سجلّات الأقسام الفعليّة، يستنتج الآباء من الأبناء لضمان سلسلة صحيحة،
+ * يجلب الأسماء المحدَّثة، ويُصفّر المستويات الأعمق غير المُختارة. يُستعمل عند
+ * *نقل* المحتوى كي لا يبقى اسم/معرّف قسمٍ قديم عالقًا في الوثيقة.
+ * @param {{ main_section?: any, subsection?: any, secondary_subsection?: any }} sel
+ */
+async function resolveContentSectionTrail(sel = {}) {
+  const norm = (v) => {
+    const s = String(v ?? "").trim();
+    return s ? s : null;
+  };
+  let mainId = norm(sel.main_section);
+  let subId = norm(sel.subsection);
+  let secId = norm(sel.secondary_subsection);
+  let mainName = null;
+  let subName = null;
+  let secName = null;
+
+  // الثانويّ → اسمه + أبوه القانونيّ (الفرعيّ الحقيقيّ يحكم).
+  if (secId) {
+    const secRec = await clientFsGetSectionRecord("secondary", secId);
+    if (secRec) {
+      secName = asTrimmedString(secRec.name) || null;
+      const parentSub = norm(secRec.sub_section);
+      if (parentSub) subId = parentSub;
+    } else {
+      secId = null; // ثانويّ غير موجود → أُلغِ
+    }
+  }
+
+  // الفرعيّ → اسمه + أبوه القانونيّ (الرئيسيّ). لا فرعيّ ⇒ لا ثانويّ.
+  if (subId) {
+    const subRec = await clientFsGetSectionRecord("sub", subId);
+    if (subRec) {
+      subName = asTrimmedString(subRec.name) || null;
+      const parentMain = norm(subRec.main_section);
+      if (parentMain) mainId = parentMain;
+    } else {
+      subId = null;
+      secId = null;
+      secName = null;
+    }
+  } else {
+    secId = null;
+    secName = null;
+  }
+
+  // الرئيسيّ → اسمه.
+  if (mainId) {
+    const mainRec = await clientFsGetSectionRecord("main", mainId);
+    if (mainRec) {
+      mainName = asTrimmedString(mainRec.name) || null;
+    } else {
+      mainId = null;
+    }
+  }
+
+  return {
+    main_section: mainId,
+    main_section_id: mainId,
+    main_section_name: mainName,
+    subsection: subId,
+    subsection_name: subName,
+    secondary_subsection: secId,
+    secondary_subsection_name: secName,
+  };
+}
+
 // ─── Main Sections ──────────────────────────────────────
 
 const SECTIONS_ROOT = "sections_unified";
@@ -731,20 +800,30 @@ export async function removeMainSection(id) {
     subIds.some((subId) => sameSectionId(sec.sub_section, subId)),
   );
   const secondaryIds = secondaryRows.map((sec) => sec.id);
-  const fileRowsToDelete = fileRows.filter((row) => {
-    const subMatch = subIds.some((subId) => sameSectionId(row?.metadata?.subsection, subId));
-    const secMatch = secondaryIds.some((secId) =>
-      sameSectionId(row?.metadata?.secondary_subsection, secId),
+  // مُطابِق شامل: المحتوى يخصّ هذا القسم الرئيسيّ إن طابق مباشرةً (main_section)
+  // أو طابق أحد أقسامه الفرعيّة/الثانويّة. نقرأ من الميتاداتا ومن حقول المرآة
+  // العليا معًا حتى لا ينجو محتوى مرتبط مباشرةً بالرئيسيّ (بلا قسم فرعي) ولا
+  // محتوى قديم لا يحمل سوى حقول المرآة.
+  const belongsToMain = (row) => {
+    const md = row?.metadata || {};
+    const mainMatch =
+      sameSectionId(md.main_section, id) ||
+      sameSectionId(md.main_section_id, id) ||
+      sameSectionId(row?.main_section, id) ||
+      sameSectionId(row?.main_section_id, id);
+    const subMatch = subIds.some(
+      (subId) =>
+        sameSectionId(md.subsection, subId) || sameSectionId(row?.subsection, subId),
     );
-    return subMatch || secMatch;
-  });
-  const videosToDelete = videos.filter((row) => {
-    const subMatch = subIds.some((subId) => sameSectionId(row?.metadata?.subsection, subId));
-    const secMatch = secondaryIds.some((secId) =>
-      sameSectionId(row?.metadata?.secondary_subsection, secId),
+    const secMatch = secondaryIds.some(
+      (secId) =>
+        sameSectionId(md.secondary_subsection, secId) ||
+        sameSectionId(row?.secondary_subsection, secId),
     );
-    return subMatch || secMatch;
-  });
+    return mainMatch || subMatch || secMatch;
+  };
+  const fileRowsToDelete = fileRows.filter(belongsToMain);
+  const videosToDelete = videos.filter(belongsToMain);
   await deleteStorageUrlsByValue([
     ...collectAssetUrls(mainRow || {}),
     ...subRows.flatMap(collectAssetUrls),
@@ -1011,20 +1090,21 @@ export async function removeSubSection(id) {
   const secondaryIds = secondaryRows.map((sec) => sec.id);
   const fileRows = await clientFsListFileRowsMerged();
   const videos = await clientFsListYoutubeRecords();
-  const fileRowsToDelete = fileRows.filter((row) => {
-    const subMatch = sameSectionId(row?.metadata?.subsection, id);
-    const secMatch = secondaryIds.some((secId) =>
-      sameSectionId(row?.metadata?.secondary_subsection, secId),
+  // المحتوى يخصّ هذا القسم الفرعيّ إن طابقه مباشرةً أو طابق أحد أقسامه
+  // الثانويّة. نقرأ من الميتاداتا وحقول المرآة العليا معًا (احترازًا).
+  const belongsToSub = (row) => {
+    const md = row?.metadata || {};
+    const subMatch =
+      sameSectionId(md.subsection, id) || sameSectionId(row?.subsection, id);
+    const secMatch = secondaryIds.some(
+      (secId) =>
+        sameSectionId(md.secondary_subsection, secId) ||
+        sameSectionId(row?.secondary_subsection, secId),
     );
     return subMatch || secMatch;
-  });
-  const videosToDelete = videos.filter((row) => {
-    const subMatch = sameSectionId(row?.metadata?.subsection, id);
-    const secMatch = secondaryIds.some((secId) =>
-      sameSectionId(row?.metadata?.secondary_subsection, secId),
-    );
-    return subMatch || secMatch;
-  });
+  };
+  const fileRowsToDelete = fileRows.filter(belongsToSub);
+  const videosToDelete = videos.filter(belongsToSub);
   await deleteStorageUrlsByValue([
     ...collectAssetUrls(subRow || {}),
     ...secondaryRows.flatMap(collectAssetUrls),
@@ -1321,12 +1401,12 @@ export async function removeSecondarySection(id) {
   const secRow = await clientFsGetSectionRecord("secondary", id);
   const fileRows = await clientFsListFileRowsMerged();
   const videos = await clientFsListYoutubeRecords();
-  const fileRowsToDelete = fileRows.filter((row) =>
-    sameSectionId(row?.metadata?.secondary_subsection, id),
-  );
-  const videosToDelete = videos.filter((row) =>
-    sameSectionId(row?.metadata?.secondary_subsection, id),
-  );
+  // المحتوى يخصّ هذا القسم الثانويّ (من الميتاداتا أو حقل المرآة العليا).
+  const belongsToSecondary = (row) =>
+    sameSectionId(row?.metadata?.secondary_subsection, id) ||
+    sameSectionId(row?.secondary_subsection, id);
+  const fileRowsToDelete = fileRows.filter(belongsToSecondary);
+  const videosToDelete = videos.filter(belongsToSecondary);
   await deleteStorageUrlsByValue([
     ...collectAssetUrls(secRow || {}),
     ...fileRowsToDelete.flatMap(collectAssetUrls),
@@ -1789,7 +1869,53 @@ export async function updateFile(fileId, data) {
       } catch {}
     }
   }
+  // ── نقل الأقسام (move): إن طلب المستخدم تغيير أيّ مستوى قسم، نُعيد حساب
+  // «المسار القانونيّ» كاملًا — معرّفات + أسماء محدَّثة + تصفير المستويات
+  // الأعمق غير المُختارة — كي لا يبقى أيّ أثر للقسم القديم لا في الميتاداتا
+  // ولا في حقول المرآة العليا (التي يقرأها التطبيق أوّلًا). تعديلُ الاسم وحده
+  // دون لمس الأقسام لا يدخل هنا إطلاقًا، فيبقى القسم كما هو تمامًا.
+  const incomingMeta = data?.metadata || {};
+  const wantsMove =
+    hasOwn(incomingMeta, "main_section") ||
+    hasOwn(incomingMeta, "subsection") ||
+    hasOwn(incomingMeta, "secondary_subsection");
+  let trail = null;
+  if (wantsMove) {
+    trail = await resolveContentSectionTrail({
+      main_section: next.metadata.main_section,
+      subsection: next.metadata.subsection,
+      secondary_subsection: next.metadata.secondary_subsection,
+    });
+    // المحتوى يجب أن يبقى ضمن قسم فرعيّ صالح كي يظهر في التطبيق (يُطابق
+    // شرط الرفع). نمنع نقله إلى قسم رئيسيّ بلا فرعيّ فيصير يتيمًا/مخفيًّا.
+    if (!trail.subsection) {
+      throw new Error(
+        "اختر قسمًا فرعيًّا صالحًا قبل الحفظ — لا يمكن نقل المحتوى إلى قسم رئيسي بلا قسم فرعي.",
+      );
+    }
+    next.metadata.main_section = trail.main_section;
+    next.metadata.main_section_id = trail.main_section_id;
+    next.metadata.main_section_name = trail.main_section_name;
+    next.metadata.subsection = trail.subsection;
+    next.metadata.subsection_name = trail.subsection_name;
+    next.metadata.secondary_subsection = trail.secondary_subsection;
+    next.metadata.secondary_subsection_name = trail.secondary_subsection_name;
+  }
+
   Object.assign(next, buildUploadMirrorFields(next, next.metadata));
+
+  if (trail) {
+    // فرض القيم القانونيّة على حقول المرآة العليا (تتجاوز fallback الـ ??
+    // الذي قد يُبقي معرّف/اسم قسمٍ قديم عند تفريغ مستوى أثناء النقل).
+    next.main_section = trail.main_section;
+    next.main_section_id = trail.main_section_id;
+    next.main_section_name = trail.main_section_name;
+    next.subsection = trail.subsection;
+    next.subsection_name = trail.subsection_name;
+    next.secondary_subsection = trail.secondary_subsection;
+    next.secondary_subsection_name = trail.secondary_subsection_name;
+  }
+
   await clientFsWriteFileMirrorBoth(fileId, next);
   return next;
 }

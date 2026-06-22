@@ -70,6 +70,12 @@
 				<span>الأقسام (رئيسي/فرعي/ثانوي)</span>
 				<strong>{bySource.totals.sections.main} / {bySource.totals.sections.sub} / {bySource.totals.sections.secondary}</strong>
 			</div>
+			{#if bySource.neverViewedCount !== undefined}
+				<div class="tcard">
+					<span>محتوى لم يُشاهَد بعد</span>
+					<strong>{bySource.neverViewedCount}</strong>
+				</div>
+			{/if}
 		</section>
 
 		<!-- بطاقة لكلّ مصدر -->
@@ -117,6 +123,23 @@
 				</article>
 			{/each}
 		</section>
+
+		{#if bySource.topContent && bySource.topContent.length > 0}
+			<section class="topviewed">
+				<h3>الأكثر مشاهدةً (حسب المشاهدات والتشغيل)</h3>
+				<ol class="tv-list">
+					{#each bySource.topContent as c, i (c.id)}
+						<li>
+							<span class="tv-rank">{i + 1}</span>
+							<span class="tv-title">{c.title}</span>
+							<span class="tv-type">{TYPE_LABEL[c.type] || c.type}</span>
+							<span class="tv-metric" title="مشاهدات">👁 {c.views}</span>
+							<span class="tv-metric" title="تشغيل">▶ {c.plays}</span>
+						</li>
+					{/each}
+				</ol>
+			</section>
+		{/if}
 
 		{#if bySource.rawProviders}
 			<section class="raw">
@@ -172,4 +195,13 @@
 	.raw { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 0.9rem 1rem; margin-bottom: 1.25rem; }
 	.raw h3 { font-size: 0.95rem; font-weight: 700; margin: 0 0 0.6rem; }
 	.raw .hint { color: #94a3b8; font-size: 0.78rem; margin: 0.6rem 0 0; }
+	.topviewed { background: #fff; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 0.9rem 1rem; margin-bottom: 1.25rem; }
+	.topviewed h3 { font-size: 0.95rem; font-weight: 700; margin: 0 0 0.6rem; }
+	.tv-list { list-style: none; margin: 0; padding: 0; counter-reset: tv; }
+	.tv-list li { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0; border-bottom: 1px dashed #e2e8f0; font-size: 0.85rem; }
+	.tv-list li:last-child { border-bottom: none; }
+	.tv-rank { width: 1.6rem; height: 1.6rem; flex: none; display: grid; place-items: center; background: #f1f5f9; border-radius: 50%; font-weight: 700; font-size: 0.78rem; color: #334155; }
+	.tv-title { flex: 1; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.tv-type { color: #64748b; font-size: 0.78rem; white-space: nowrap; }
+	.tv-metric { color: #475569; font-variant-numeric: tabular-nums; white-space: nowrap; }
 </style>

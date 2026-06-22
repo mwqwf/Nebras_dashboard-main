@@ -80,10 +80,6 @@
 	function onResetCursor() {
 		runAction('reset', () => resetEngine('cursor'));
 	}
-	async function onFactoryReset() {
-		if (!confirm('سيحذف هذا كلّ ما رفعه محرّك IA (محتوى + أقسام). تأكيد؟')) return;
-		await runAction('factory', () => resetEngine('factory'));
-	}
 	async function onDiagnose() {
 		if (actionInFlight) return;
 		actionInFlight = 'diagnose';
@@ -190,13 +186,6 @@
 			onclick={onResetCursor}
 		>
 			Reset Cursor
-		</button>
-		<button
-			class="rounded bg-red-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-800 disabled:opacity-50"
-			disabled={Boolean(actionInFlight)}
-			onclick={onFactoryReset}
-		>
-			⚠ Factory Reset
 		</button>
 		<button
 			class="ml-auto rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50"

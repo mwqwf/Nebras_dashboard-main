@@ -1125,14 +1125,19 @@
 				</button>
 			</div>
 			<p class="delete-message">
-				{t('sections.delete_confirm')} <strong>"{deletingItem.name}"</strong>?
+				{t('sections.delete_confirm')} <strong>"{deletingItem.name}"</strong>؟
 
 				{#if activeLevel === 'main'}
-					All sub sections and secondary sub sections will also be deleted.
+					سيُحذف نهائياً هذا القسم وكل أقسامه الفرعية والثانوية
+					<strong>وكل المحتوى بداخله</strong> (الكتب والفيديو والصوت).
 				{:else if activeLevel === 'sub'}
-					All secondary sub sections will also be deleted.
+					سيُحذف نهائياً هذا القسم وكل أقسامه الثانوية
+					<strong>وكل المحتوى بداخله</strong> (الكتب والفيديو والصوت).
+				{:else}
+					سيُحذف نهائياً هذا القسم <strong>وكل المحتوى بداخله</strong>
+					(الكتب والفيديو والصوت).
 				{/if}
-				This action cannot be undone.
+				لا يمكن التراجع عن هذه العملية.
 			</p>
 			<div class="modal-actions pad-actions">
 				<button class="btn btn-secondary" onclick={() => (showDeleteModal = false)}>Cancel</button>
