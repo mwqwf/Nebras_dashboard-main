@@ -29,8 +29,8 @@ puppeteerExtra.use(Stealth());
 
 const BASE = String(process.env.VERCEL_BASE || 'https://nebras-dashboard-main.vercel.app').replace(/\/+$/, '');
 const CRON_SECRET = String(process.env.CRON_SECRET || '').trim();
-const MAX_BOOKS = Math.max(1, Number(process.env.NOOR_MAX_BOOKS || 12));
-const MAX_MS = Math.max(60000, Number(process.env.NOOR_MAX_MS || 900000));
+const MAX_BOOKS = Math.max(1, Number(process.env.NOOR_MAX_BOOKS || 30));
+const MAX_MS = Math.max(60000, Number(process.env.NOOR_MAX_MS || 2400000));
 const UA =
 	'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 

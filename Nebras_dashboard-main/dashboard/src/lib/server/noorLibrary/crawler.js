@@ -78,7 +78,31 @@ export const DEFAULT_SEED_URLS = [
 	'https://www.noor-book.com/category/كتب-في-السيرة-النبوية',
 	'https://www.noor-book.com/category/كتب-في-الفقه-وأصوله',
 	'https://www.noor-book.com/category/كتب-في-العقيدة',
-	'https://www.noor-book.com/category/كتب-في-التزكية-والأخلاق'
+	'https://www.noor-book.com/category/كتب-في-التزكية-والأخلاق',
+	// أدب وفنون وعلوم إنسانيّة
+	'https://www.noor-book.com/category/كتب-ادب-وشعر',
+	'https://www.noor-book.com/category/كتب-في-الادب',
+	'https://www.noor-book.com/category/كتب-الشعر',
+	'https://www.noor-book.com/category/كتب-فلسفة',
+	'https://www.noor-book.com/category/كتب-الفنون',
+	'https://www.noor-book.com/category/كتب-التنمية-البشرية',
+	// علوم اجتماعيّة وسياسة واقتصاد وقانون
+	'https://www.noor-book.com/category/كتب-الاقتصاد',
+	'https://www.noor-book.com/category/كتب-السياسة',
+	'https://www.noor-book.com/category/كتب-الاجتماع',
+	'https://www.noor-book.com/category/كتب-التربية-والتعليم',
+	'https://www.noor-book.com/category/كتب-القانون',
+	// علوم بحتة وتطبيقيّة وتقنية
+	'https://www.noor-book.com/category/كتب-في-الرياضيات',
+	'https://www.noor-book.com/category/كتب-الفيزياء',
+	'https://www.noor-book.com/category/كتب-الكيمياء',
+	'https://www.noor-book.com/category/كتب-الاحياء',
+	'https://www.noor-book.com/category/كتب-الجغرافيا',
+	'https://www.noor-book.com/category/كتب-الحاسب',
+	'https://www.noor-book.com/category/كتب-هندسة',
+	'https://www.noor-book.com/category/كتب-في-الطبخ',
+	// معرفة إسلاميّة متنوّعة إضافيّة
+	'https://www.noor-book.com/category/كتب-اسلامية-متنوعة'
 ];
 
 function makeError(message, reason, status = 0, cause = null) {

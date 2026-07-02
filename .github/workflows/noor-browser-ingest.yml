@@ -13,13 +13,13 @@ name: Noor Browser Ingest (real books → Nebras)
 
 on:
   schedule:
-    - cron: '15 */6 * * *' # كل 6 ساعات
+    - cron: '15 */4 * * *' # كل 4 ساعات (6 تشغيلات/يوم، كلّ منها بعنوان IP جديد)
   workflow_dispatch:
     inputs:
       max_books:
         description: 'أقصى عدد كتب لهذا التشغيل'
         required: false
-        default: '12'
+        default: '30'
 
 concurrency:
   group: noor-browser-ingest
@@ -31,7 +31,7 @@ permissions:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 50
     defaults:
       run:
         working-directory: Nebras_dashboard-main/dashboard
@@ -54,6 +54,6 @@ jobs:
         env:
           VERCEL_BASE: ${{ secrets.VERCEL_URL || 'https://nebras-dashboard-main.vercel.app' }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          NOOR_MAX_BOOKS: ${{ github.event.inputs.max_books || '12' }}
-          NOOR_MAX_MS: '900000'
+          NOOR_MAX_BOOKS: ${{ github.event.inputs.max_books || '30' }}
+          NOOR_MAX_MS: '2400000'
         run: node scripts/noor-ci-ingest.mjs
