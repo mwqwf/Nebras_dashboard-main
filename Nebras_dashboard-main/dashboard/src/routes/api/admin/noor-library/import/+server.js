@@ -34,7 +34,6 @@ import { buildSectionsTree, validateHierarchyPath } from '$lib/server/noorLibrar
 import { fetchBookMetadata, downloadBookFile, parseNoorUrl } from '$lib/server/noorLibrary/fetcher.js';
 import { adminUploadAndRegister, writeJobPatch } from '$lib/server/noorLibrary/adminUploader.js';
 import { isAdminConfigured } from '$lib/server/firebaseAdmin.js';
-import { NOOR_ENGINE_HARD_DISABLED } from '$lib/server/noorLibrary/engine.js';
 
 // زيادة حدّ الـ body حتى لا يرفض SvelteKit الطلب رغم أنّنا لا نرسل ملفّاً
 // (الملفّ يُجلَب من خادم خارجي). الـ JSON صغير، لكن نرفع لأمان.
@@ -52,20 +51,6 @@ export async function POST(event) {
 	if (!auth) return json({ error: 'unauthenticated' }, { status: 401 });
 	if (auth.role !== 'owner' && auth.role !== 'supervisor') {
 		return json({ error: 'forbidden', reason: 'role_not_allowed' }, { status: 403 });
-	}
-
-	// ⛔ محرّك نور موقوف بمفتاح إيقاف صارم (امتثال حقوق النشر): يُمنع حتى
-	//    الاستيراد اليدويّ كي لا يُعاد استضافة أيّ محتوى غير مضبوط الترخيص.
-	//    الكود محفوظ للتطوير؛ لإعادة التفعيل: NOOR_ENGINE_HARD_DISABLED=false.
-	if (NOOR_ENGINE_HARD_DISABLED) {
-		return json(
-			{
-				error: 'noor_disabled',
-				reason: 'noor_engine_hard_disabled',
-				message: 'استيراد مكتبة نور موقوف مؤقّتاً (امتثال حقوق النشر).'
-			},
-			{ status: 503 }
-		);
 	}
 
 	if (!isAdminConfigured()) {
@@ -139,6 +124,27 @@ export async function POST(event) {
 		// 2) جلب metadata من مكتبة نور (نُعيد التأكّد منها لكي نضمن fileUrl).
 		await writeJobPatch(jobId, { status: 'fetching_metadata' }).catch(() => {});
 		const fetched = await fetchBookMetadata(url);
+
+		// كتب عامّة فقط: نرفض المحفوظة/متابعة النشر (غير متاحة للتحميل في نور).
+		// يتجاوزها المستخدم فقط بتمرير overrideFileUrl (رابط مباشر يعرفه).
+		if (fetched.availability && fetched.availability.public === false && !overrideFileUrl) {
+			await writeJobPatch(jobId, {
+				status: 'failed',
+				failedReason: 'book_not_public',
+				bookTitle: fetched.title
+			}).catch(() => {});
+			return json(
+				{
+					error: 'book_not_public',
+					reason: 'book_not_public',
+					message:
+						'هذا الكتاب «محفوظ / متابعة نشر» في مكتبة نور وغير متاح للتحميل — يُجلب فقط الكتب العامّة.',
+					jobId,
+					metadata: fetched
+				},
+				{ status: 422 }
+			);
+		}
 
 		const fileUrl = overrideFileUrl || fetched.fileUrl;
 		if (!fileUrl) {

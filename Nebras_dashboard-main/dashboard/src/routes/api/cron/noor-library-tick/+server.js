@@ -18,6 +18,13 @@ export const config = {
 	maxDuration: 60
 };
 
+// ⚡ تسريع: عدّة دورات في نداء cron واحد ضمن ميزانية زمنيّة آمنة (نفس نمط
+// internet-archive-tick / hindawi-library-tick). كلّ دورة تتقدّم لبذرة/صفحة
+// تاليّة وتجلب دفعة كتب عامّة جديدة، فتمتلئ الأقسام أسرع دون تجاوز مهلة
+// Vercel ودون لمس المجلوب سابقاً (الـ registry يمنع التكرار).
+const CRON_TIME_BUDGET_MS = 45_000;
+const CRON_MAX_TICKS = 6;
+
 function authorizeCron(event) {
 	const secret = String(env.CRON_SECRET || '').trim();
 	// 🔐 secure-by-configuration: صارم إن ضُبط CRON_SECRET، ويسمح بالنبضة إن لم
@@ -50,8 +57,57 @@ export async function GET(event) {
 	}
 
 	try {
-		const r = await runCronTick();
-		return json(r, { status: r.ok === false ? 500 : 200 });
+		// حلقة دورات ضمن الميزانية الزمنيّة — تسريع آمن (مطابق لـ IA/Hindawi).
+		const startedAt = Date.now();
+		let ticks = 0;
+		let processed = 0;
+		let created = 0;
+		let skipped = 0;
+		let failed = 0;
+		let lastError = null;
+		let lastCursor = null;
+		let skippedDisabled = false;
+		const sample = [];
+		while (ticks < CRON_MAX_TICKS && Date.now() - startedAt < CRON_TIME_BUDGET_MS) {
+			let r;
+			try {
+				r = await runCronTick();
+			} catch (e) {
+				lastError = e?.message || String(e);
+				break; // خطأ دورة → نتوقّف بهدوء (الـ cron التالي يعيد).
+			}
+			ticks += 1;
+			// أوقفه المستخدم صراحةً (enabled=false) → لا فائدة من التكرار.
+			if (r?.skipped) {
+				skippedDisabled = true;
+				break;
+			}
+			processed += Number(r?.processed || 0);
+			created += Number(r?.created || 0);
+			skipped += Number(r?.skipped || 0);
+			failed += Number(r?.failed || 0);
+			if (r?.cursor) lastCursor = r.cursor;
+			if (Array.isArray(r?.sample) && sample.length < 6) {
+				sample.push(...r.sample.slice(0, 6 - sample.length));
+			}
+		}
+		return json(
+			{
+				ok: true,
+				cron: true,
+				ticks,
+				processed,
+				created,
+				skipped,
+				failed,
+				skippedDisabled,
+				cursor: lastCursor,
+				elapsedMs: Date.now() - startedAt,
+				lastError,
+				sample
+			},
+			{ status: 200 }
+		);
 	} catch (err) {
 		console.error('[cron/noor-library-tick]', err);
 		return json(

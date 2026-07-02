@@ -65,9 +65,8 @@ jobs:
             esac
           }
 
-          # ⛔ نور موقوف مؤقتاً (امتثال حقوق النشر) — لا يُستدعى من الـ cron.
-          #    لإعادة تفعيله لاحقاً: أزل التعليق عن السطر أدناه، واجعل
-          #    NOOR_ENGINE_HARD_DISABLED=false في
-          #    dashboard/src/lib/server/noorLibrary/engine.js
-          # tick "noor"    "/api/cron/noor-library-tick"
+          # 🟢 نور مُفعَّل — جلب آليّ للكتب العامّة فقط (بلا ذكاء اصطناعي).
+          #    (NOOR_ENGINE_HARD_DISABLED=false في
+          #    dashboard/src/lib/server/noorLibrary/engine.js)
+          tick "noor"    "/api/cron/noor-library-tick"
           tick "hindawi" "/api/cron/hindawi-library-tick"

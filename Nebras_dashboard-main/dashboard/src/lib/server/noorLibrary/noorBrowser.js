@@ -425,6 +425,48 @@ export async function findBookFileUrlViaBrowser(bookPageUrl, opts = {}) {
 		});
 		await waitForCloudflareIfNeeded(page, { maxWaitMs: 25000 });
 
+		// 0) 🥇 المسار الأوثق (مثبَّت تجريبياً على noor-book.com): استدعِ دالّة
+		//    الموقع نفسه `go_gownload()` بعد اكتمال مصافحة التحقّق
+		//    (is_logged_replied=true)، فتُنفَّذ get_download_links AJAX وتظهر
+		//    وصلة `internal_download` الحقيقيّة داخل المودال — تعمل حتى لغير
+		//    المسجَّلين وبلا نقر أزرار (يتجنّب النقر الخاطئ). الرابط الناتج عامّ.
+		try {
+			// انتظر مصافحة check_user (تضبط csrf_token=osf) حتى ~20s.
+			for (let i = 0; i < 20; i++) {
+				const ready = await page
+					.evaluate(() => typeof is_logged_replied !== 'undefined' && is_logged_replied === true)
+					.catch(() => false);
+				if (ready) break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			// استدعِ resolver الموقع مباشرةً (يتخطّى العدّاد الوهميّ).
+			await page
+				.evaluate(() => {
+					try {
+						if (typeof go_gownload === 'function') go_gownload();
+						else if (typeof set_download_timer === 'function') set_download_timer();
+					} catch {
+						// تجاهل
+					}
+				})
+				.catch(() => {});
+			// استطلع ظهور رابط internal_download حتى ~30s.
+			for (let i = 0; i < 20; i++) {
+				const href = await page
+					.evaluate(() => {
+						const a = document.querySelector('a[href*="internal_download"]');
+						return a ? a.href : null;
+					})
+					.catch(() => null);
+				if (href) {
+					return { url: href, source: 'go_gownload:internal_download' };
+				}
+				await new Promise((r) => setTimeout(r, 1500));
+			}
+		} catch {
+			// نسقط للطرق الأدنى (DOM scan + نقر) أدناه.
+		}
+
 		// 1) ابحث في الـ DOM المُعالَج (بعد تنفيذ JS)
 		const found = await page
 			.evaluate(() => {

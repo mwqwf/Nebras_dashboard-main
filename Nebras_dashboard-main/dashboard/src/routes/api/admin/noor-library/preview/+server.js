@@ -16,7 +16,6 @@ import { json } from '@sveltejs/kit';
 import { buildSectionsTree } from '$lib/server/noorLibrary/sectionsTree.js';
 import { fetchBookMetadata } from '$lib/server/noorLibrary/fetcher.js';
 import { classifyBookIntoHierarchy } from '$lib/server/noorLibrary/classifier.js';
-import { NOOR_ENGINE_HARD_DISABLED } from '$lib/server/noorLibrary/engine.js';
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function POST(event) {
@@ -24,19 +23,6 @@ export async function POST(event) {
 	if (!auth) return json({ error: 'unauthenticated' }, { status: 401 });
 	if (auth.role !== 'owner' && auth.role !== 'supervisor') {
 		return json({ error: 'forbidden', reason: 'role_not_allowed' }, { status: 403 });
-	}
-
-	// ⛔ محرّك نور موقوف بمفتاح إيقاف صارم (امتثال حقوق النشر) — تُمنع المعاينة
-	//    اليدويّة أيضاً (تجلب من noor-book). الكود محفوظ للتطوير لاحقاً.
-	if (NOOR_ENGINE_HARD_DISABLED) {
-		return json(
-			{
-				error: 'noor_disabled',
-				reason: 'noor_engine_hard_disabled',
-				message: 'معاينة مكتبة نور موقوفة مؤقّتاً (امتثال حقوق النشر).'
-			},
-			{ status: 503 }
-		);
 	}
 
 	let body;

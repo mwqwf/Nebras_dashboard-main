@@ -478,6 +478,101 @@ function extractFileUrl(html, baseUrl) {
 	return { url: absCandidates[0], type: guessContentType(absCandidates[0]) };
 }
 
+// ── Public vs saved/reserved availability probe ─────────────────────
+// مكتبة نور تفرّق بين نوعين: الكتب **العامّة** (متاحة للتحميل) والكتب
+// **المحفوظة / متابعة النشر** (غير متاحة للتحميل إطلاقاً — للقراءة فقط أو
+// بحقوق ناشر). نجلب العامّة فقط. للتمييز نستعمل:
+//   1) نفس نداء التحقّق (check_user) الذي يستعمله موقع نور نفسه، فيعيد
+//      `book.status` (code=="1" ⇒ متاح). لا يحتاج متصفّحاً — fetch عاديّ.
+//   2) وجود زرّ التحميل الفعليّ في صفحة الكتاب (إشارة احتياطيّة).
+// لا يرمي أبداً — يعيد حكماً، والقرار النهائيّ محسوم أيضاً ببوّابة التنزيل.
+
+function extractInlineVar(html, varName) {
+	const re = new RegExp(varName + "\\s*=\\s*'([^']+)'");
+	const m = String(html || '').match(re);
+	return m ? m[1] : '';
+}
+
+function pageHasDownloadAffordance(html) {
+	const h = String(html || '');
+	return (
+		/set_download_timer\s*\(/.test(h) ||
+		/id=["']download_circle["']/.test(h) ||
+		/get_download_links/.test(h)
+	);
+}
+
+function randomCacheBuster() {
+	let s = '';
+	for (let i = 0; i < 8; i++) {
+		s += Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
+	}
+	return s;
+}
+
+/**
+ * يقرّر هل الكتاب «عامّ» (متاح للتحميل) أم «محفوظ/متابعة نشر» (غير متاح).
+ *
+ * @param {string} html  HTML صفحة الكتاب (نفسها التي جلبها fetchBookMetadata).
+ * @param {string} refererUrl  رابط الصفحة (للـ Referer في نداء check_user).
+ * @returns {Promise<{ public: boolean, statusCode: string|null, statusMsg: string, affordance: boolean, reason: string }>}
+ */
+export async function probeBookAvailability(html, refererUrl) {
+	const affordance = pageHasDownloadAffordance(html);
+	const bookHash = extractInlineVar(html, 'book_hash');
+	const csrf = extractInlineVar(html, 'csrf_token');
+	const cryptoTok = extractInlineVar(html, 'crypto_token');
+
+	let statusCode = null;
+	let statusMsg = '';
+	if (bookHash && csrf && cryptoTok) {
+		try {
+			const body = new URLSearchParams({
+				csrf_token: csrf,
+				book_hash: bookHash,
+				_: cryptoTok,
+				ls: ''
+			});
+			const res = await fetch(
+				`https://www.noor-book.com/en/Verification/check_user?o=${randomCacheBuster()}`,
+				{
+					method: 'POST',
+					headers: {
+						'User-Agent': USER_AGENT,
+						'X-Requested-With': 'XMLHttpRequest',
+						'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+						...(refererUrl ? { Referer: refererUrl } : {})
+					},
+					body
+				}
+			);
+			if (res.ok) {
+				const data = await res.json().catch(() => null);
+				const st = data?.book?.status;
+				if (st && st.code !== undefined && st.code !== null) statusCode = String(st.code);
+				if (st && st.msg && st.msg !== false) statusMsg = String(st.msg);
+			}
+		} catch {
+			// تجاهل — نعتمد إشارة الصفحة، وبوّابة التنزيل تحسم أيّ لبس.
+		}
+	}
+
+	// القرار (متحفّظ لصالح «عامّ» عند غياب إشارة سلبيّة واضحة، لأنّ بوّابة
+	// التنزيل الفعليّة تبقى الحكم الأخير):
+	//   • رمز حالة صريح غير "1" ⇒ غير عامّ (محفوظ/متابعة نشر).
+	//   • غياب أيّ وسيلة تحميل من الصفحة ⇒ غير عامّ (قراءة فقط).
+	let isPublic = true;
+	let reason = 'public';
+	if (statusCode !== null && statusCode !== '1') {
+		isPublic = false;
+		reason = 'noor_status_not_public';
+	} else if (!affordance) {
+		isPublic = false;
+		reason = 'no_download_affordance';
+	}
+	return { public: isPublic, statusCode, statusMsg, affordance, reason };
+}
+
 /**
  * الواجهة الرئيسيّة — تجلب metadata كاملة لكتاب معيّن.
  * @param {string} pageUrl  رابط صفحة الكتاب على noor-book.com.
@@ -563,12 +658,22 @@ export async function fetchBookMetadata(pageUrl) {
 		);
 	}
 
+	// فحص التوفّر (عامّ مقابل محفوظ/متابعة نشر) — نجلب العامّة فقط.
+	const availability = await probeBookAvailability(html, finalUrl).catch(() => ({
+		public: true,
+		statusCode: null,
+		statusMsg: '',
+		affordance: true,
+		reason: 'probe_failed'
+	}));
+
 	return {
 		title,
 		description,
 		author,
 		thumbnail,
 		categoryHints,
+		availability,
 		fileUrl: file?.url || '',
 		fileType: file?.type || '',
 		license: {
@@ -598,6 +703,45 @@ export async function downloadBookFile(fileUrl, opts = {}) {
 	if (!fileUrl) throw makeError('لا يوجد رابط ملف للتنزيل.', 'no_file_url', 400);
 
 	const refererUrl = opts?.refererUrl || null;
+
+	// 🚀 مسار سريع: روابط «internal_download» لمكتبة نور **عامّة** (مثبت
+	//    تجريبياً: تُنزَّل بـ fetch عاديّ بلا كوكيز/متصفّح ولا Cloudflare).
+	//    المتصفّح مطلوب فقط لاستخراج الرابط، أمّا البايتات فتُجلَب مباشرةً —
+	//    فيعمل التنزيل حتى على Vercel/serverless بلا crawl4ai. نُجرّبه أوّلاً.
+	if (/\/book\/internal_download\//i.test(String(fileUrl))) {
+		try {
+			const res = await fetch(fileUrl, {
+				headers: {
+					'User-Agent': USER_AGENT,
+					Accept: '*/*',
+					...(refererUrl ? { Referer: refererUrl } : {})
+				},
+				redirect: 'follow'
+			});
+			if (res.ok) {
+				const arrayBuf = await res.arrayBuffer();
+				const buffer = Buffer.from(arrayBuf);
+				if (buffer.byteLength > 0) {
+					const contentType =
+						res.headers.get('content-type') || 'application/pdf';
+					let filename = '';
+					const cd = res.headers.get('content-disposition') || '';
+					const cdMatch = cd.match(/filename\*?=(?:UTF-8'')?["']?([^;"']+)/i);
+					if (cdMatch) {
+						try {
+							filename = decodeURIComponent(cdMatch[1]);
+						} catch {
+							filename = cdMatch[1];
+						}
+					}
+					if (!filename) filename = 'book.pdf';
+					return { buffer, contentType, filename, size: buffer.byteLength };
+				}
+			}
+		} catch {
+			// نسقط للمسارات الأخرى (crawl4ai/puppeteer) بدون إنهاء العمليّة.
+		}
+	}
 
 	// 🥇 crawl4ai sidecar أولاً: يجلب الملفّ داخل سياق متصفّح حقيقي بنفس
 	//    جلسة Cloudflare (cf_clearance + Referer) ويُعيد البايتات base64.

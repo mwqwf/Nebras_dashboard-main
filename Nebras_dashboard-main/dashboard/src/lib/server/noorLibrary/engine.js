@@ -55,7 +55,7 @@ import {
 	createSubSectionAdmin,
 	createSecondarySectionAdmin
 } from './sectionsCreator.js';
-import { adminUploadAndRegister } from './adminUploader.js';
+import { adminUploadAndRegister, registerUploadedBook } from './adminUploader.js';
 import {
 	isBookImported,
 	partitionKnownBooks,
@@ -79,7 +79,7 @@ const LOG_PATH = `${ENGINE_ROOT}/log`;
 const LOG_MAX_ENTRIES = 60;
 
 const DEFAULT_CONFIG = Object.freeze({
-	enabled: false,
+	enabled: true,
 	seedUrls: DEFAULT_SEED_URLS,
 	tickIntervalMs: 8000,
 	batchSize: 3,
@@ -87,15 +87,22 @@ const DEFAULT_CONFIG = Object.freeze({
 });
 
 // ╔══════════════════════════════════════════════════════════════════╗
-// ║ ⛔ مفتاح إيقاف صارم لمحرّك «مكتبة نور» — إيقاف بدواعي امتثال حقوق   ║
-// ║    النشر. طالما القيمة = true:                                     ║
-// ║      • لا يجلب المحرّك أيّ كتاب — لا آلياً (cron) ولا يدوياً (زرّ).  ║
-// ║      • يتجاهل إعدادات RTDB حتى لو كانت enabled=true من تشغيل سابق.  ║
-// ║    الكود محفوظ بالكامل للتطوير/الضبط لاحقاً (تشديد فلتر الترخيص).   ║
-// ║    لإعادة التفعيل مستقبلاً: اجعلها false، وأعد سطر noor في          ║
-// ║    .github/workflows/library-engines-cron.yml.                     ║
+// ║  🟢 محرّك «مكتبة نور» مُفعَّل — جلب آليّ بلا أيّ ذكاء اصطناعي.      ║
+// ║                                                                    ║
+// ║  أساس الامتثال (بدل الإيقاف الصارم السابق): نجلب **الكتب العامّة    ║
+// ║  فقط** — أي القابلة للتحميل من مكتبة نور نفسها. الكتب «المحفوظة»     ║
+// ║  و«متابعة النشر» غير متاحة للتحميل إطلاقاً في نور، فتُستبعَد آلياً:  ║
+// ║    1) بوّابة توفّر مبكّرة (probeBookAvailability في fetcher.js) تقرأ ║
+// ║       حالة الكتاب من نور (check_user) + وجود زرّ التحميل بالصفحة.    ║
+// ║    2) بوّابة تنزيل فعليّ (GATE B): إن تعذّر تنزيل الملفّ فالكتاب غير  ║
+// ║       عامّ ⇒ يُتخطّى بلا إنشاء أيّ قسم.                              ║
+// ║  التصنيف heuristic محليّ بحت (classifier.js) — لا Gemini ولا أيّ     ║
+// ║  خدمة خارجيّة.                                                      ║
+// ║                                                                    ║
+// ║  لإيقاف المحرّك مجدّداً عند الحاجة: اجعل القيمة true، وعلِّق سطر noor  ║
+// ║  في .github/workflows/library-engines-cron.yml.                    ║
 // ╚══════════════════════════════════════════════════════════════════╝
-export const NOOR_ENGINE_HARD_DISABLED = true;
+export const NOOR_ENGINE_HARD_DISABLED = false;
 
 // ── Singleton state (per Node process) ───────────────────────────────
 const GLOBAL_KEY = '__NEBRAS_NOOR_ENGINE__';
@@ -119,7 +126,8 @@ async function readConfig() {
 	if (!snap.exists()) return { ...DEFAULT_CONFIG };
 	const v = snap.val() || {};
 	return {
-		enabled: Boolean(v.enabled),
+		// enabled غير محدّد = مُفعَّل (إقلاع تلقائي أوّل مثل IA/Hindawi).
+		enabled: v.enabled === undefined ? true : Boolean(v.enabled),
 		seedUrls:
 			Array.isArray(v.seedUrls) && v.seedUrls.length > 0
 				? v.seedUrls.filter(isValidSeedUrl)
@@ -376,11 +384,45 @@ async function notifyFcmSectionCreated(info) {
  * في registry فقط (blacklist تدريجي) دون أيّ أثر آخر في DB.
  */
 async function processBook({ url, bookId, sections }) {
-	// ─── 1) metadata + fileUrl extraction (مع Puppeteer fallback) ─────────
+	// 1) جلب الميتاداتا + استخراج رابط الملفّ (مع Puppeteer fallback)، ثمّ
+	//    نُكمل المسار المشترك (ingestResolvedBook).
 	const meta = await fetchBookMetadata(url);
+	return ingestResolvedBook({ url, bookId, meta, sections });
+}
 
-	// ─── 2) GATE A: لا تتقدّم بدون رابط ملفّ ────────────────────────────
-	if (!meta.fileUrl) {
+/**
+ * المسار المشترك بعد توفّر الميتاداتا + رابط الملفّ: بوّابات (عامّ → رابط →
+ * تنزيل فعليّ) ثمّ تصنيف محليّ ثمّ إنشاء الأقسام والرفع والتسجيل والإشعار.
+ * يُستدعى من مكانين:
+ *   • processBook — المحرّك الداخليّ (يجلب الميتاداتا بنفسه عبر متصفّح/الخادم).
+ *   • endpoint `/api/admin/noor-library/ingest` — يمرّر ميتاداتا + رابط
+ *     `internal_download` مُستخرَجاً بمتصفّح GitHub Action (CI)، والبايتات
+ *     تُجلَب هنا بـ fetch عاديّ (الرابط عامّ) فيعمل حتى على Vercel.
+ *
+ * @param {{ url:string, bookId:string, meta:any, sections?:any }} args
+ */
+export async function ingestResolvedBook({ url, bookId, meta, sections }) {
+	if (!sections) sections = await buildSectionsTree();
+
+	// ─── GATE 0: كتب عامّة فقط (لا محفوظة/متابعة نشر) ────────────────────
+	// مكتبة نور تتيح تحميل الكتب العامّة فقط؛ «المحفوظة» و«متابعة النشر»
+	// غير قابلة للتحميل. نستبعدها هنا مبكّراً (قبل أيّ تصنيف/إنشاء قسم)
+	// اعتماداً على فحص التوفّر (check_user + زرّ التحميل) في fetchBookMetadata.
+	if (meta.availability && meta.availability.public === false) {
+		throw Object.assign(
+			new Error(
+				`الكتاب "${meta.title || bookId}" غير عامّ (محفوظ/متابعة نشر) — غير متاح للتحميل في مكتبة نور، فتُخُطّي.`
+			),
+			{ reason: 'book_not_public', status: 422 }
+		);
+	}
+
+	// حالة «مرفوع مسبقاً» (مسار الـ CI الموقَّع): البايتات في Storage فعلاً،
+	// فلا نُنزّل ولا نحتاج fileUrl — نتخطّى GATE A/B ونمضي للتصنيف والتسجيل.
+	const preUploaded = meta.__preUploaded || null;
+
+	// ─── 2) GATE A: لا تتقدّم بدون رابط ملفّ (إلا إن رُفع مسبقاً) ─────────
+	if (!preUploaded && !meta.fileUrl) {
 		throw Object.assign(
 			new Error(`لا يوجد رابط تنزيل قابل للاستخراج لـ "${meta.title || bookId}" — تخطّيناه قبل أيّ تعديل في DB.`),
 			{ reason: 'no_file_url', status: 422 }
@@ -392,14 +434,17 @@ async function processBook({ url, bookId, sections }) {
 	// نمرّر refererUrl (صفحة الكتاب المصدرية) لكي يحصل المتصفّح على
 	// كوكيز cf_clearance + Referer صحيح قبل تنزيل الـ PDF — هذا الذي
 	// يفرق بين 403 ونجاح التنزيل عبر Cloudflare.
-	const downloaded = await downloadBookFile(meta.fileUrl, {
-		refererUrl: meta.source?.url || meta.source?.finalUrl || url
-	});
-	if (!downloaded?.buffer || downloaded.buffer.byteLength === 0) {
-		throw Object.assign(
-			new Error('الملفّ المنزَّل فارغ — تخطّينا الكتاب قبل أيّ تعديل في DB.'),
-			{ reason: 'empty_download', status: 422 }
-		);
+	let downloaded = null;
+	if (!preUploaded) {
+		downloaded = await downloadBookFile(meta.fileUrl, {
+			refererUrl: meta.source?.url || meta.source?.finalUrl || url
+		});
+		if (!downloaded?.buffer || downloaded.buffer.byteLength === 0) {
+			throw Object.assign(
+				new Error('الملفّ المنزَّل فارغ — تخطّينا الكتاب قبل أيّ تعديل في DB.'),
+				{ reason: 'empty_download', status: 422 }
+			);
+		}
 	}
 
 	// ─── 4) classify autonomously (الآن فقط — الكتاب في يدنا) ──────────
@@ -564,19 +609,33 @@ async function processBook({ url, bookId, sections }) {
 			: { secondary_subsection: null })
 	};
 
-	const result = await adminUploadAndRegister({
-		buffer: downloaded.buffer,
-		contentType: downloaded.contentType,
-		filename: downloaded.filename,
-		thumbnailUrl: meta.thumbnail || null,
-		metadata: finalMetadata,
-		uploader: { uid: 'noor_library_engine', email: 'engine@nebras.local' },
-		source: {
-			provider: 'noor-library',
-			url: meta.source?.url || url,
-			bookId: meta.source?.bookId || bookId
-		}
-	});
+	const source = {
+		provider: 'noor-library',
+		url: meta.source?.url || url,
+		bookId: meta.source?.bookId || bookId
+	};
+	const result = preUploaded
+		? await registerUploadedBook({
+				fileId: preUploaded.fileId,
+				objectPath: preUploaded.objectPath,
+				downloadUrl: preUploaded.downloadUrl,
+				token: preUploaded.token,
+				size: preUploaded.size,
+				contentType: preUploaded.contentType,
+				filename: preUploaded.filename || 'book.pdf',
+				thumbnailUrl: meta.thumbnail || null,
+				metadata: finalMetadata,
+				source
+			})
+		: await adminUploadAndRegister({
+				buffer: downloaded.buffer,
+				contentType: downloaded.contentType,
+				filename: downloaded.filename,
+				thumbnailUrl: meta.thumbnail || null,
+				metadata: finalMetadata,
+				uploader: { uid: 'noor_library_engine', email: 'engine@nebras.local' },
+				source
+			});
 
 	// 7) سجّل في registry لمنع التكرار
 	await recordImported(bookId, {
@@ -838,17 +897,19 @@ export async function runEngineTick() {
  *   • نُمسك أي خطأ ونعيده كنتيجة بدل أن نُسقط النداء.
  */
 export async function runCronTick() {
-	// ⛔ مفتاح الإيقاف الصارم له الأولوية المطلقة (امتثال حقوق النشر).
+	// مفتاح الإيقاف (معطَّل الآن = المحرّك يعمل). إن أُعيد رفعه مستقبلاً يتوقّف.
 	if (NOOR_ENGINE_HARD_DISABLED) {
 		return { ok: true, skipped: true, reason: 'noor_engine_hard_disabled' };
 	}
-	// نور لا يُفعّل نفسه تلقائياً (بخلاف Internet Archive): لا يعمل إلا إذا
-	// فعّله المستخدم صراحةً عبر اللوحة (enabled=true في RTDB). الغياب/التهيئة
-	// الأولى = معطّل (fail-safe OFF) حمايةً من جلب محتوى غير مضبوط الترخيص.
+	// إقلاع تلقائيّ بلا تدخّل (مثل Internet Archive وHindawi): الغياب/أوّل
+	// تشغيل = مُفعَّل. يتوقّف فقط إن أوقفه المستخدم صراحةً (enabled=false).
 	const snap = await getAdminDatabase().ref(`${CONFIG_PATH}/enabled`).get().catch(() => null);
-	const enabled = snap && snap.exists() && snap.val() === true;
+	if (!snap || !snap.exists()) {
+		await writeConfig({ enabled: true }).catch(() => {});
+	}
+	const enabled = !snap || !snap.exists() ? true : snap.val() !== false;
 	if (!enabled) {
-		return { ok: true, skipped: true, reason: 'engine_disabled_by_default' };
+		return { ok: true, skipped: true, reason: 'engine_disabled_by_user' };
 	}
 	try {
 		const result = await runEngineTick();

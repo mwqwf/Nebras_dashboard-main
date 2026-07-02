@@ -48,18 +48,37 @@ function looksLikeCloudflareChallenge(html) {
 }
 
 /**
- * بذور افتراضيّة لمحتوى إسلامي تعليمي يناسب Nebras. المستخدم يقدر يبدّلها
- * من الواجهة (POST /api/admin/noor-library/engine/seed).
+ * بذور افتراضيّة لمحتوى **معرفيّ عامّ** يناسب نبراس (ليس دينياً فقط): روايات،
+ * تاريخ، علم نفس، فلسفة، علوم، تطوير ذات، أطفال، طبّ، لغات — إضافةً إلى
+ * صفحتَي «الأحدث» و«الأكثر رواجاً» لالتقاط الجديد باستمرار، وبعض أقسام
+ * المعرفة الإسلاميّة ضمن الطيف العامّ. المستخدم يقدر يبدّلها من الواجهة
+ * (POST /api/admin/noor-library/engine/seed). كلّها مُتحقَّق أنّها تُرجِع
+ * روابط كتب فعليّة بنمط /ebook-.
  */
 export const DEFAULT_SEED_URLS = [
+	// عامّ ومتجدّد
+	'https://www.noor-book.com/en/latest?landing=false',
+	'https://www.noor-book.com/en/popular_all_days?landing=false',
+	// معرفة عامّة
+	'https://www.noor-book.com/category/روايات-عالمية',
+	'https://www.noor-book.com/category/كتب-الروايات-والقصص',
+	'https://www.noor-book.com/category/كتب-في-التاريخ',
+	'https://www.noor-book.com/category/كتب-علم-النفس',
+	'https://www.noor-book.com/category/كتب-الفلسفة-والمنطق',
+	'https://www.noor-book.com/category/كتب-العلوم',
+	'https://www.noor-book.com/category/كتب-تطوير-الذات',
+	'https://www.noor-book.com/category/كتب-الاطفال',
+	'https://www.noor-book.com/category/كتب-في-الطب',
+	'https://www.noor-book.com/category/كتب-تعلم-اللغات',
+	'https://www.noor-book.com/category/كتب-في-اللغة-العربية',
+	// معرفة إسلاميّة (ضمن الطيف العامّ)
 	'https://www.noor-book.com/category/كتب-اسلامية',
 	'https://www.noor-book.com/category/كتب-في-التفسير-وعلوم-القرآن',
 	'https://www.noor-book.com/category/كتب-في-الحديث-وعلومه',
 	'https://www.noor-book.com/category/كتب-في-السيرة-النبوية',
 	'https://www.noor-book.com/category/كتب-في-الفقه-وأصوله',
 	'https://www.noor-book.com/category/كتب-في-العقيدة',
-	'https://www.noor-book.com/category/كتب-في-التزكية-والأخلاق',
-	'https://www.noor-book.com/category/كتب-في-اللغة-العربية'
+	'https://www.noor-book.com/category/كتب-في-التزكية-والأخلاق'
 ];
 
 function makeError(message, reason, status = 0, cause = null) {
@@ -229,6 +248,20 @@ export function extractBookLinks(html, baseUrl) {
 		}
 	}
 
+	// نمط 4: /ebook-SLUG (النمط الحاليّ الأكثر شيوعاً في نور، مع بادئة لغة
+	//        اختياريّة مثل /en/ أو /ar/). هذا هو الشكل الفعليّ لروابط الكتب
+	//        على الموقع الآن — بدونه لا يلتقط المستكشِف أيّ كتاب.
+	const re4 = /href=["']([^"']*\/(?:[a-z]{2}\/)?ebook-[^"'?#]+)["']/gi;
+	while ((m = re4.exec(html))) {
+		try {
+			const abs = new URL(m[1], baseUrl).toString();
+			const slug = decodeURIComponent(abs.split('/').filter(Boolean).pop() || '');
+			if (slug && isLikelyBookSlug(slug) && !out.has(slug)) out.set(slug, abs);
+		} catch {
+			// تجاهل
+		}
+	}
+
 	return Array.from(out.entries()).map(([bookId, url]) => ({ bookId, url }));
 }
 
@@ -309,6 +342,11 @@ export async function discoverNewBooks({
 	knownIds = new Set()
 }) {
 	const collected = new Map();
+	// كلّ معرّفات الكتب التي رأيناها في هذا النداء (بصرف النظر عن معرفتها
+	// مسبقاً). تُستعمل لكشف الصفحات المتطابقة: كثير من صفحات نور من نوع
+	// /category لا تُرقّم فعلاً (page=2 يُعيد نفس محتوى page=1)، فإن لم تُضِف
+	// الصفحة أيّ معرّف جديد لهذا المسح نعتبر البذرة مُستنفدة ونتوقّف.
+	const pageSeenIds = new Set();
 	let page = Math.max(1, startPage);
 	let pagesScanned = 0;
 	let nextPage = null;
@@ -327,11 +365,23 @@ export async function discoverNewBooks({
 		}
 		pagesScanned++;
 
+		let newToScan = 0;
 		for (const link of result.bookLinks) {
+			if (!pageSeenIds.has(link.bookId)) {
+				pageSeenIds.add(link.bookId);
+				newToScan += 1;
+			}
 			if (knownIds.has(link.bookId)) continue;
 			if (collected.has(link.bookId)) continue;
 			collected.set(link.bookId, link);
 			if (collected.size >= batchSize) break;
+		}
+
+		// صفحة لم تُضِف أيّ كتاب جديد لهذا المسح (وليست الأولى) = صفحة مكرّرة
+		// (لا ترقيم فعليّ) ⇒ البذرة مُستنفدة، ننتقل للبذرة التاليّة.
+		if (newToScan === 0 && pagesScanned > 1) {
+			exhausted = true;
+			break;
 		}
 
 		if (result.nextPage === null) {

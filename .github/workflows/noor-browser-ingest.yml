@@ -1,0 +1,59 @@
+name: Noor Browser Ingest (real books → Nebras)
+
+# جلب آليّ حقيقيّ لكتب مكتبة نور العامّة إلى نبراس، بلا أيّ تدخّل يدويّ.
+#
+# لماذا هنا وليس Vercel؟ استخراج رابط تنزيل نور يحتاج متصفّحاً حقيقياً (JS +
+# مصافحة تحقّق) لا يعمل على serverless. GitHub Actions يشغّل Chromium مجّاناً.
+# المُشغِّل يستخرج رابط internal_download العامّ ثمّ يرسله إلى الخادم (Vercel)،
+# الذي يجلب البايتات بـ fetch عاديّ ويرفعها ويصنّفها بلا ذكاء اصطناعي.
+#
+# لا يحتاج أيّ سرّ جديد. أسرار اختياريّة في GitHub:
+#   • VERCEL_URL   — قاعدة عنوان اللوحة (افتراضي nebras-dashboard-main.vercel.app)
+#   • CRON_SECRET  — إن ضُبط في GitHub + Vercel معاً، يُشدَّد منفذ /ingest.
+
+on:
+  schedule:
+    - cron: '15 */6 * * *' # كل 6 ساعات
+  workflow_dispatch:
+    inputs:
+      max_books:
+        description: 'أقصى عدد كتب لهذا التشغيل'
+        required: false
+        default: '12'
+
+concurrency:
+  group: noor-browser-ingest
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: Nebras_dashboard-main/dashboard
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Ensure Chromium for Puppeteer
+        run: npx puppeteer browsers install chrome
+
+      - name: Run Noor browser ingest
+        env:
+          VERCEL_BASE: ${{ secrets.VERCEL_URL || 'https://nebras-dashboard-main.vercel.app' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          NOOR_MAX_BOOKS: ${{ github.event.inputs.max_books || '12' }}
+          NOOR_MAX_MS: '900000'
+        run: node scripts/noor-ci-ingest.mjs

@@ -272,39 +272,59 @@ export async function adminUploadAndRegister(args) {
 
 	const downloadUrl = buildDownloadUrl(bucketName, objectPath, token);
 
-	// 3) نُكوّن metadata النهائي ثم نبني الـ mirror fields (نفس منطق
-	//    storageUpload.js → buildMobileCompatibleFields).
+	// 3-5) بناء السجل وكتابته (مشترك مع مسار الرفع الموقَّع signed-URL).
+	return writeBookRecord({
+		fileId,
+		objectPath,
+		downloadUrl,
+		filename,
+		finalContentType,
+		size: buffer.byteLength,
+		resolvedThumbnail,
+		metadata,
+		source
+	});
+}
+
+/**
+ * يبني الحمولة المطابقة لـ storageUpload.js ويكتبها على مجموعتَي Firestore.
+ * مشترك بين: adminUploadAndRegister (رفع buffer) و registerUploadedBook
+ * (كائن مرفوع مسبقاً عبر رابط موقَّع). لا يرفع الملفّ — يفترض وجوده في Storage.
+ */
+async function writeBookRecord({
+	fileId,
+	objectPath,
+	downloadUrl,
+	filename,
+	finalContentType,
+	size,
+	resolvedThumbnail,
+	metadata,
+	source
+}) {
 	const finalMetadata = {
 		...metadata,
 		thumbnail: resolvedThumbnail || metadata.thumbnail || null,
 		content_type:
-			metadata.content_type ||
-			inferContentTypeFromMime(finalContentType, 'document'),
+			metadata.content_type || inferContentTypeFromMime(finalContentType, 'document'),
 		is_listed: metadata.is_listed ?? true,
 		created_at: new Date().toISOString()
 	};
 	const compatible = buildMobileCompatibleFields(finalMetadata, downloadUrl);
 
-	// 4) الحمولة الكاملة المطابقة لما يكتبه storageUpload.js.
 	const payload = stripUndefinedDeep({
 		fileId,
 		id: fileId,
 		downloadUrl,
 		filename,
 		fileType: finalContentType,
-		fileSize: buffer.byteLength,
+		fileSize: size,
 		metadata: finalMetadata,
 		storagePath: objectPath,
 		createdAt: FieldValue.serverTimestamp(),
-		// حقول إضافيّة لتمييز المصدر — تُكتَب ضمن السجل لكن لا تكسر الـ schema.
 		__provider: source?.provider || 'noor-library',
 		__sourceUrl: source?.url || '',
 		__sourceBookId: source?.bookId || '',
-		// ────────── ⚖️ Google Play / DMCA compliance metadata ──────────
-		// مكتبة نور ليست كلّها ملكيّة عامّة: المشرف يرفع يدويّاً ما هو ملكيّة
-		// عامّة/مُرخّص فقط. الافتراض 'manual_confirmed' (أكّده مشرف)؛ مرّر
-		// source.licenseStatus='verified_open_license' عند توفّر دليل رخصة.
-		// أيّ عنصر يُوضَع لاحقاً 'rejected' يحجبه التطبيق.
 		__source_provider: source?.provider || 'noor-library',
 		__license_status: source?.licenseStatus || 'manual_confirmed',
 		__license: source?.license || '',
@@ -314,7 +334,6 @@ export async function adminUploadAndRegister(args) {
 		...compatible
 	});
 
-	// 5) كتابة على مجموعتي Firestore الموازيتين لمساري RTDB السابقين.
 	await adminFsWriteFileMirrorBoth(fileId, payload);
 
 	return {
@@ -322,10 +341,139 @@ export async function adminUploadAndRegister(args) {
 		downloadUrl,
 		storagePath: objectPath,
 		contentType: finalContentType,
-		size: buffer.byteLength,
+		size,
 		thumbnailUrl: resolvedThumbnail,
 		payload
 	};
+}
+
+/**
+ * ينشئ رابط رفع موقَّع (V4 signed URL) لكائن جديد في تخزين نبراس، لكي يرفع
+ * إليه مُشغِّل الـ CI البايتات مباشرةً (تجنّباً لحدّ حجم الطلب على Vercel،
+ * وإبقاءً لاعتمادات Firebase على الخادم فقط). يُعيد المسار والرمز اللازمَين
+ * لاحقاً في registerUploadedBook.
+ *
+ * @param {{ filename?: string, contentType?: string }} args
+ */
+export async function createNoorSignedUpload({ filename, contentType } = {}) {
+	const adminApp = getNebrasAdminApp();
+	assertNebrasApp(adminApp);
+	const bucketName = adminApp.options?.storageBucket;
+	if (!bucketName) {
+		throw Object.assign(new Error('NEBRAS_STORAGE_BUCKET غير مضبوط.'), {
+			reason: 'storage_bucket_missing',
+			status: 501
+		});
+	}
+	const fileId = `noor_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+	const safeName = sanitizeSegment(filename || 'book.pdf');
+	const objectPath = `dashboard/noor-library/${fileId}/${Date.now()}_${safeName}`;
+	const token = randomUUID();
+	const finalContentType = contentType || 'application/pdf';
+
+	const file = getStorage(adminApp).bucket(bucketName).file(objectPath);
+	const [uploadUrl] = await file.getSignedUrl({
+		version: 'v4',
+		action: 'write',
+		expires: Date.now() + 15 * 60 * 1000,
+		contentType: finalContentType
+	});
+
+	return {
+		fileId,
+		objectPath,
+		token,
+		uploadUrl,
+		downloadUrl: buildDownloadUrl(bucketName, objectPath, token),
+		contentType: finalContentType
+	};
+}
+
+/**
+ * يسجّل كتاباً **رُفع مسبقاً** عبر رابط موقَّع: يضبط رمز التنزيل + بيانات
+ * المصدر على الكائن (لكي يعمل رابط التنزيل العامّ للتطبيق)، يرفع الغلاف إن
+ * وُجد، ثمّ يكتب سجلَّي Firestore. لا يرفع الملفّ الأساسيّ (موجود أصلاً).
+ *
+ * @param {{
+ *   fileId: string, objectPath: string, downloadUrl: string, token: string,
+ *   size: number, contentType: string, filename?: string,
+ *   thumbnailUrl?: string|null, metadata: any, source?: any
+ * }} args
+ */
+export async function registerUploadedBook(args) {
+	const {
+		fileId,
+		objectPath,
+		downloadUrl,
+		token,
+		size,
+		contentType,
+		filename,
+		thumbnailUrl,
+		metadata,
+		source
+	} = args;
+
+	if (!fileId || !objectPath || !downloadUrl || !token) {
+		throw Object.assign(new Error('بيانات الكائن المرفوع ناقصة.'), {
+			reason: 'invalid_uploaded_object',
+			status: 400
+		});
+	}
+	if (!metadata?.title) {
+		throw Object.assign(new Error('metadata.title مطلوب.'), {
+			reason: 'metadata_title_required',
+			status: 400
+		});
+	}
+	if (!metadata?.subsection) {
+		throw Object.assign(new Error('metadata.subsection مطلوب (الهيكلية الذهبيّة).'), {
+			reason: 'metadata_subsection_required',
+			status: 400
+		});
+	}
+
+	const adminApp = getNebrasAdminApp();
+	assertNebrasApp(adminApp);
+	const bucketName = adminApp.options?.storageBucket;
+	const bucket = getStorage(adminApp).bucket(bucketName);
+	const finalContentType = contentType || 'application/pdf';
+
+	// اضبط رمز التنزيل + بيانات المصدر على الكائن المرفوع (رابط PUT الموقَّع لا
+	// يضبط الـ metadata المخصّص، ورمز التنزيل ضروريّ لعمل رابط التطبيق العامّ).
+	await bucket.file(objectPath).setMetadata({
+		contentType: finalContentType,
+		metadata: {
+			firebaseStorageDownloadTokens: token,
+			uploadedByUid: 'noor_library_engine',
+			uploadedAt: new Date().toISOString(),
+			source: source?.provider || 'noor-library',
+			sourceUrl: source?.url || '',
+			sourceBookId: source?.bookId || ''
+		}
+	});
+
+	// ارفع الغلاف (إن وُجد) إلى تخزين نبراس ودمج رابطه.
+	let resolvedThumbnail = null;
+	if (thumbnailUrl) {
+		resolvedThumbnail = await uploadExternalThumbnail(thumbnailUrl, fileId, {
+			adminApp,
+			bucketName,
+			uploaderUid: 'noor_library_engine'
+		}).catch(() => null);
+	}
+
+	return writeBookRecord({
+		fileId,
+		objectPath,
+		downloadUrl,
+		filename: filename || 'book.pdf',
+		finalContentType,
+		size: Number(size) || 0,
+		resolvedThumbnail,
+		metadata,
+		source
+	});
 }
 
 /**
