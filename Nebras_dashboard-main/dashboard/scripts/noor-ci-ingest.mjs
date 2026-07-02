@@ -284,8 +284,11 @@ async function main() {
 	}
 
 	// 3) افتح المتصفّح وعالِج حتى الحدّ/الميزانية الزمنيّة.
+	//    protocolTimeout مرتفع لأنّ ترميز الكتب الكبيرة (100MB+) إلى base64
+	//    داخل الصفحة قد يتجاوز مهلة CDP الافتراضيّة (180s).
 	const browser = await puppeteerExtra.launch({
 		headless: 'new',
+		protocolTimeout: 240000,
 		args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled', '--lang=ar-EG,ar']
 	});
 	let ok = 0;
