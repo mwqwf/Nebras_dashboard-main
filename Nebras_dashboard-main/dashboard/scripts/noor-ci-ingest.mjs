@@ -150,11 +150,24 @@ async function resolveAndDownload(browser, bookUrl) {
 						document.querySelector(`meta[name="${p}"]`);
 					return el ? (el.getAttribute('content') || '').trim() : '';
 				};
+				// تلميحات التصنيف: فتات المسار + وسوم الكتاب (تُمكّن الخادم من
+				// وضع الكتاب في قسم موضوعيّ مناسب بدل «كتب عامة» العامّة).
+				const hints = [];
+				document
+					.querySelectorAll('ol.breadcrumb li a, .breadcrumb a, a.tag_btn, .tags a, a[href*="/tag/"], a[href*="/category/"]')
+					.forEach((a) => {
+						const t = (a.textContent || '').replace(/\s+/g, ' ').trim();
+						if (t) hints.push(t);
+					});
+				const categoryHints = [
+					...new Set(hints.filter((t) => t && !/^(الرئيسية|home|كتب|noor library|مكتبة نور|download)$/i.test(t)))
+				].slice(0, 12);
 				return {
 					title: g('og:title') || (document.title || '').replace(/\s*\|\s*.*$/, '').trim(),
 					description: g('og:description') || g('description'),
 					author: g('book:author') || g('author'),
-					thumbnail: g('og:image')
+					thumbnail: g('og:image'),
+					categoryHints
 				};
 			})
 			.catch(() => ({}));
@@ -281,6 +294,9 @@ async function main() {
 	try {
 		for (const cand of candidates) {
 			if (ok >= MAX_BOOKS || Date.now() - startedAt > MAX_MS) break;
+			// حصانة: أيّ خطأ (خصوصاً أعطال الشبكة العابرة مثل ECONNRESET) في
+			// معالجة كتاب واحد يجب ألّا يُسقط الدفعة كلّها — نعدّه فشلاً ونكمل.
+			try {
 
 			// 0) استخرج الرابط ونزّل البايتات داخل المتصفّح.
 			let resolved;
@@ -348,7 +364,8 @@ async function main() {
 				title: resolved.meta.title || cand.bookId,
 				author: resolved.meta.author || '',
 				description: resolved.meta.description || '',
-				thumbnail: resolved.meta.thumbnail || ''
+				thumbnail: resolved.meta.thumbnail || '',
+				categoryHints: resolved.meta.categoryHints || []
 			});
 			if (fin.data?.ok && !fin.data.skipped) {
 				ok++;
@@ -359,6 +376,11 @@ async function main() {
 			} else {
 				failed++;
 				console.log(`  ✗ finalize ${cand.bookId} → ${fin.status} ${fin.data?.reason || ''} ${fin.data?.message || ''}`);
+			}
+
+			} catch (e) {
+				failed++;
+				console.log(`  ✗ ${cand.bookId} — ${e?.message || String(e)} (متابعة)`);
 			}
 		}
 	} finally {
