@@ -186,6 +186,107 @@ service cloud.firestore {
       allow update, delete: if hasOwnerRole();
     }
 
+    // ─── اقتراحات التصحيح من التطبيق العامّ ──────────────────────
+    // أيّ مستخدم (موقَّع أو ضيف) يقترح تصحيحاً على عنصر محتوى؛ كرون
+    // suggestions-bridge يحوّلها رسائل في دردشة الإدارة. قيود مضادّة
+    // للإساءة مطابقة لروح content_reports.
+    match /content_suggestions/{sugId} {
+      allow create: if request.resource.data.keys()
+          .hasOnly(['contentId', 'contentType', 'note', 'status',
+                    'createdAt', 'reporterUid'])
+        && request.resource.data.contentId is string
+        && request.resource.data.contentId.size() > 0
+        && request.resource.data.contentId.size() <= 200
+        && request.resource.data.note is string
+        && request.resource.data.note.size() > 0
+        && request.resource.data.note.size() <= 1000
+        && request.resource.data.status == 'pending'
+        && (
+          request.auth == null
+          ? !('reporterUid' in request.resource.data)
+          : (!('reporterUid' in request.resource.data)
+             || request.resource.data.reporterUid == request.auth.uid)
+        );
+      allow read: if hasDashboardWrite();
+      allow update, delete: if hasOwnerRole();
+    }
+
+    // ─── عدّادات مساهمة المشرفين (لوحة الشرف 🏆) ─────────────────
+    // كلّ مشرف يزيد عدّاداته هو فقط؛ القراءة لكلّ مشرفي اللوحة.
+    match /admin_stats/{statUid} {
+      allow read: if hasDashboardWrite();
+      allow create, update: if hasDashboardWrite()
+        && request.auth.uid == statUid;
+      allow delete: if hasOwnerRole();
+    }
+
+    // مشرف مجموعة الدردشة ⭐ — دور داخل الدردشة فقط (لا يمسّ التطبيق):
+    // يُعيَّن من المالك بحقل chatRole في وثيقة العضو.
+    function isChatModerator() {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/admin_chat_members/$(request.auth.uid))
+            .data.chatRole == 'moderator';
+    }
+
+    // ─── دردشة الإدارة الجماعيّة (خاصّة باللوحة) ─────────────────
+    // مخفيّة تماماً عن تطبيق نبراس العامّ: القراءة والكتابة لمشرفي
+    // اللوحة (owner/supervisor) حصراً — أيّ مستخدم عاديّ يُرفض هنا.
+    //
+    // admin_chat_messages:
+    //   • create: المرسِل هو المستخدم الموقَّع نفسه (لا انتحال).
+    //   • update بثلاثة مسارات فقط:
+    //       1) "حذف عندي": تعديل حقل hiddenFor وحده (أيّ مشرف).
+    //       2) تفاعلات الإيموجي: تعديل خريطة reactions وحدها (أيّ مشرف).
+    //       3) "حذف عند الجميع": المرسِل نفسه أو المالك — يضبط
+    //          deleted=true ويمسح النصّ والمرفق، ولا يلمس غير ذلك.
+    //   • delete نهائي للوثيقة: المالك فقط.
+    match /admin_chat_messages/{msgId} {
+      allow read: if hasDashboardWrite();
+      allow create: if hasDashboardWrite()
+        && request.resource.data.senderId == request.auth.uid;
+      allow update: if hasDashboardWrite() && (
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['hiddenFor'])
+        || request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['reactions'])
+        || (
+          (resource.data.senderId == request.auth.uid
+            || hasOwnerRole()
+            || isChatModerator())
+          && request.resource.data.deleted == true
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['deleted', 'deletedBy', 'deletedAt', 'text', 'att'])
+        )
+      );
+      allow delete: if hasOwnerRole();
+    }
+
+    // admin_chat_meta: هويّة المجموعة (اسم/صورة/قفل/رسالة مثبَّتة).
+    // يقرؤها كلّ مشرفي اللوحة؛ يكتبها المالك وحده — ويُسمح لمشرف
+    // المجموعة ⭐ بالتثبيت/إلغائه فقط (حقل pinned دون سواه).
+    match /admin_chat_meta/{docId} {
+      allow read: if hasDashboardWrite();
+      allow create: if hasOwnerRole()
+        || (isChatModerator()
+            && request.resource.data.keys().hasOnly(['pinned', 'updatedAt']));
+      allow update: if hasOwnerRole()
+        || (isChatModerator()
+            && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['pinned', 'updatedAt']));
+      allow delete: if hasOwnerRole();
+    }
+
+    // admin_chat_members: عضويّة تلقائيّة — كلّ مشرف يكتب وثيقته فقط،
+    // والمالك يكتب أيّ وثيقة (تعيين مشرفي المجموعة chatRole، تصحيح role)؛
+    // الإزالة للمالك (إخراج مشرف) أو للعضو نفسه.
+    match /admin_chat_members/{memberUid} {
+      allow read: if hasDashboardWrite();
+      allow create, update: if hasDashboardWrite()
+        && (request.auth.uid == memberUid || hasOwnerRole());
+      allow delete: if hasOwnerRole()
+        || (isSignedIn() && request.auth.uid == memberUid);
+    }
+
     // ─── deny-by-default ────────────────────────────────────────
     match /{document=**} {
       allow read, write: if false;

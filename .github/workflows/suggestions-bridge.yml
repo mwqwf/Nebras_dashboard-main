@@ -1,0 +1,47 @@
+name: Suggestions Bridge
+
+# جسر اقتراحات التصحيح ✏️ — يوصل اقتراحات مستخدمي التطبيق إلى دردشة
+# الإدارة خلال ربع ساعة كحدّ أقصى (نفس نمط ia-cron.yml).
+
+on:
+  schedule:
+    - cron: '*/15 5-23 * * *' # كلّ ربع ساعة ضمن ساعات النشاط (UTC).
+  workflow_dispatch:
+
+concurrency:
+  group: suggestions-bridge
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  hit-cron:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Hit suggestions bridge endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          VERCEL_URL: ${{ secrets.VERCEL_URL }}
+        run: |
+          BASE="${VERCEL_URL:-https://nebras-dashboard-main.vercel.app}"
+          BASE="${BASE%/}"
+          URL="${BASE}/api/cron/suggestions-bridge"
+          echo "▶ Pinging: $URL"
+          if [ -n "$CRON_SECRET" ]; then
+            AUTH_HEADER="Authorization: Bearer $CRON_SECRET"
+          else
+            AUTH_HEADER="X-No-Auth: 1"
+          fi
+          HTTP_CODE=$(curl -sS --max-time 90 --retry 2 --retry-delay 5 \
+            --retry-connrefused \
+            -H "$AUTH_HEADER" \
+            -H "User-Agent: NebrasGitHubAction/1.0" \
+            -o /tmp/resp.json -w "%{http_code}" "$URL") || HTTP_CODE="000"
+          echo "HTTP $HTTP_CODE"
+          [ -s /tmp/resp.json ] && head -c 2048 /tmp/resp.json && echo ""
+          case "$HTTP_CODE" in
+            2*) echo "✅ Success" ;;
+            *)  echo "⚠ Non-2xx ($HTTP_CODE) — التالي سيعوّض." ;;
+          esac

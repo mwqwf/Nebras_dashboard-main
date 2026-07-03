@@ -82,6 +82,17 @@ service firebase.storage {
         && request.resource.contentType.matches('image/.*');
     }
 
+    // مرفقات دردشة الإدارة الجماعيّة — خاصّة تماماً (الدردشة مخفيّة عن
+    // التطبيق العامّ): القراءة والكتابة لمشرفي اللوحة حصراً. حدّ حجم كبير
+    // (3 غيغا) لدعم الملفّات الضخمة، وبدون قيد MIME لأنّ الرفع محصور
+    // بالإدارة والقراءة ليست عامّة.
+    match /dashboard/chat/{allPaths=**} {
+      allow read: if hasOwnerOrSupervisor();
+      allow create, update: if hasOwnerOrSupervisor()
+        && request.resource.size < 3 * 1024 * 1024 * 1024;
+      allow delete: if hasOwnerOrSupervisor();
+    }
+
     // منع كل ما عدا ذلك
     match /{path=**} {
       allow read: if false;
