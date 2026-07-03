@@ -65,8 +65,8 @@ jobs:
             esac
           }
 
-          # 🟢 نور مُفعَّل — جلب آليّ للكتب العامّة فقط (بلا ذكاء اصطناعي).
-          #    (NOOR_ENGINE_HARD_DISABLED=false في
-          #    dashboard/src/lib/server/noorLibrary/engine.js)
-          tick "noor"    "/api/cron/noor-library-tick"
+          # ⚠ نور لا يُجلب من الخادم: تنزيل نور يحتاج متصفّحاً حقيقياً (غير متاح
+          #    على Vercel)، فالنبضة الخادميّة تفشل دائماً وتُدرِج الكتب في القائمة
+          #    السوداء ظلماً. الجلب الحقيقيّ يتمّ عبر workflow منفصل بمتصفّح:
+          #    .github/workflows/noor-browser-ingest.yml — لا تُعِد سطر نور هنا.
           tick "hindawi" "/api/cron/hindawi-library-tick"
