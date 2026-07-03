@@ -42,7 +42,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # ملاحظة: pdfjs-dist يتطلّب node>=22.13 و.npmrc فيه engine-strict=true،
+          # فيفشل npm ci على node 20 بـ EBADENGINE. node 22 يحلّ ذلك.
+          node-version: 22
 
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
