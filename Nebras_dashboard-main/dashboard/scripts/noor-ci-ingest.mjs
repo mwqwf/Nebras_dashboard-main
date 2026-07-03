@@ -96,25 +96,61 @@ async function fetchText(url) {
 	return res.text();
 }
 
-/** يجمع مرشّحين جدداً من البذور (plain fetch — القوائم لا تحتاج متصفّحاً). */
-async function collectCandidates(seeds, known, limit) {
+function looksLikeCf(html) {
+	const h = String(html || '').toLowerCase();
+	return (
+		h.length < 200 ||
+		h.includes('just a moment') ||
+		h.includes('challenge-platform') ||
+		h.includes('cf-browser-verification') ||
+		h.includes('checking your browser')
+	);
+}
+
+/**
+ * يجلب HTML صفحة قائمة عبر المتصفّح الحقيقي (يجتاز Cloudflare). عناوين
+ * GitHub Actions (مراكز بيانات) يحجبها Cloudflare على fetch العاديّ بـ403،
+ * فلا بدّ من المتصفّح حتى لصفحات القوائم لا التنزيل فقط.
+ */
+async function fetchListingHtmlViaBrowser(browser, url) {
+	const page = await browser.newPage();
+	try {
+		await page.setUserAgent(UA);
+		await page.setExtraHTTPHeaders({ 'Accept-Language': 'ar-EG,ar;q=0.9,en;q=0.7' });
+		await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+		for (let i = 0; i < 8; i++) {
+			const html = await page.content().catch(() => '');
+			if (!looksLikeCf(html)) return html;
+			await new Promise((r) => setTimeout(r, 2000));
+		}
+		return await page.content().catch(() => '');
+	} finally {
+		await page.close().catch(() => {});
+	}
+}
+
+/** يجمع مرشّحين جدداً من البذور عبر المتصفّح (يجتاز Cloudflare). */
+async function collectCandidatesViaBrowser(browser, seeds, known, limit) {
 	const seen = new Set();
 	const candidates = [];
 	for (const seed of seeds) {
 		if (candidates.length >= limit) break;
 		let html;
 		try {
-			html = await fetchText(seed);
+			html = await fetchListingHtmlViaBrowser(browser, seed);
 		} catch (e) {
 			console.log(`  ⚠ seed failed: ${seed} — ${e.message}`);
 			continue;
 		}
+		let added = 0;
 		for (const link of extractBookLinks(html, seed)) {
 			if (known.has(link.bookId) || seen.has(link.bookId)) continue;
 			seen.add(link.bookId);
 			candidates.push(link);
+			added++;
 			if (candidates.length >= limit) break;
 		}
+		console.log(`  • seed +${added} (total ${candidates.length}) ${seed.split('/').pop()}`);
 	}
 	return candidates;
 }
@@ -275,15 +311,7 @@ async function main() {
 		console.log(`  ⚠ GET /ingest failed (${e.message}); using fallback seeds`);
 	}
 
-	// 2) اجمع مرشّحين جدداً (plain fetch).
-	const candidates = await collectCandidates(seeds, known, MAX_BOOKS * 3);
-	console.log(`  candidates=${candidates.length}`);
-	if (!candidates.length) {
-		console.log('لا مرشّحين جدداً — انتهى.');
-		return;
-	}
-
-	// 3) افتح المتصفّح وعالِج حتى الحدّ/الميزانية الزمنيّة.
+	// 2) افتح المتصفّح مبكّراً (نستعمله للقوائم والتنزيل معاً).
 	//    protocolTimeout مرتفع لأنّ ترميز الكتب الكبيرة (100MB+) إلى base64
 	//    داخل الصفحة قد يتجاوز مهلة CDP الافتراضيّة (180s).
 	const browser = await puppeteerExtra.launch({
@@ -295,6 +323,15 @@ async function main() {
 	let skipped = 0;
 	let failed = 0;
 	try {
+		// 3) اجمع مرشّحين جدداً **عبر المتصفّح** (Cloudflare يحجب fetch العاديّ
+		//    من عناوين مراكز البيانات مثل GitHub Actions بـ403).
+		const candidates = await collectCandidatesViaBrowser(browser, seeds, known, MAX_BOOKS * 3);
+		console.log(`  candidates=${candidates.length}`);
+		if (!candidates.length) {
+			console.log('لا مرشّحين جدداً — انتهى.');
+			return;
+		}
+
 		for (const cand of candidates) {
 			if (ok >= MAX_BOOKS || Date.now() - startedAt > MAX_MS) break;
 			// حصانة: أيّ خطأ (خصوصاً أعطال الشبكة العابرة مثل ECONNRESET) في
