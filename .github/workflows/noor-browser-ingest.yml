@@ -12,14 +12,19 @@ name: Noor Browser Ingest (real books → Nebras)
 #   • CRON_SECRET  — إن ضُبط في GitHub + Vercel معاً، يُشدَّد منفذ /ingest.
 
 on:
+  # ⚠ هذا workflow ثقيل (npm + Chromium + متصفّح): كلّ تشغيلة تستهلك دقائق
+  #   Actions كثيرة مقارنةً بنبضات الـ curl. لتفادي استنزاف ميزانية الدقائق
+  #   المشتركة (التي تفشّل جميع الـ workflows عند نفادها) نُشغّله **مرّة يومياً
+  #   فقط** بأكبر عدد كتب يسع في ميزانية زمنيّة محدودة (كفاءة قصوى للدقائق:
+  #   تكلفة الإعداد الثابتة تُوزَّع على أكبر عدد كتب). للتشغيل الفوريّ: Run workflow.
   schedule:
-    - cron: '15 */4 * * *' # كل 4 ساعات (6 تشغيلات/يوم، كلّ منها بعنوان IP جديد)
+    - cron: '15 3 * * *' # مرّة يومياً (03:15 UTC)
   workflow_dispatch:
     inputs:
       max_books:
         description: 'أقصى عدد كتب لهذا التشغيل'
         required: false
-        default: '30'
+        default: '25'
 
 concurrency:
   group: noor-browser-ingest
@@ -31,7 +36,7 @@ permissions:
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 28
     defaults:
       run:
         working-directory: Nebras_dashboard-main/dashboard
@@ -56,6 +61,6 @@ jobs:
         env:
           VERCEL_BASE: ${{ secrets.VERCEL_URL || 'https://nebras-dashboard-main.vercel.app' }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          NOOR_MAX_BOOKS: ${{ github.event.inputs.max_books || '30' }}
-          NOOR_MAX_MS: '2400000'
+          NOOR_MAX_BOOKS: ${{ github.event.inputs.max_books || '25' }}
+          NOOR_MAX_MS: '1200000'
         run: node scripts/noor-ci-ingest.mjs
