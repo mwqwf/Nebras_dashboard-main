@@ -287,6 +287,150 @@ service cloud.firestore {
         || (isSignedIn() && request.auth.uid == memberUid);
     }
 
+    // ═════════════════ مجتمع نبراس (UGC) 📡 ═════════════════════
+    // نشر مفتوح للمستخدمين عبر «قنوات» (قرار المالك 2026-07-14):
+    //   • النشر فوريّ بلا موافقة مسبقة؛ الرقابة لاحقة عبر بلاغات
+    //     content_reports وحذف/تعليق من اللوحة.
+    //   • حساب Google حقيقيّ إلزاميّ (لا ضيوف مجهولين) — الناشر مُعرَّف.
+    //   • كلّ شيء منفصل تماماً عن المجموعات الرسميّة (content_unified_*).
+
+    // حساب حقيقيّ (ليس anonymous) — شرط كلّ كتابة مجتمع.
+    function isRealUser() {
+      return isSignedIn()
+        && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    // شكل وثيقة القناة كما يكتبها التطبيق (upsertMyChannel).
+    function isValidUgcChannel() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['ownerUid', 'name', 'bio', 'photoUrl',
+            'mainSectionId', 'mainSectionName', 'subSectionId',
+            'subSectionName', 'secondarySectionId', 'secondarySectionName',
+            'createdAt', 'updatedAt', 'termsAcceptedAt', 'status'])
+        && d.ownerUid == request.auth.uid
+        && d.name is string
+        && d.name.size() >= 3
+        && d.name.size() <= 50
+        && (!('bio' in d) || (d.bio is string && d.bio.size() <= 200));
+    }
+
+    // ─── قنوات الناشرين: ugc_channels/{uid} — قناة واحدة لكلّ حساب ──
+    //   • read عامّ: اسم الناشر يظهر على محتواه لكلّ المستخدمين.
+    //   • create/update: صاحب القناة فقط، ولا يستطيع لمس status
+    //     (التعليق suspended حصريّ للمالك عبر اللوحة فلا يفكّه الناشر).
+    //   • اللوحة (owner/supervisor) تعدّل أيّ قناة (تعليق/تصحيح).
+    match /ugc_channels/{channelUid} {
+      allow read: if true;
+      allow create: if isRealUser()
+        && request.auth.uid == channelUid
+        && isValidUgcChannel()
+        && request.resource.data.status == 'active';
+      allow update: if hasDashboardWrite()
+        || (isRealUser()
+            && request.auth.uid == channelUid
+            && isValidUgcChannel()
+            && !request.resource.data.diff(resource.data).affectedKeys()
+                .hasAny(['status', 'createdAt']));
+      allow delete: if hasOwnerRole()
+        || (isRealUser() && request.auth.uid == channelUid);
+    }
+
+    // شكل وثيقة المنشور كما يكتبها التطبيق (UgcService.publish) حرفيّاً.
+    // أهمّ القيود:
+    //   • source_url من Firebase Storage فقط (لا روابط خارجيّة إطلاقاً —
+    //     يسدّ ثغرة تمرير روابط لمنصّات محظورة أو ملفّات خبيثة).
+    //   • storage_path داخل مجلّد الناشر نفسه ugc/{uid}/…
+    //   • الحالة الابتدائيّة 'published' وعدّاد التعليقات صفر.
+    function isValidUgcContent() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['id', 'title', 'description', 'content_type',
+            'source_url', 'fileSize', 'thumbnail', 'subsection',
+            'subsection_name', 'secondary_subsection', 'created_by',
+            'author', 'source_name', 'created_at', 'updated_at', 'is_ugc',
+            'channelId', 'channelName', 'channelPhotoUrl', 'main_section',
+            'main_section_name', 'storage_path', 'commentsCount', 'status'])
+        && d.title is string
+        && d.title.size() >= 3
+        && d.title.size() <= 120
+        && (!('description' in d)
+            || (d.description is string && d.description.size() <= 20000))
+        && d.content_type in ['audio', 'video', 'document', 'article']
+        && d.source_url is string
+        && d.source_url.matches('https://firebasestorage[.]googleapis[.]com/.*')
+        && d.channelId == request.auth.uid
+        && d.storage_path is string
+        && d.storage_path.matches('ugc/' + request.auth.uid + '/.*')
+        && d.is_ugc == true
+        && d.status == 'published'
+        && d.commentsCount == 0;
+    }
+
+    // ─── منشورات المجتمع: ugc_contents/{id} ──────────────────────
+    //   • read عامّ (يُرشَّح عرضاً في التطبيق: بلاغات/حجب/امتثال).
+    //   • create: ناشر حقيقيّ بقناة نشطة وافق على الشروط.
+    //   • update: اللوحة (إشراف)، أو زيادة/نقص commentsCount وحدها
+    //     (batch إضافة/حذف تعليق)، أو تعديل الناشر لعنوان/وصف منشوره.
+    //   • delete: اللوحة (إزالة مخالف) أو الناشر نفسه.
+    match /ugc_contents/{contentId} {
+      allow read: if true;
+      allow create: if isRealUser()
+        && isValidUgcContent()
+        && contentId == request.resource.data.id
+        && get(/databases/$(database)/documents/ugc_channels/$(request.auth.uid))
+            .data.status == 'active'
+        && get(/databases/$(database)/documents/ugc_channels/$(request.auth.uid))
+            .data.termsAcceptedAt != null;
+      allow update: if hasDashboardWrite()
+        || (isRealUser()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['commentsCount']))
+        || (isRealUser()
+            && resource.data.channelId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['title', 'description', 'updated_at']));
+      allow delete: if hasDashboardWrite()
+        || (isRealUser() && resource.data.channelId == request.auth.uid);
+
+      // تعليقات — على محتوى المجتمع **فقط** (لا تعليقات على الرسميّ):
+      //   • حذف التعليق: كاتبه، أو صاحب المنشور (إشراف على قناته مثل
+      //     YouTube)، أو اللوحة.
+      match /comments/{commentId} {
+        allow read: if true;
+        allow create: if isRealUser()
+          && request.resource.data.keys().hasOnly(
+              ['uid', 'name', 'photoUrl', 'text', 'createdAt'])
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 500;
+        allow update: if false;
+        allow delete: if hasDashboardWrite()
+          || (isRealUser() && resource.data.uid == request.auth.uid)
+          || (isRealUser()
+              && get(/databases/$(database)/documents/ugc_contents/$(contentId))
+                  .data.channelId == request.auth.uid);
+      }
+    }
+
+    // ─── طلبات «قسم غير موجود» من الناشرين ──────────────────────
+    // تصل للوحة كطلبات معلّقة يقرّرها المالك/المشرفون.
+    match /ugc_section_requests/{reqId} {
+      allow create: if isRealUser()
+        && request.resource.data.keys().hasOnly(
+            ['uid', 'requestedName', 'parentHint', 'note', 'status',
+             'createdAt'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.requestedName is string
+        && request.resource.data.requestedName.size() > 0
+        && request.resource.data.requestedName.size() <= 80
+        && (!('note' in request.resource.data)
+            || (request.resource.data.note is string
+                && request.resource.data.note.size() <= 300))
+        && request.resource.data.status == 'pending';
+      allow read: if hasDashboardWrite();
+      allow update, delete: if hasDashboardWrite();
+    }
+
     // ─── deny-by-default ────────────────────────────────────────
     match /{document=**} {
       allow read, write: if false;

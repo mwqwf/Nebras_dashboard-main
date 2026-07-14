@@ -10,7 +10,10 @@
 import { json } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { isAdminConfigured } from '$lib/server/firebaseAdmin.js';
-import { bridgePendingSuggestions } from '$lib/server/adminChatBot.js';
+import {
+	bridgePendingSuggestions,
+	bridgePendingSectionRequests
+} from '$lib/server/adminChatBot.js';
 
 /** @param {import('@sveltejs/kit').RequestEvent} event */
 function authorizeCron(event) {
@@ -32,7 +35,14 @@ export async function GET(event) {
 	if (!isAdminConfigured()) return json({ error: 'not_configured' }, { status: 501 });
 	try {
 		const bridged = await bridgePendingSuggestions();
-		return json({ ok: true, bridgedSuggestions: bridged });
+		// طلبات أقسام مجتمع نبراس 📡 — نفس النبضة (idempotent، فشلها لا يُفشل الاقتراحات).
+		let bridgedSections = 0;
+		try {
+			bridgedSections = await bridgePendingSectionRequests();
+		} catch (err) {
+			console.warn('[cron/suggestions-bridge] section requests failed:', err?.message || err);
+		}
+		return json({ ok: true, bridgedSuggestions: bridged, bridgedSectionRequests: bridgedSections });
 	} catch (err) {
 		console.error('[cron/suggestions-bridge] failed:', err);
 		return json({ error: 'server_error', message: err?.message || 'unknown' }, { status: 500 });

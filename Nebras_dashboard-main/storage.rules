@@ -93,6 +93,26 @@ service firebase.storage {
       allow delete: if hasOwnerOrSupervisor();
     }
 
+    // 📡 مجتمع نبراس (UGC) — ملفّات منشورات الناشرين: ugc/{uid}/{postId}/…
+    //   • القراءة عامّة (المحتوى منشور للجميع).
+    //   • الكتابة: صاحب المجلّد فقط، بحساب حقيقيّ (لا anonymous)،
+    //     بحدّ 300MB (مطابق لـ UgcService.maxFileSizeBytes — عدّل الاثنين
+    //     معاً)، وبأنواع MIME التي ينشرها التطبيق حصراً (صوت/فيديو/PDF/نصّ
+    //     المقال) — لا ملفّات تنفيذيّة أو مجهولة.
+    //   • الحذف: صاحب المجلّد (حذف منشوره) — واللوحة تحذف عبر Admin SDK
+    //     الذي يتجاوز القواعد أصلاً.
+    match /ugc/{userId}/{postId}/{fileName} {
+      allow read: if true;
+      allow create, update: if isSignedIn()
+        && request.auth.uid == userId
+        && request.auth.token.firebase.sign_in_provider != 'anonymous'
+        && request.resource.size < 300 * 1024 * 1024
+        && request.resource.contentType.matches(
+          'audio/.*|video/.*|application/pdf|text/plain.*'
+        );
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
     // منع كل ما عدا ذلك
     match /{path=**} {
       allow read: if false;
