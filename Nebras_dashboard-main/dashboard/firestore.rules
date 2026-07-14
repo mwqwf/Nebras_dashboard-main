@@ -301,17 +301,20 @@ service cloud.firestore {
     }
 
     // شكل وثيقة القناة كما يكتبها التطبيق (upsertMyChannel).
+    // `sections` = أقسام يملكها الناشر ويسمّيها بنفسه داخل قناته (قرار
+    // المالك: لا علاقة لمحتوى المستخدمين بأقسام نبراس الرسميّة إطلاقاً).
     function isValidUgcChannel() {
       let d = request.resource.data;
       return d.keys().hasOnly(['ownerUid', 'name', 'bio', 'photoUrl',
-            'mainSectionId', 'mainSectionName', 'subSectionId',
-            'subSectionName', 'secondarySectionId', 'secondarySectionName',
-            'createdAt', 'updatedAt', 'termsAcceptedAt', 'status'])
+            'sections', 'createdAt', 'updatedAt', 'termsAcceptedAt',
+            'status'])
         && d.ownerUid == request.auth.uid
         && d.name is string
         && d.name.size() >= 3
         && d.name.size() <= 50
-        && (!('bio' in d) || (d.bio is string && d.bio.size() <= 200));
+        && (!('bio' in d) || (d.bio is string && d.bio.size() <= 200))
+        && (!('sections' in d)
+            || (d.sections is list && d.sections.size() <= 50));
     }
 
     // ─── قنوات الناشرين: ugc_channels/{uid} — قناة واحدة لكلّ حساب ──
@@ -344,11 +347,11 @@ service cloud.firestore {
     function isValidUgcContent() {
       let d = request.resource.data;
       return d.keys().hasOnly(['id', 'title', 'description', 'content_type',
-            'source_url', 'fileSize', 'thumbnail', 'subsection',
-            'subsection_name', 'secondary_subsection', 'created_by',
+            'source_url', 'fileSize', 'thumbnail', 'created_by',
             'author', 'source_name', 'created_at', 'updated_at', 'is_ugc',
-            'channelId', 'channelName', 'channelPhotoUrl', 'main_section',
-            'main_section_name', 'storage_path', 'commentsCount', 'status'])
+            'channelId', 'channelName', 'channelPhotoUrl',
+            'channel_section_id', 'channel_section_name',
+            'storage_path', 'commentsCount', 'status'])
         && d.title is string
         && d.title.size() >= 3
         && d.title.size() <= 120
