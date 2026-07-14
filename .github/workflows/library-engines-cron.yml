@@ -13,7 +13,9 @@ name: Library Engines Auto-Tick (Noor + Hindawi)
 
 on:
   schedule:
-    - cron: '5-59/10 7-23 * * *'
+    # ⚠ خُفِّض من كل 10د إلى كل ساعتين (مُزاح +30د عن ia-cron) لتوفير دقائق
+    #   GitHub Actions المشتركة. يجلب هنداوي فقط الآن (نور عبر workflow المتصفّح).
+    - cron: '30 7-23/2 * * *'
   workflow_dispatch:
 
 concurrency:
