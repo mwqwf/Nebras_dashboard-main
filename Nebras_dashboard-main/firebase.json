@@ -4,7 +4,8 @@
   },
   "firestore": {
     "rules": "dashboard/firestore.rules",
-    "indexes": "dashboard/firestore.indexes.json"
+    "indexes": "dashboard/firestore.indexes.json",
+    "database": "default"
   },
   "storage": {
     "rules": "storage.rules"
