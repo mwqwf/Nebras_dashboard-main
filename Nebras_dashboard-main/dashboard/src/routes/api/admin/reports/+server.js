@@ -1,5 +1,5 @@
 /**
- * /api/admin/reports — واجهة الإشراف على بلاغات المحتوى (للمالك فقط).
+ * /api/admin/reports — البلاغات متاحة لفريق الإدارة، والحذف النهائي للمالك.
  *
  * ╔══════════════════════════════════════════════════════════════════╗
  * ║  GET   → قائمة البلاغات المعلّقة (status == 'pending').            ║
@@ -9,12 +9,11 @@
  * ║           { action: 'dismiss', reportId }                         ║
  * ║              يتجاهل بلاغاً كاذباً (status = dismissed).            ║
  * ║                                                                  ║
- * ║  الحذف يشمل: content_unified_files + dashboard_uploads +          ║
- * ║  content_unified_youtube + ملفّ Storage (إن وُجد).               ║
+ * ║  الحذف يشمل المحتوى الرسمي أو UGC + ملفاته وتعليقاته وتفاعلاته.  ║
  * ╚══════════════════════════════════════════════════════════════════╝
  */
 import { json } from '@sveltejs/kit';
-import { requireOwner } from '$lib/server/authGuard.js';
+import { requireAdminRole } from '$lib/server/adminApiAuth.js';
 import { FieldValue } from 'firebase-admin/firestore';
 import { getNebrasFirestoreAdmin, isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import { deleteContentEverywhere } from '$lib/server/contentTakedown.js';
@@ -26,8 +25,8 @@ const TAKEDOWN_PENDING = 'content_takedown_pending';
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function GET(event) {
-	const denied = requireOwner(event);
-	if (denied) return denied;
+	const gate = requireAdminRole(event);
+	if (!gate.ok) return gate.response;
 	if (!isAdminConfigured()) return json({ error: 'not_configured' }, { status: 501 });
 
 	const fs = getNebrasFirestoreAdmin();
@@ -64,8 +63,8 @@ export async function GET(event) {
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function POST(event) {
-	const denied = requireOwner(event);
-	if (denied) return denied;
+	const gate = requireAdminRole(event);
+	if (!gate.ok) return gate.response;
 	if (!isAdminConfigured()) return json({ error: 'not_configured' }, { status: 501 });
 
 	let body;
@@ -107,6 +106,11 @@ export async function POST(event) {
 	}
 
 	if (action === 'delete') {
+		// الحذف لا رجعة فيه (Firestore + Storage)، ولذلك يبقى حصراً للمالك
+		// حتى مع إتاحة قراءة البلاغات وإغلاقها لكلّ المشرفين.
+		if (gate.auth.role !== 'owner') {
+			return json({ error: 'forbidden', reason: 'owner_required_for_delete' }, { status: 403 });
+		}
 		const contentId = String(body?.contentId || '').trim();
 		const contentType = String(body?.contentType || '').trim().toLowerCase();
 		if (!contentId) return json({ error: 'content_id_required' }, { status: 400 });

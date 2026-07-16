@@ -108,7 +108,7 @@ service firebase.storage {
         && request.auth.token.firebase.sign_in_provider != 'anonymous'
         && request.resource.size < 300 * 1024 * 1024
         && request.resource.contentType.matches(
-          'audio/.*|video/.*|application/pdf|text/plain.*'
+          'audio/.*|video/.*|application/pdf|text/plain.*|image/jpeg|image/png|image/webp'
         );
       allow delete: if isSignedIn() && request.auth.uid == userId;
     }

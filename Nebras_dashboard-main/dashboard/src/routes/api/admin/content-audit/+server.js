@@ -1,5 +1,5 @@
 /**
- * /api/admin/content-audit — أداة تدقيق المحتوى (للمالك فقط).
+ * /api/admin/content-audit — يراه فريق الإدارة، والحذف النهائي للمالك فقط.
  *
  * تفحص المحتوى الحاليّ وتُبرز **ما يحمل إشارات خطر حقيقيّة** ليراجعه
  * المالك ويحذف المخالف:
@@ -16,7 +16,7 @@
  * POST → { action: 'delete', contentId, contentType } يحذف العنصر فعليّاً.
  */
 import { json } from '@sveltejs/kit';
-import { requireOwner } from '$lib/server/authGuard.js';
+import { requireAdminRole } from '$lib/server/adminApiAuth.js';
 import { getNebrasFirestoreAdmin, isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import { deleteContentEverywhere } from '$lib/server/contentTakedown.js';
 import { scanRisk, DESCRIPTION_SAFE_PATTERNS } from '$lib/server/contentRiskLexicon.js';
@@ -29,8 +29,8 @@ const RETURN_LIMIT = 500;
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function GET(event) {
-	const denied = requireOwner(event);
-	if (denied) return denied;
+	const gate = requireAdminRole(event);
+	if (!gate.ok) return gate.response;
 	if (!isAdminConfigured()) return json({ error: 'not_configured' }, { status: 501 });
 
 	const fs = getNebrasFirestoreAdmin();
@@ -68,8 +68,11 @@ export async function GET(event) {
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function POST(event) {
-	const denied = requireOwner(event);
-	if (denied) return denied;
+	const gate = requireAdminRole(event);
+	if (!gate.ok) return gate.response;
+	if (gate.auth.role !== 'owner') {
+		return json({ error: 'forbidden', reason: 'owner_required_for_delete' }, { status: 403 });
+	}
 	if (!isAdminConfigured()) return json({ error: 'not_configured' }, { status: 501 });
 
 	let body;

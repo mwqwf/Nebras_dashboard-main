@@ -87,45 +87,6 @@ export async function bridgePendingSuggestions() {
 	return fresh.length;
 }
 
-/**
- * جسر طلبات «قسم غير موجود» من ناشري مجتمع نبراس 📡: كلّ وثيقة
- * `ugc_section_requests` بحالة pending ولم تُجسَّر → رسالة نظام في
- * الدردشة + وسم bridged (idempotent) — فيقرّر المالك إنشاء القسم أو لا.
- * @returns {Promise<number>} عدد الطلبات المُجسَّرة.
- */
-export async function bridgePendingSectionRequests() {
-	const fs = getNebrasFirestoreAdmin();
-	const snap = await fs
-		.collection('ugc_section_requests')
-		.where('status', '==', 'pending')
-		.limit(25)
-		.get();
-	const fresh = snap.docs.filter((d) => d.data().bridged !== true);
-	for (const doc of fresh) {
-		const v = doc.data();
-		const note = String(v.note || '').slice(0, 400);
-		const text =
-			'📡 طلب قسم جديد من ناشر في مجتمع نبراس\n' +
-			`الاسم المقترح: «${String(v.requestedName || '؟').slice(0, 100)}»\n` +
-			(v.parentHint ? `قرب القسم: ${String(v.parentHint).slice(0, 100)}\n` : '') +
-			(note ? `ملاحظة الناشر: «${note}»` : '');
-		await postSystemMessage(text.trim());
-		await doc.ref.update({
-			bridged: true,
-			bridgedAt: FieldValue.serverTimestamp()
-		});
-	}
-	if (fresh.length > 0) {
-		await notifyAdmins(
-			'طلبات أقسام جديدة 📡',
-			fresh.length === 1
-				? 'ناشر في المجتمع يقترح قسماً جديداً — افتح دردشة الإدارة.'
-				: `${fresh.length} طلبات أقسام جديدة من ناشري المجتمع — افتح دردشة الإدارة.`
-		);
-	}
-	return fresh.length;
-}
-
 /** تحويل قيمة createdAt بأشكالها المتعدّدة (Timestamp/نص/رقم) إلى ms أو null. */
 function toMs(v) {
 	if (!v) return null;
@@ -166,6 +127,21 @@ export async function postDailyDigest() {
 		console.warn('[adminChatBot] content count failed:', err?.message || err);
 	}
 
+	let newCommunityPosts = 0;
+	try {
+		const recentCommunity = await fs
+			.collection('ugc_contents')
+			.orderBy('created_at', 'desc')
+			.limit(300)
+			.get();
+		for (const d of recentCommunity.docs) {
+			const ms = toMs(d.data().created_at);
+			if (ms !== null && ms >= yesterdayStart && ms < todayStart) newCommunityPosts++;
+		}
+	} catch (err) {
+		console.warn('[adminChatBot] community count failed:', err?.message || err);
+	}
+
 	async function countPending(coll) {
 		try {
 			const agg = await fs
@@ -192,13 +168,19 @@ export async function postDailyDigest() {
 	const lines = [
 		'📊 الموجز اليومي — صباح الخير يا فريق نبراس!',
 		`• محتوى جديد أمس: ${newContent}`,
+		`• منشورات مجتمع جديدة أمس: ${newCommunityPosts}`,
 		`• بلاغات بانتظار المراجعة: ${pendingReports}`,
 		`• اقتراحات تصحيح معلّقة: ${pendingSuggestions}`,
 		`• أعضاء المجموعة: ${membersCount}`,
-		newContent > 0 ? 'أحسنتم — استمرّوا! 👏' : 'لنجعل اليوم أكثر نشاطاً 💪'
+		newContent + newCommunityPosts > 0
+			? 'أحسنتم — استمرّوا! 👏'
+			: 'لنجعل اليوم أكثر نشاطاً 💪'
 	];
 	await postSystemMessage(lines.join('\n'));
-	await notifyAdmins('الموجز اليومي 📊', `محتوى جديد أمس: ${newContent} • بلاغات معلّقة: ${pendingReports}`);
+	await notifyAdmins(
+		'الموجز اليومي 📊',
+		`محتوى جديد: ${newContent} • مجتمع: ${newCommunityPosts} • بلاغات: ${pendingReports}`
+	);
 
-	return { newContent, pendingReports, pendingSuggestions, membersCount };
+	return { newContent, newCommunityPosts, pendingReports, pendingSuggestions, membersCount };
 }

@@ -6,6 +6,11 @@
  * يحذف من: content_unified_files + dashboard_uploads + ملفّ Storage المرتبط
  * (PDF/صوت/فيديو) + الصور المصغّرة، إن وُجدت.
  *
+ * ويشمل منشورات المجتمع (ugc_contents): وثيقة المنشور + تعليقاتها الفرعية
+ * + ملفّ Storage وصورته المصغّرة في مجلد الناشر — تُميَّز بمعرّف يبدأ بـ `ugc_` أو
+ * contentType == 'ugc'. قبل هذه الإضافة كان حذف بلاغ على منشور مجتمعيّ
+ * يُعلّم البلاغ "محذوفاً" بينما المنشور يبقى حيّاً.
+ *
  * ⚠️ ميزة يوتيوب أُزيلت بالكامل من اللوحة (لا إنشاء/تعديل). نُبقي هنا حذفاً
  * أفضل-جهد لأيّ وثيقة قديمة في content_unified_youtube حتى يمكن تطهير السجلّات
  * المتبقّية من قبل هذه الإزالة. هذا مسار تنظيف فقط، لا يُنشئ أيّ محتوى جديد.
@@ -42,6 +47,70 @@ export async function deleteContentEverywhere(contentId, contentType = '') {
 			contentType: 'youtube',
 			result: 'ok',
 			reason: 'takedown_cleanup'
+		});
+		return;
+	}
+
+	// ─── منشورات المجتمع (ugc_contents) ────────────────────────────
+	// معرّفات المجتمع تبدأ بـ ugc_ (UgcService.publish في تطبيق الجوال).
+	const isUgc =
+		id.startsWith('ugc_') || String(contentType || '').toLowerCase() === 'ugc';
+	if (isUgc) {
+		const ugcRef = fs.collection('ugc_contents').doc(id);
+		let ugcStoragePath = '';
+		let ugcChannelId = '';
+		try {
+			const snap = await ugcRef.get();
+			if (snap.exists) {
+				const d = snap.data() || {};
+				ugcStoragePath = String(d.storage_path || '');
+				ugcChannelId = String(d.channelId || '');
+			}
+		} catch {
+			/* ignore */
+		}
+
+		// Firestore لا يحذف subcollections تعاقبياً: ننظّف التعليقات
+		// والتفاعلات قبل وثيقة المنشور.
+		for (const childCollection of ['comments', 'reactions']) {
+			try {
+				const children = await ugcRef.collection(childCollection).listDocuments();
+				while (children.length) {
+					const batch = fs.batch();
+					for (const ref of children.splice(0, 400)) batch.delete(ref);
+					await batch.commit();
+				}
+			} catch (err) {
+				console.warn(
+					`[takedown] ugc ${childCollection} delete failed:`,
+					err?.message || String(err)
+				);
+			}
+		}
+
+		await ugcRef.delete().catch(() => {});
+
+		if (ugcStoragePath) {
+			try {
+				const bucket = getStorage(getNebrasAdminApp()).bucket();
+				const folder = ugcStoragePath.split('/').slice(0, -1).join('/');
+				const [files] = await bucket.getFiles({ prefix: `${folder}/` });
+				for (const file of files) {
+					await file.delete({ ignoreNotFound: true }).catch(() => {});
+				}
+			} catch (err) {
+				console.warn('[takedown] ugc storage delete failed:', err?.message || String(err));
+			}
+		}
+
+		await writeAuditEntry({
+			action: 'delete',
+			provider: 'ugc',
+			contentId: id,
+			contentType: 'ugc',
+			result: 'ok',
+			reason: 'takedown',
+			meta: { storagePath: ugcStoragePath, channelId: ugcChannelId }
 		});
 		return;
 	}

@@ -307,7 +307,7 @@ service cloud.firestore {
       let d = request.resource.data;
       return d.keys().hasOnly(['ownerUid', 'name', 'bio', 'photoUrl',
             'sections', 'createdAt', 'updatedAt', 'termsAcceptedAt',
-            'status'])
+            'status', 'moderatedAt', 'moderatedBy'])
         && d.ownerUid == request.auth.uid
         && d.name is string
         && d.name.size() >= 3
@@ -328,12 +328,14 @@ service cloud.firestore {
         && request.auth.uid == channelUid
         && isValidUgcChannel()
         && request.resource.data.status == 'active';
-      allow update: if hasDashboardWrite()
+      allow update: if (hasDashboardWrite()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['status', 'moderatedAt', 'moderatedBy', 'updatedAt']))
         || (isRealUser()
             && request.auth.uid == channelUid
             && isValidUgcChannel()
             && !request.resource.data.diff(resource.data).affectedKeys()
-                .hasAny(['status', 'createdAt']));
+                .hasAny(['status', 'createdAt', 'moderatedAt', 'moderatedBy']));
       allow delete: if hasOwnerRole()
         || (isRealUser() && request.auth.uid == channelUid);
     }
@@ -351,7 +353,8 @@ service cloud.firestore {
             'author', 'source_name', 'created_at', 'updated_at', 'is_ugc',
             'channelId', 'channelName', 'channelPhotoUrl',
             'channel_section_id', 'channel_section_name',
-            'storage_path', 'commentsCount', 'status'])
+            'storage_path', 'commentsCount', 'reactionsCount', 'status',
+            'channelStatus'])
         && d.title is string
         && d.title.size() >= 3
         && d.title.size() <= 120
@@ -360,19 +363,23 @@ service cloud.firestore {
         && d.content_type in ['audio', 'video', 'document', 'article']
         && d.source_url is string
         && d.source_url.matches('https://firebasestorage[.]googleapis[.]com/.*')
+        && d.thumbnail is string
+        && (d.thumbnail == ''
+            || d.thumbnail.matches('https://firebasestorage[.]googleapis[.]com/.*'))
         && d.channelId == request.auth.uid
         && d.storage_path is string
         && d.storage_path.matches('ugc/' + request.auth.uid + '/.*')
         && d.is_ugc == true
         && d.status == 'published'
-        && d.commentsCount == 0;
+        && d.commentsCount == 0
+        && d.reactionsCount == 0;
     }
 
     // ─── منشورات المجتمع: ugc_contents/{id} ──────────────────────
     //   • read عامّ (يُرشَّح عرضاً في التطبيق: بلاغات/حجب/امتثال).
-    //   • create: ناشر حقيقيّ بقناة نشطة وافق على الشروط.
-    //   • update: اللوحة (إشراف)، أو زيادة/نقص commentsCount وحدها
-    //     (batch إضافة/حذف تعليق)، أو تعديل الناشر لعنوان/وصف منشوره.
+    //   • create: ناشر حقيقيّ بقناة نشطة؛ وهذا هو شرط النشر الوحيد.
+    //   • update: الإشراف يغيّر حالة المخالفة فقط، والناشر يملك تعديل
+    //     منشوره كاملاً (النوع/الملف/النص/قسم قناته) دون هوية القناة.
     //   • delete: اللوحة (إزالة مخالف) أو الناشر نفسه.
     match /ugc_contents/{contentId} {
       allow read: if true;
@@ -380,17 +387,57 @@ service cloud.firestore {
         && isValidUgcContent()
         && contentId == request.resource.data.id
         && get(/databases/$(database)/documents/ugc_channels/$(request.auth.uid))
-            .data.status == 'active'
-        && get(/databases/$(database)/documents/ugc_channels/$(request.auth.uid))
-            .data.termsAcceptedAt != null;
-      allow update: if hasDashboardWrite()
+            .data.status == 'active';
+      allow update: if (hasDashboardWrite()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['status', 'channelStatus', 'updated_at']))
         || (isRealUser()
             && request.resource.data.diff(resource.data).affectedKeys()
                 .hasOnly(['commentsCount']))
         || (isRealUser()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['reactionsCount'])
+            && ((request.resource.data.reactionsCount
+                    == resource.data.get('reactionsCount', 0) + 1
+                  && existsAfter(/databases/$(database)/documents/ugc_contents/$(contentId)/reactions/$(request.auth.uid)))
+                || (request.resource.data.reactionsCount
+                    == resource.data.get('reactionsCount', 0) - 1
+                  && !existsAfter(/databases/$(database)/documents/ugc_contents/$(contentId)/reactions/$(request.auth.uid)))))
+        || (isSignedIn()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['view_count', 'view_days', 'last_played_at'])
+            && request.resource.data.view_count
+                == resource.data.get('view_count', 0) + 1)
+        || (isRealUser()
             && resource.data.channelId == request.auth.uid
             && request.resource.data.diff(resource.data).affectedKeys()
-                .hasOnly(['title', 'description', 'updated_at']));
+                .hasOnly(['title', 'description', 'content_type',
+                          'source_url', 'fileSize', 'thumbnail',
+                          'storage_path', 'channel_section_id',
+                          'channel_section_name', 'updated_at'])
+            && request.resource.data.title is string
+            && request.resource.data.title.size() >= 3
+            && request.resource.data.title.size() <= 120
+            && request.resource.data.description is string
+            && request.resource.data.description.size() <= 20000
+            && request.resource.data.content_type
+                in ['audio', 'video', 'document', 'article']
+            && request.resource.data.source_url is string
+            && request.resource.data.source_url.matches(
+                'https://firebasestorage[.]googleapis[.]com/.*')
+            && request.resource.data.fileSize is int
+            && request.resource.data.fileSize >= 0
+            && request.resource.data.thumbnail is string
+            && (request.resource.data.thumbnail == ''
+                || request.resource.data.thumbnail.matches(
+                    'https://firebasestorage[.]googleapis[.]com/.*'))
+            && request.resource.data.storage_path is string
+            && request.resource.data.storage_path.matches(
+                'ugc/' + request.auth.uid + '/.*')
+            && request.resource.data.channel_section_id is string
+            && request.resource.data.channel_section_id.size() <= 100
+            && request.resource.data.channel_section_name is string
+            && request.resource.data.channel_section_name.size() <= 60);
       allow delete: if hasDashboardWrite()
         || (isRealUser() && resource.data.channelId == request.auth.uid);
 
@@ -413,25 +460,21 @@ service cloud.firestore {
               && get(/databases/$(database)/documents/ugc_contents/$(contentId))
                   .data.channelId == request.auth.uid);
       }
-    }
 
-    // ─── طلبات «قسم غير موجود» من الناشرين ──────────────────────
-    // تصل للوحة كطلبات معلّقة يقرّرها المالك/المشرفون.
-    match /ugc_section_requests/{reqId} {
-      allow create: if isRealUser()
-        && request.resource.data.keys().hasOnly(
-            ['uid', 'requestedName', 'parentHint', 'note', 'status',
-             'createdAt'])
-        && request.resource.data.uid == request.auth.uid
-        && request.resource.data.requestedName is string
-        && request.resource.data.requestedName.size() > 0
-        && request.resource.data.requestedName.size() <= 80
-        && (!('note' in request.resource.data)
-            || (request.resource.data.note is string
-                && request.resource.data.note.size() <= 300))
-        && request.resource.data.status == 'pending';
-      allow read: if hasDashboardWrite();
-      allow update, delete: if hasDashboardWrite();
+      // إعجاب واحد لكل حساب حقيقيّ. لا نكشف قائمة المتفاعلين علناً؛
+      // يستطيع المستخدم قراءة وثيقة تفاعله فقط، بينما تعرض الواجهة العدّاد.
+      match /reactions/{reactionUid} {
+        allow read: if isRealUser() && request.auth.uid == reactionUid;
+        allow create: if isRealUser()
+          && request.auth.uid == reactionUid
+          && request.resource.data.keys().hasOnly(['uid', 'createdAt'])
+          && request.resource.data.uid == request.auth.uid;
+        allow update: if false;
+        allow delete: if (isRealUser() && request.auth.uid == reactionUid)
+          || (isRealUser()
+              && get(/databases/$(database)/documents/ugc_contents/$(contentId))
+                  .data.channelId == request.auth.uid);
+      }
     }
 
     // ─── deny-by-default ────────────────────────────────────────
