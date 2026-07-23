@@ -12,10 +12,10 @@ name: Library Engines Auto-Tick (Noor + Hindawi)
 #     (fail-closed). بدونه المنفذ يسمح بالنبضة افتراضياً (secure-by-configuration).
 
 on:
-  schedule:
-    # ⚠ خُفِّض من كل 10د إلى كل ساعتين (مُزاح +30د عن ia-cron) لتوفير دقائق
-    #   GitHub Actions المشتركة. يجلب هنداوي فقط الآن (نور عبر workflow المتصفّح).
-    - cron: '30 7-23/2 * * *'
+  # ❄️ مُجمَّد (2026-07-23): أُزيل الجدول التلقائي بطلب المالك لإيقاف جلب هنداوي.
+  #    المحرّك باقٍ في الكود. تشغيل يدوي فقط (محروس بعلم INGEST_FROZEN في المنفذ).
+  # schedule:
+  #   - cron: '30 7-23/2 * * *'
   workflow_dispatch:
 
 concurrency:

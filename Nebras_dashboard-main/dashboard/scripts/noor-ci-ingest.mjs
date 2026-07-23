@@ -24,8 +24,16 @@
 
 import puppeteerExtra from 'puppeteer-extra';
 import Stealth from 'puppeteer-extra-plugin-stealth';
+import { INGEST_FROZEN } from '../src/lib/server/ingestFreeze.js';
 
 puppeteerExtra.use(Stealth());
+
+// ❄️ مُجمَّد (2026-07-23): جلب نور مُوقَف نهائياً بطلب المالك. نخرج فوراً قبل
+//    تشغيل المتصفّح أو ضرب أيّ منفذ. لإعادة التفعيل: اجعل INGEST_FROZEN=false.
+if (INGEST_FROZEN) {
+	console.log('❄️ INGEST_FROZEN=true — جلب نور مُجمّد. خروج دون أيّ جلب.');
+	process.exit(0);
+}
 
 const BASE = String(process.env.VERCEL_BASE || 'https://nebras-dashboard-main.vercel.app').replace(/\/+$/, '');
 const CRON_SECRET = String(process.env.CRON_SECRET || '').trim();

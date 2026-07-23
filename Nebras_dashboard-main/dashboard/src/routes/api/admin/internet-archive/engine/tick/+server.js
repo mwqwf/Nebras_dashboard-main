@@ -10,8 +10,11 @@
 import { json } from '@sveltejs/kit';
 import { runEngineTick } from '$lib/server/internetArchive/engine.js';
 import { isAdminPanelRole } from '$lib/server/dashboardRoles.js';
+import { INGEST_FROZEN, FROZEN_RESPONSE } from '$lib/server/ingestFreeze.js';
 
 export async function POST(event) {
+	// ❄️ الجلب مُجمّد بطلب المالك — لا ننفّذ أيّ دورة (2026-07-23).
+	if (INGEST_FROZEN) return json(FROZEN_RESPONSE, { status: 200 });
 	const auth = event.locals?.auth;
 	if (!auth) return json({ error: 'unauthenticated' }, { status: 401 });
 	if (!isAdminPanelRole(auth.role)) {

@@ -43,6 +43,7 @@ import {
 import { parseNoorUrl } from '$lib/server/noorLibrary/fetcher.js';
 import { DEFAULT_SEED_URLS } from '$lib/server/noorLibrary/crawler.js';
 import { createNoorSignedUpload } from '$lib/server/noorLibrary/adminUploader.js';
+import { INGEST_FROZEN, FROZEN_RESPONSE } from '$lib/server/ingestFreeze.js';
 
 export const config = { maxDuration: 60 };
 
@@ -90,6 +91,8 @@ function isNoorInternalDownloadUrl(u) {
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function POST(event) {
+	// ❄️ الجلب مُجمّد بطلب المالك — لا نستوعب أيّ كتاب (2026-07-23).
+	if (INGEST_FROZEN) return json(FROZEN_RESPONSE, { status: 200 });
 	const auth = authorize(event);
 	if (!auth.ok) return json({ error: 'unauthorized', reason: auth.reason }, { status: 401 });
 	if (!isAdminConfigured()) return json({ error: 'not_configured' }, { status: 501 });

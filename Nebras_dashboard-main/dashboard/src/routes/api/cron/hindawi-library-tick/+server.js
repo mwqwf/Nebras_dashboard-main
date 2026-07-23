@@ -8,6 +8,7 @@ import { json } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import { runCronTick } from '$lib/server/hindawi/engine.js';
+import { INGEST_FROZEN, FROZEN_RESPONSE } from '$lib/server/ingestFreeze.js';
 
 export const config = { maxDuration: 60 };
 
@@ -41,6 +42,8 @@ function authorizeCron(event) {
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function GET(event) {
+	// ❄️ الجلب مُجمّد بطلب المالك — لا ننفّذ أيّ دورة (2026-07-23).
+	if (INGEST_FROZEN) return json(FROZEN_RESPONSE, { status: 200 });
 	const auth = authorizeCron(event);
 	if (!auth.ok) return json({ error: 'unauthorized', reason: auth.reason }, { status: 401 });
 	if (!isAdminConfigured()) return json({ error: 'not_configured' }, { status: 501 });

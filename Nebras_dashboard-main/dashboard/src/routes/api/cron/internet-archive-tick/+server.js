@@ -14,6 +14,7 @@ import { json } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { isAdminConfigured } from '$lib/server/firebaseAdmin.js';
 import { autoBootIfNeeded, runEngineTick } from '$lib/server/internetArchive/engine.js';
+import { INGEST_FROZEN, FROZEN_RESPONSE } from '$lib/server/ingestFreeze.js';
 
 /** Vercel Pro: حتى 300s؛ Hobby: 10s — نطلب 60 حيث يُسمح. */
 export const config = {
@@ -55,6 +56,8 @@ function authorizeCron(event) {
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function GET(event) {
+	// ❄️ الجلب مُجمّد بطلب المالك — لا ننفّذ أيّ دورة (2026-07-23).
+	if (INGEST_FROZEN) return json(FROZEN_RESPONSE, { status: 200 });
 	const auth = authorizeCron(event);
 	if (!auth.ok) {
 		return json({ error: 'unauthorized', reason: auth.reason }, { status: 401 });
