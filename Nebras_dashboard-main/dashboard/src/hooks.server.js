@@ -39,12 +39,17 @@ import {
 import { isOwnerEmail } from '$lib/server/mailer.js';
 import { normalizeDashboardRole } from '$lib/server/dashboardRoles.js';
 import { autoBootIfNeeded } from '$lib/server/internetArchive/engine.js';
+import { INGEST_FROZEN } from '$lib/server/ingestFreeze.js';
 
 // إقلاع تلقائي لمحرّك Internet Archive عند أوّل طلب لكلّ Node process.
 // على Vercel serverless يجب await الـ tick قبل إرجاع الاستجابة — وإلّا تُجمَّد
 // الدالة ولا يُستورد شيء (setTimeout لا يعمل بعد الـ return).
 let __iaAutoBootPromise = null;
 function autoBootOnce() {
+	// ❄️ الجلب مُجمّد (2026-07-23): لا نُقلع المحرّك إطلاقاً. كان هذا المسار
+	//    ينفّذ دورة جلب داخليّة مع **كلّ طلب** للوحة — وهو ما أعاد استيراد
+	//    محتوى بعد التطهير. الحارس هنا + داخل دوال المحرّكات نفسها.
+	if (INGEST_FROZEN) return Promise.resolve();
 	if (__iaAutoBootPromise) return __iaAutoBootPromise;
 	if (!isAdminConfigured()) {
 		__iaAutoBootPromise = Promise.resolve();

@@ -33,6 +33,7 @@ import { fetchBookMetadata, downloadBookFile } from './fetcher.js';
 import { HINDAWI_CATEGORIES, discoverNewBooksInCategory } from './crawler.js';
 import { isBookImported, partitionKnownBooks, recordImported, recordFailure } from './registry.js';
 import { adminUploadAndRegister } from './adminUploader.js';
+import { INGEST_FROZEN } from '../ingestFreeze.js';
 
 // القسم الفرعيّ الموحَّد تحت كل تصنيف رئيسيّ (يميّز مصدر هنداوي ويُسهّل الفصل).
 const HINDAWI_SUB_NAME = 'كتب هنداوي';
@@ -315,6 +316,8 @@ async function processBook({ url, bookId, categoryName }) {
 
 // ── Tick — يتنقّل بين تصنيفات هنداوي ──────────────────────────────────
 export async function runEngineTick() {
+	// ❄️ تجميد شامل: لا دورة جلب.
+	if (INGEST_FROZEN) return { processed: 0, created: 0, skipped: 0, failed: 0, frozen: true };
 	const cfg = await readConfig();
 	const cats = HINDAWI_CATEGORIES;
 	let cursor = await readCursor();
@@ -414,6 +417,8 @@ export async function runEngineTick() {
 
 /** نقطة دخول Cron — تحترم إيقاف المستخدم الصريح. */
 export async function runCronTick() {
+	// ❄️ تجميد شامل: نُرجع skipped ليتوقّف حلقة الـ cron فوراً.
+	if (INGEST_FROZEN) return { processed: 0, created: 0, skipped: true, failed: 0, frozen: true };
 	const snap = await getAdminDatabase().ref(`${CONFIG_PATH}/enabled`).get().catch(() => null);
 	const explicitlyDisabled = snap && snap.exists() && snap.val() === false;
 	if (explicitlyDisabled) return { ok: true, skipped: true, reason: 'engine_stopped_by_user' };
@@ -462,6 +467,8 @@ async function tickLoop() {
 }
 
 export async function startEngine() {
+	// ❄️ تجميد شامل: لا تشغيل للمحرّك.
+	if (INGEST_FROZEN) return { ok: false, frozen: true, reason: 'ingest_frozen' };
 	const state = getGlobalState();
 	const cfg = await writeConfig({ enabled: true });
 	if (state.running) {
@@ -484,6 +491,8 @@ export async function stopEngine() {
 }
 
 export async function autoBootIfNeeded() {
+	// ❄️ تجميد شامل: لا إقلاع تلقائي.
+	if (INGEST_FROZEN) return { booted: false, reason: 'ingest_frozen', frozen: true };
 	const state = getGlobalState();
 	if (state.autoBootAttempted) return;
 	state.autoBootAttempted = true;

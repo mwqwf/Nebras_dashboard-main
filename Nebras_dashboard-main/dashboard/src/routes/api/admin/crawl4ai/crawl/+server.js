@@ -1,9 +1,12 @@
 import { json } from '@sveltejs/kit';
 import { requireOwner } from '$lib/server/authGuard.js';
 import { crawl4aiConfigured, crawl4aiFetch } from '$lib/server/crawl4aiClient.js';
+import { INGEST_FROZEN, FROZEN_RESPONSE } from '$lib/server/ingestFreeze.js';
 
 /** @type {import('@sveltejs/kit').RequestHandler} */
 export async function POST(event) {
+	// ❄️ الزحف مُجمّد بطلب المالك — لا جلب من أيّ مصدر خارجي.
+	if (INGEST_FROZEN) return json(FROZEN_RESPONSE, { status: 200 });
 	const denied = requireOwner(event);
 	if (denied) return denied;
 

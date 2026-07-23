@@ -56,6 +56,7 @@ import {
 	createSecondarySectionAdmin
 } from './sectionsCreator.js';
 import { adminUploadAndRegister, registerUploadedBook } from './adminUploader.js';
+import { INGEST_FROZEN } from '../ingestFreeze.js';
 import {
 	isBookImported,
 	partitionKnownBooks,
@@ -402,6 +403,13 @@ async function processBook({ url, bookId, sections }) {
  * @param {{ url:string, bookId:string, meta:any, sections?:any }} args
  */
 export async function ingestResolvedBook({ url, bookId, meta, sections }) {
+	// ❄️ تجميد شامل: لا استيعاب لأيّ كتاب.
+	if (INGEST_FROZEN) {
+		const e = new Error('الجلب مُجمّد (INGEST_FROZEN) — لا يُقبل أيّ استيعاب.');
+		e.reason = 'ingest_frozen';
+		e.status = 503;
+		throw e;
+	}
 	if (!sections) sections = await buildSectionsTree();
 
 	// ─── GATE 0: كتب عامّة فقط (لا محفوظة/متابعة نشر) ────────────────────
@@ -698,6 +706,8 @@ export async function ingestResolvedBook({ url, bookId, meta, sections }) {
  * }>}
  */
 export async function runEngineTick() {
+	// ❄️ تجميد شامل: لا دورة جلب.
+	if (INGEST_FROZEN) return { processed: 0, created: 0, skipped: 0, failed: 0, frozen: true };
 	if (NOOR_ENGINE_HARD_DISABLED) {
 		return { ok: true, skipped: true, reason: 'noor_engine_hard_disabled' };
 	}
@@ -897,6 +907,8 @@ export async function runEngineTick() {
  *   • نُمسك أي خطأ ونعيده كنتيجة بدل أن نُسقط النداء.
  */
 export async function runCronTick() {
+	// ❄️ تجميد شامل: نُرجع skipped ليتوقّف حلقة الـ cron فوراً.
+	if (INGEST_FROZEN) return { processed: 0, created: 0, skipped: true, failed: 0, frozen: true };
 	// مفتاح الإيقاف (معطَّل الآن = المحرّك يعمل). إن أُعيد رفعه مستقبلاً يتوقّف.
 	if (NOOR_ENGINE_HARD_DISABLED) {
 		return { ok: true, skipped: true, reason: 'noor_engine_hard_disabled' };
@@ -988,6 +1000,8 @@ async function tickLoop() {
  * يبدأ المحرّك في الخلفية. آمن للاستدعاء أكثر من مرّة (idempotent).
  */
 export async function startEngine() {
+	// ❄️ تجميد شامل: لا تشغيل للمحرّك.
+	if (INGEST_FROZEN) return { ok: false, frozen: true, reason: 'ingest_frozen' };
 	if (NOOR_ENGINE_HARD_DISABLED) {
 		return {
 			ok: false,
@@ -1033,6 +1047,8 @@ export async function stopEngine() {
  * يُستدعى من /engine/status لكي يصمد المحرّك عبر إعادات تشغيل dev server.
  */
 export async function autoBootIfNeeded() {
+	// ❄️ تجميد شامل: لا إقلاع تلقائي.
+	if (INGEST_FROZEN) return { booted: false, reason: 'ingest_frozen', frozen: true };
 	const state = getGlobalState();
 	if (state.autoBootAttempted) return;
 	state.autoBootAttempted = true;

@@ -49,6 +49,7 @@ import { previewItem } from './fetcher.js';
 import { probeIaFile } from './metadataProbe.js';
 import { adminRegisterIaMetadata } from './metadataRegister.js';
 import { filterScrapeItemsByLicense } from './licenseFilter.js';
+import { INGEST_FROZEN } from '../ingestFreeze.js';
 import {
 	isItemImported,
 	partitionKnownItems,
@@ -1058,6 +1059,8 @@ async function runFreshScanTick(cfg, cursor) {
 }
 
 export async function runEngineTick() {
+	// ❄️ تجميد شامل: لا دورة جلب مهما كان المُنادي (cron/autoBoot/admin).
+	if (INGEST_FROZEN) return { processed: 0, skipped: 0, failed: 0, frozen: true };
 	const cfg = await readConfig();
 	if (!cfg.seeds.length) {
 		throw Object.assign(new Error('لا توجد بذور (seeds) مهيَّأة.'), {
@@ -1204,6 +1207,8 @@ export async function runEngineTick() {
 // ── Control ────────────────────────────────────────────────────────
 
 export async function startEngine() {
+	// ❄️ تجميد شامل: لا تشغيل للمحرّك.
+	if (INGEST_FROZEN) return { ok: false, frozen: true, reason: 'ingest_frozen' };
 	const cfg = await writeConfig({ enabled: true });
 	const state = getGlobalState();
 	if (state.running) {
@@ -1322,6 +1327,8 @@ async function tickLoop() {
  *      ب) إذا runInlineTick=true ينفّذ runEngineTick متزامناً أيضاً.
  */
 export async function autoBootIfNeeded(opts = {}) {
+	// ❄️ تجميد شامل: هذا هو المسار الذي كان يجلب مع كل زيارة للوحة (hooks.server.js).
+	if (INGEST_FROZEN) return { booted: false, reason: 'ingest_frozen', frozen: true };
 	const state = getGlobalState();
 	const runInline = opts.runInlineTick !== false;
 	const forceTick = opts.forceTick === true;
