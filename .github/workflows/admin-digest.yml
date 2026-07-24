@@ -4,8 +4,11 @@ name: Admin Chat Daily Digest
 # فنستعمل GitHub Action (نفس نمط ia-cron.yml).
 
 on:
-  schedule:
-    - cron: '10 4 * * *' # يوميّاً 04:10 UTC (صباحاً بتوقيت المنطقة العربيّة).
+  # ❄️ مُعطَّل (2026-07-23): لا دردشة إدارة نشطة في مرحلة إعادة الإطلاق، وكل
+  #    تشغيلة فاشلة كانت تُرسل بريد فشل من GitHub. تشغيل يدوي فقط.
+  #    لإعادة التفعيل بعد الإطلاق: أزِل التعليق عن schedule/cron أدناه.
+  # schedule:
+  #   - cron: '10 4 * * *'
   workflow_dispatch:
 
 concurrency:
