@@ -1,12 +1,7 @@
 {
-	"$schema": "https://openapi.vercel.sh/vercel.json",
-	"installCommand": "npm install --prefix Nebras_dashboard-main/dashboard",
-	"buildCommand": "npm run build --prefix Nebras_dashboard-main/dashboard && rm -rf .vercel/output && mkdir -p .vercel && cp -r Nebras_dashboard-main/dashboard/.vercel/output .vercel/output",
-	"framework": null,
-	"crons": [
-		{
-			"path": "/api/cron/aggregates-popularity",
-			"schedule": "0 3 * * *"
-		}
-	]
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "echo no-install",
+  "buildCommand": "mkdir -p .vercel/output/static && cp Nebras_dashboard-main/STOPPED.html .vercel/output/static/index.html && printf '{\"version\":3}' > .vercel/output/config.json",
+  "framework": null,
+  "outputDirectory": ".vercel/output/static"
 }
