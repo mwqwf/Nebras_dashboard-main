@@ -22,6 +22,8 @@
  *                                          true إن كانت الحزمة موجودة).
  *       PUPPETEER_HEADLESS=true|false  — تشغيل بدون واجهة (افتراضي true).
  *       PUPPETEER_EXECUTABLE_PATH      — مسار Chromium مخصّص (اختياري).
+ *       NOOR_REQUIRE_STEALTH=true|false — إلزام stealth عند تفعيل Puppeteer
+ *                                          (افتراضي true).
  *
  * الواجهة العامّة:
  *   - isPuppeteerEnabled() → boolean
@@ -41,7 +43,8 @@ function getGlobalState() {
 			browserPromise: null,
 			puppeteerModule: null,
 			puppeteerEnabled: null, // unknown until first probe
-			lastError: null
+			lastError: null,
+			stealthLoaded: false
 		};
 	}
 	return globalThis[GLOBAL_KEY];
@@ -69,6 +72,7 @@ async function loadPuppeteer() {
 	const state = getGlobalState();
 	if (state.puppeteerModule) return state.puppeteerModule;
 	if (state.puppeteerEnabled === false) return null;
+	const requireStealth = readBoolEnv('NOOR_REQUIRE_STEALTH', true);
 
 	try {
 		// dynamic import لكي لا تنكسر البناءات حيث puppeteer غير مثبّت.
@@ -79,19 +83,30 @@ async function loadPuppeteer() {
 		puppeteerExtra.use(StealthPlugin());
 		state.puppeteerModule = puppeteerExtra;
 		state.puppeteerEnabled = true;
+		state.stealthLoaded = true;
+		state.lastError = null;
 		return puppeteerExtra;
 	} catch (errExtra) {
+		if (requireStealth) {
+			state.puppeteerEnabled = false;
+			state.stealthLoaded = false;
+			state.lastError =
+				'NOOR_REQUIRE_STEALTH=true لكن puppeteer-extra أو stealth-plugin غير متاح. ثبّت puppeteer-extra و puppeteer-extra-plugin-stealth أو عطّل المتغيّر صراحةً للتطوير.';
+			return null;
+		}
 		// retry with plain puppeteer (بدون stealth — لن يجتاز Cloudflare غالباً
 		// لكن أفضل من لا شيء أثناء التطوير).
 		try {
 			const mod = await import('puppeteer');
 			state.puppeteerModule = mod.default || mod;
 			state.puppeteerEnabled = true;
+			state.stealthLoaded = false;
 			state.lastError =
 				'puppeteer-extra غير مثبّت — استعمال puppeteer العاديّ بدون stealth (لن يجتاز Cloudflare).';
 			return state.puppeteerModule;
 		} catch (errPlain) {
 			state.puppeteerEnabled = false;
+			state.stealthLoaded = false;
 			state.lastError =
 				'لا puppeteer ولا puppeteer-extra مثبّتَيْن. شغّل: npm i -D puppeteer puppeteer-extra puppeteer-extra-plugin-stealth';
 			return null;
@@ -692,4 +707,11 @@ export async function shutdownBrowser() {
  */
 export function getPuppeteerLastError() {
 	return getGlobalState().lastError;
+}
+
+/**
+ * حالة Stealth لأغراض التشخيص والاختبارات الدخانية.
+ */
+export function isPuppeteerStealthLoaded() {
+	return Boolean(getGlobalState().stealthLoaded);
 }

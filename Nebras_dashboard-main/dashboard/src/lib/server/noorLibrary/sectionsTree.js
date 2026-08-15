@@ -41,7 +41,11 @@ export const BLACKLISTED_SECTION_NAMES = Object.freeze([
 	'دروس بتدكصهك',
 	// نسخ بديلة محتملة (Typos شائعة) لنفس القسم — احتراز تشغيلي
 	'دروس بترخيصها',
-	'دروس بترخيصه'
+	'دروس بترخيصه',
+	'دروس بترخصيها',
+	'دروس بترخييصها',
+	'دروس بترخيص',
+	'دروس ترخيصها'
 ]);
 
 // ── Arabic normalization (نسخة من classifier.js لتفادي الاعتمادية الدائريّة) ─
@@ -61,6 +65,42 @@ const NORMALIZED_BLACKLIST = new Set(
 	BLACKLISTED_SECTION_NAMES.map(normalizeArabic).filter(Boolean)
 );
 
+function levenshteinDistance(a, b) {
+	const s = String(a || '');
+	const t = String(b || '');
+	if (s === t) return 0;
+	if (!s) return t.length;
+	if (!t) return s.length;
+	const prev = Array.from({ length: t.length + 1 }, (_, i) => i);
+	const curr = Array(t.length + 1).fill(0);
+	for (let i = 1; i <= s.length; i += 1) {
+		curr[0] = i;
+		for (let j = 1; j <= t.length; j += 1) {
+			const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+			curr[j] = Math.min(
+				curr[j - 1] + 1,
+				prev[j] + 1,
+				prev[j - 1] + cost
+			);
+		}
+		for (let j = 0; j <= t.length; j += 1) prev[j] = curr[j];
+	}
+	return prev[t.length];
+}
+
+function isNearBlacklistedTypo(normalizedName) {
+	if (!normalizedName || normalizedName.length < 5) return false;
+	for (const blocked of NORMALIZED_BLACKLIST) {
+		if (!blocked) continue;
+		if (normalizedName.includes(blocked) || blocked.includes(normalizedName)) return true;
+		const maxDistance = blocked.length <= 12 ? 2 : 3;
+		if (Math.abs(normalizedName.length - blocked.length) <= maxDistance) {
+			if (levenshteinDistance(normalizedName, blocked) <= maxDistance) return true;
+		}
+	}
+	return false;
+}
+
 /**
  * يفحص ما إذا كان اسم قسم مطابقاً لأحد أنماط القائمة السوداء (مع تطبيع).
  * @param {string} name
@@ -69,7 +109,7 @@ const NORMALIZED_BLACKLIST = new Set(
 export function isBlacklistedSectionName(name) {
 	const n = normalizeArabic(name);
 	if (!n) return false;
-	return NORMALIZED_BLACKLIST.has(n);
+	return NORMALIZED_BLACKLIST.has(n) || isNearBlacklistedTypo(n);
 }
 
 async function readLevel(level) {
